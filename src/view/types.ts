@@ -1,5 +1,9 @@
 import type { ActorId, CardDefinition, CombatEvent, CombatState } from '../game/types';
 
+/** Shared normalized target-strip coordinates for physical dots and pointer hit areas. */
+export const CARD_TARGET_Y = 0.89;
+export const CARD_TARGET_GAP = 0.18;
+
 /** Coordinates are in the fixed 1920 x 1080 design surface. */
 export interface CardVisual {
   uid: string;
@@ -12,6 +16,8 @@ export interface CardVisual {
   hovered: boolean;
   dimmed: boolean;
   queued: boolean;
+  target: ActorId | null;
+  targets: ActorId[];
 }
 export interface ScenePort {
   setCards(cards: CardVisual[]): void;

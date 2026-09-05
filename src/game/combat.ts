@@ -73,24 +73,26 @@ function planningFailure(state: CombatState): CommandResult | undefined {
   return undefined;
 }
 
-function validateTarget(card: CardInstance, target: ActorId): string | undefined {
+function validateTarget(state: CombatState, card: CardInstance, target: ActorId | null): string | undefined {
+  if (target === null) return `${definition(card).name} needs a target.`;
   if (target !== 'bob' && target !== 'guard') return 'That target does not exist.';
   const cardDefinition = definition(card);
   const expected = cardDefinition.target === 'self' ? card.owner : card.owner === 'bob' ? 'guard' : 'bob';
-  return target === expected ? undefined : `${cardDefinition.name} cannot target ${target}.`;
+  if (target !== expected) return `${cardDefinition.name} cannot target ${target}.`;
+  if (!state.actors[target] || state.actors[target].hp <= 0) return `${state.actors[target]?.name ?? target} is not a living target.`;
 }
 
 function validateAmount(amount: number, label: string): void {
   if (!Number.isFinite(amount) || amount < 0) throw new Error(`Invalid ${label}: ${amount}`);
 }
 
-function validateAction(action: QueueSlot): void {
+function validateAction(state: CombatState, action: QueueSlot): void {
   if (!action) return;
   if (action.kind === 'player') {
     if (!action.card || (action.card.owner !== 'bob' && action.card.owner !== 'guard')) {
       throw new Error('Invalid queued player action.');
     }
-    const targetFailure = validateTarget(action.card, action.target);
+    const targetFailure = validateTarget(state, action.card, action.target);
     if (targetFailure) throw new Error(targetFailure);
     validateAmount(definition(action.card).cost, 'card cost');
     return;
@@ -99,6 +101,9 @@ function validateAction(action: QueueSlot): void {
   if (!action.name || !action.description) throw new Error('Enemy action is missing display text.');
   if (action.actor !== 'bob' && action.actor !== 'guard') throw new Error('Enemy action has an invalid actor.');
   if (action.target !== 'bob' && action.target !== 'guard') throw new Error('Enemy action has an invalid target.');
+  if (!state.actors[action.target] || state.actors[action.target].hp <= 0) {
+    throw new Error(`${state.actors[action.target]?.name ?? action.target} is not a living target.`);
+  }
 }
 
 function installIntent(state: CombatState, turn: number): void {
@@ -107,7 +112,7 @@ function installIntent(state: CombatState, turn: number): void {
       throw new Error(`Enemy intent has invalid slot ${intent.slot}.`);
     }
     if (state.queue[intent.slot]) throw new Error(`Enemy intents collide in slot ${intent.slot}.`);
-    validateAction(intent.action);
+    validateAction(state, intent.action);
     state.queue[intent.slot] = cloneSlot(intent.action);
   }
 }
@@ -181,30 +186,25 @@ export function availableEnergy(state: CombatState, actor: ActorId = 'bob'): num
   return source.energy - reserved;
 }
 
-export function queueCard(state: CombatState, uid: string, target: ActorId, slot?: number): CommandResult {
+export function queueCard(state: CombatState, uid: string, target: ActorId | null, slot: number): CommandResult {
   const phaseFailure = planningFailure(state);
   if (phaseFailure) return phaseFailure;
+  if (!validIndex(state, slot)) return failure('Queue slot must be a valid integer index.');
+  if (state.queue[slot]) return failure('That queue slot is occupied.');
   const handIndex = state.hand.findIndex((card) => card.uid === uid);
   if (handIndex < 0) return failure('That card is not in hand.');
   const card = state.hand[handIndex];
-  const targetFailure = validateTarget(card, target);
-  if (targetFailure) return failure(targetFailure);
   const cardDefinition = definition(card);
+  const normalizedTarget = cardDefinition.target === 'self' && target === null ? card.owner : target;
+  if (normalizedTarget !== null) {
+    const targetFailure = validateTarget(state, card, normalizedTarget);
+    if (targetFailure) return failure(targetFailure);
+  }
   if (availableEnergy(state, card.owner) < cardDefinition.cost) return failure('Not enough available energy.');
 
-  let destination: number;
-  if (slot === undefined) {
-    destination = state.queue.findIndex((entry) => entry === null);
-    if (destination < 0) return failure('No open queue slot.');
-  } else {
-    if (!validIndex(state, slot)) return failure('Queue slot must be a valid integer index.');
-    destination = slot;
-    if (state.queue[destination]) return failure('That queue slot is occupied.');
-  }
-
   state.hand.splice(handIndex, 1);
-  state.queue[destination] = { kind: 'player', card, target };
-  appendLog(state, `Queued ${cardDefinition.name} in slot ${destination + 1}.`);
+  state.queue[slot] = { kind: 'player', card, target: normalizedTarget };
+  appendLog(state, `Queued ${cardDefinition.name} in slot ${slot + 1}.`);
   return { ok: true };
 }
 
@@ -255,7 +255,7 @@ export function retargetCard(state: CombatState, slot: number, target: ActorId):
   const action = state.queue[slot];
   if (!action) return failure('That queue slot is empty.');
   if (action.kind !== 'player') return failure('Enemy actions cannot be retargeted.');
-  const targetFailure = validateTarget(action.card, target);
+  const targetFailure = validateTarget(state, action.card, target);
   if (targetFailure) return failure(targetFailure);
   const cardName = definition(action.card).name;
   const targetName = state.actors[target].name;
@@ -343,7 +343,9 @@ function applyTerminal(state: CombatState, events: CombatEvent[]): void {
 
 function effectRecipient(action: PlayerAction | EnemyAction, effect: Effect): ActorId {
   const actor = action.kind === 'player' ? action.card.owner : action.actor;
-  return effect.recipient === 'self' ? actor : action.target;
+  if (effect.recipient === 'self') return actor;
+  if (action.target === null) throw new Error('Targeted effect has no recipient.');
+  return action.target;
 }
 
 function applyEffect(
@@ -426,7 +428,7 @@ function cleanupHand(state: CombatState, protectedCards: Set<string>): void {
 export function resolveTurn(state: CombatState): ResolutionStep[] {
   if (state.phase !== 'planning') throw new Error('Only a planning state can be resolved.');
   if (state.queue.length !== ENCOUNTER.slotCount) throw new Error('Combat queue has the wrong number of slots.');
-  state.queue.forEach(validateAction);
+  state.queue.forEach((action) => validateAction(state, action));
 
   const working = cloneState(state);
   const reservedByActor: Record<ActorId, number> = { bob: 0, guard: 0 };
@@ -459,10 +461,12 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       if (working.actors[actorId].hp <= 0) {
         record(working, events, { kind: 'empty', actor: actorId, slot, message: `${working.actors[actorId].name} cannot act.` });
       } else {
+        const actionTarget = action.target;
+        if (actionTarget === null) throw new Error('Queued action has no target.');
         record(working, events, {
           kind: 'action',
           actor: actorId,
-          target: action.target,
+          target: actionTarget,
           slot,
           message: `${working.actors[actorId].name} used ${
             action.kind === 'player' ? definition(action.card).name : action.name

@@ -12,7 +12,7 @@ import {
 } from 'playcanvas';
 import type { ActorId, CombatEvent, CombatState } from '../game/types';
 import { drawActorArt, drawArenaArt, drawCardArt } from './art';
-import type { CardVisual, ScenePort } from './types';
+import { CARD_TARGET_GAP, CARD_TARGET_Y, type CardVisual, type ScenePort } from './types';
 
 const DESIGN_WIDTH = 1920;
 const DESIGN_HEIGHT = 1080;
@@ -27,10 +27,17 @@ type ActorRig = {
   hit: number;
   action: number;
 };
+type CardDotRig = {
+  actor: ActorId;
+  root: Entity;
+  ring: Entity;
+  well: Entity;
+};
 type CardRig = {
   root: Entity;
   surface: Entity;
   material: StandardMaterial;
+  dots: CardDotRig[];
   visual: CardVisual;
   x: Spring;
   y: Spring;
@@ -218,6 +225,11 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     actors.set(actor, { root, material, baseX, defeated: false, hit: 0, action: 0 });
   }
 
+  const targetWellMaterial = solidMaterial(new Color(.025, .075, .08), .3);
+  const targetDimMaterial = solidMaterial(new Color(.34, .4, .39), .5);
+  const targetTealMaterial = solidMaterial(new Color(.08, .82, .72), .7, new Color(.02, .25, .21));
+  const targetAmberMaterial = solidMaterial(new Color(1, .57, .16), .7, new Color(.34, .13, .02));
+
   const cardTextures = new Map<string, Texture>();
   const cards = new Map<string, CardRig>();
   let pointerX = DESIGN_WIDTH / 2;
@@ -234,6 +246,46 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     }
     return texture;
   }
+  function positionCardDots(rig: CardRig): void {
+    const diameter = rig.visual.width * .12 / WORLD_SCALE;
+    for (let index = 0; index < rig.dots.length; index++) {
+      const dot = rig.dots[index];
+      const normalizedX = .5 + (index - (rig.dots.length - 1) / 2) * CARD_TARGET_GAP;
+      dot.root.setLocalPosition(
+        (normalizedX - .5) * rig.visual.width / WORLD_SCALE,
+        (.5 - CARD_TARGET_Y) * rig.visual.height / WORLD_SCALE,
+        .04,
+      );
+      dot.ring.setLocalScale(diameter, .016, diameter);
+      dot.well.setLocalScale(diameter * .56, .012, diameter * .56);
+    }
+  }
+
+  function syncCardDots(rig: CardRig): void {
+    const targetsChanged = rig.dots.length !== rig.visual.targets.length
+      || rig.dots.some((dot, index) => dot.actor !== rig.visual.targets[index]);
+    if (targetsChanged) {
+      for (const dot of rig.dots) dot.root.destroy();
+      rig.dots = rig.visual.targets.map((actor) => {
+        const root = new Entity(`Target_Dot_${actor}`, app);
+        rig.root.addChild(root);
+        const ring = primitive(app, root, 'Target_Ring', 'cylinder', [0, 0, 0], [1, 1, 1], targetDimMaterial);
+        ring.setLocalEulerAngles(90, 0, 0);
+        const well = primitive(app, root, 'Target_Well', 'cylinder', [0, 0, .011], [1, 1, 1], targetWellMaterial);
+        well.setLocalEulerAngles(90, 0, 0);
+        return { actor, root, ring, well };
+      });
+    }
+    for (const dot of rig.dots) {
+      if (dot.ring.render) {
+        dot.ring.render.material = rig.visual.target === dot.actor
+          ? dot.actor === 'guard' ? targetTealMaterial : targetAmberMaterial
+          : targetDimMaterial;
+      }
+    }
+    positionCardDots(rig);
+  }
+
 
   function makeCard(visual: CardVisual): CardRig {
     const material = texturedMaterial(getCardTexture(visual), false, .025);
@@ -251,10 +303,11 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     root.setPosition(x, y, 2.5);
     root.setEulerAngles(0, 0, -visual.rotation);
     app.root.addChild(root);
-    return {
+    const rig: CardRig = {
       root,
       surface,
       material,
+      dots: [],
       visual,
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
@@ -263,6 +316,8 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       yaw: { value: 0, velocity: 0 },
       roll: { value: -visual.rotation, velocity: 0 },
     };
+    syncCardDots(rig);
+    return rig;
   }
 
   function applyActorAppearance(actor: ActorId): void {
@@ -358,6 +413,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
           cards.set(visual.uid, rig);
         } else {
           rig.visual = visual;
+          syncCardDots(rig);
         }
         if (appearanceChanged) {
           rig.material.diffuse = visual.dimmed ? new Color(.32, .36, .36) : new Color(1, 1, 1);
@@ -422,6 +478,10 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       shelfEdgeMaterial.destroy();
       amberMaterial.destroy();
       foregroundMaterial.destroy();
+      targetWellMaterial.destroy();
+      targetDimMaterial.destroy();
+      targetTealMaterial.destroy();
+      targetAmberMaterial.destroy();
       app.destroy();
     },
   };

@@ -115,7 +115,7 @@ canvas#arena { display: block; background: #18201e; }
 }
 .turn-badge small { font-weight: 900; line-height: 1; }
 .turn-badge b { font-family: 'Bebas Neue', Impact, sans-serif; font-size: 40px; line-height: .8; }
-.restart, .intent-chip, .primary, .pile-button, .queue-actions button, .pile-inspector button {
+.restart, .intent-chip, .primary, .pile-button, .remove-card, .pile-inspector button {
   border: 3px solid #050707;
   color: var(--ink);
   background: var(--paper);
@@ -267,18 +267,56 @@ canvas#arena { display: block; background: #18201e; }
 .queue-slot:nth-of-type(even) { transform: rotate(.7deg); }
 .queue-slot b { overflow: hidden; font-size: 19px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
 .queue-slot small { overflow: hidden; margin-top: 4px; color: #9aaba6; font-size: 15px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
-.slot-number { position: absolute; left: 7px; top: 4px; color: #71807c; font-family: 'Bebas Neue'; font-size: 19px; }
-.owner { position: absolute; right: 8px; top: 7px; color: var(--teal); font-size: 13px; font-weight: 900; letter-spacing: .8px; }
+.slot-number { position: absolute; z-index: 2; left: 7px; top: 4px; color: #71807c; font-family: 'Bebas Neue'; font-size: 19px; }
+.owner { position: absolute; z-index: 2; right: 8px; top: 7px; color: var(--teal); font-size: 13px; font-weight: 900; letter-spacing: .8px; }
 .queue-slot.empty { align-items: center; color: #677570; border-style: dashed; background: rgba(11,17,17,.58); }
+.queue-slot.empty.pending-destination { color: var(--paper); border-color: var(--amber); background: rgba(87, 57, 7, .42); }
 .queue-slot.enemy { color: #ffe2cf; border-color: #501b18; background: linear-gradient(150deg, rgba(97,28,24,.96), rgba(31,14,14,.96)); cursor: not-allowed; }
 .queue-slot.enemy .owner { color: #ff8f70; }
-.queue-slot.player { border-color: #124944; background: linear-gradient(150deg, rgba(22,66,62,.96), rgba(10,25,25,.96)); }
+.queue-slot.player {
+  overflow: visible;
+  border-color: #16766f;
+  background: rgba(10, 25, 25, .18);
+  clip-path: none;
+  touch-action: none;
+}
+.queue-slot.player:nth-of-type(even) { transform: none; }
+.queue-slot.player.missing { border-color: var(--red); }
 .queue-slot.selected { box-shadow: 0 0 0 5px var(--amber), 7px 7px 0 #000; }
 .queue-slot.active { animation: active-slot .52s steps(2, end) infinite; }
 .queue-slot.drop-valid { box-shadow: 0 0 0 7px var(--teal), 7px 7px 0 #000; }
 .queue-slot.drop-invalid { box-shadow: 0 0 0 7px var(--red), 7px 7px 0 #000; }
-.queue-actions { display: flex; gap: 5px; margin-top: auto; }
-.queue-actions button { flex: 1; min-width: 0; padding: 2px 1px; background: #d8cfb5; font-size: 12px; box-shadow: 2px 2px #000; }
+.remove-card {
+  position: absolute;
+  z-index: 5;
+  right: 5px;
+  bottom: 5px;
+  padding: 3px 5px;
+  background: #d8cfb5;
+  font-size: 11px;
+  box-shadow: 2px 2px #000;
+}
+.missing-target {
+  position: absolute;
+  z-index: 4;
+  left: 4px;
+  bottom: 5px;
+  max-width: 50px;
+  color: #ff9d85;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: .9;
+  text-align: center;
+}
+.queue-dot-layer {
+  position: absolute;
+  z-index: 6;
+  left: calc(50% - 41px);
+  top: 4px;
+  width: 82px;
+  height: 115px;
+  pointer-events: none;
+}
 @keyframes active-slot { 50% { box-shadow: 0 0 0 7px var(--amber), 6px 6px 0 #000; } }
 
 .piles {
@@ -366,10 +404,36 @@ canvas#arena { display: block; background: #18201e; }
   touch-action: none;
   pointer-events: auto;
 }
-.hand-hit:hover, .hand-hit.selected { z-index: 4; }
+.hand-hit:hover, .hand-hit.selected {
+  z-index: 4;
+  left: var(--raised-x);
+  top: 742px;
+  width: 220px;
+  height: 308px;
+  transform: none;
+}
 .hand-hit.selected { outline: 6px solid var(--amber); outline-offset: 4px; }
 .hand-hit:active { cursor: grabbing; }
-.hand-hit:disabled { pointer-events: none; opacity: 1; }
+.target-dot {
+  position: absolute;
+  z-index: 8;
+  left: var(--dot-x);
+  top: var(--dot-y);
+  width: 30px;
+  height: 30px;
+  margin: -15px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+/* Keep the dot clickable across the card's hover lift, including a first tap. */
+.hand-hit > .target-dot { height: 74px; margin-top: -37px; }
+.target-dot:hover { outline: 2px dashed rgba(255, 247, 213, .72); outline-offset: -2px; }
+.target-dot:disabled { pointer-events: none; opacity: 1; }
 .target-arrow {
   position: absolute;
   z-index: 30;

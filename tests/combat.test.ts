@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { availableEnergy, createCombat, moveCard, queueCard, removeCard, resolveTurn } from '../src/game/combat';
+import { availableEnergy, createCombat, moveCard, queueCard, removeCard, resolveTurn, retargetCard } from '../src/game/combat';
 import type { CardInstance, CombatState } from '../src/game/types';
 
 function card(state: CombatState, definitionId: string): CardInstance {
@@ -19,6 +19,9 @@ describe('battle planning boundaries', () => {
     const before = structuredClone(state);
     expect(queueCard(state, hammer.uid, 'guard', 3).ok).toBe(false);
     expect(state).toEqual(before);
+    const queueWithoutSlot = queueCard as (state: CombatState, uid: string, target: 'guard') => { ok: boolean };
+    expect(queueWithoutSlot(state, hammer.uid, 'guard').ok).toBe(false);
+    expect(state).toEqual(before);
     expect(queueCard(state, hammer.uid, 'guard', 0).ok).toBe(true);
     const planned = structuredClone(state);
     expect(moveCard(state, 0, 3).ok).toBe(false);
@@ -30,16 +33,54 @@ describe('battle planning boundaries', () => {
 
   test('banked future energy cannot fund the current plan and removing a card frees its reservation', () => {
     const state = createCombat(12);
-    expect(queueCard(state, card(state, 'coffee').uid, 'bob').ok).toBe(true);
-    expect(queueCard(state, card(state, 'heavy').uid, 'guard').ok).toBe(true);
+    expect(queueCard(state, card(state, 'coffee').uid, 'bob', 0).ok).toBe(true);
+    expect(queueCard(state, card(state, 'heavy').uid, 'guard', 1).ok).toBe(true);
     expect(availableEnergy(state)).toBe(0);
     const hammer = card(state, 'hammer');
     const before = structuredClone(state);
-    expect(queueCard(state, hammer.uid, 'guard').ok).toBe(false);
+    expect(queueCard(state, hammer.uid, 'guard', 2).ok).toBe(false);
     expect(state).toEqual(before);
     expect(removeCard(state, 1).ok).toBe(true);
     expect(availableEnergy(state)).toBe(2);
-    expect(queueCard(state, hammer.uid, 'guard').ok).toBe(true);
+    expect(queueCard(state, hammer.uid, 'guard', 1).ok).toBe(true);
+  });
+
+  test('an unresolved attack reserves energy but blocks resolution until assigned', () => {
+    const state = createCombat(12);
+    expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
+    expect(availableEnergy(state)).toBe(1);
+    const unresolved = structuredClone(state);
+    expect(() => resolveTurn(state)).toThrow();
+    expect(state).toEqual(unresolved);
+    expect(retargetCard(state, 0, 'guard').ok).toBe(true);
+    expect(finish(state).actors.guard.hp).toBe(42);
+  });
+
+  test('moving and swapping preserve targets, and removing an unresolved card refunds its reservation', () => {
+    const state = createCombat(12);
+    expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
+    expect(queueCard(state, card(state, 'coffee').uid, null, 1).ok).toBe(true);
+    expect(state.queue[1]).toMatchObject({ kind: 'player', target: 'bob' });
+    expect(moveCard(state, 0, 1).ok).toBe(true);
+    expect(state.queue[1]).toMatchObject({ kind: 'player', target: null });
+    expect(state.queue[0]).toMatchObject({ kind: 'player', target: 'bob' });
+    expect(removeCard(state, 1).ok).toBe(true);
+    expect(availableEnergy(state)).toBe(2);
+  });
+
+  test('dead and wrong targets are rejected without changing the plan', () => {
+    const state = createCombat(12);
+    expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
+    const beforeWrongTarget = structuredClone(state);
+    expect(retargetCard(state, 0, 'bob').ok).toBe(false);
+    expect(state).toEqual(beforeWrongTarget);
+    expect(retargetCard(state, 0, 'guard').ok).toBe(true);
+    state.actors.guard.hp = 0;
+    const beforeDeadTarget = structuredClone(state);
+    expect(retargetCard(state, 0, 'guard').ok).toBe(false);
+    expect(state).toEqual(beforeDeadTarget);
+    expect(() => resolveTurn(state)).toThrow();
+    expect(state).toEqual(beforeDeadTarget);
   });
 
   test('resolution does not subtract committed energy twice', () => {

@@ -26,7 +26,7 @@ export interface Actor {
   energyGain: number;
   drawCount: number;
 }
-export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId }
+export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId | null }
 export interface EnemyAction { kind: 'enemy'; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[] }
 export type QueueSlot = PlayerAction | EnemyAction | null;
 export interface CombatState {
