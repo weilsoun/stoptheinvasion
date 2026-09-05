@@ -1,11 +1,28 @@
 import { describe, expect, test } from 'bun:test';
-import { availableEnergy, createCombat, moveCard, queueCard, removeCard, resolveTurn, retargetCard } from '../src/game/combat';
+import {
+  attachModifier,
+  availableEnergy,
+  canAttachModifier,
+  createCombat,
+  damageModifier,
+  moveCard,
+  previewPlacement,
+  queueCard,
+  removeCard,
+  removeModifier,
+  resolveTurn,
+  retargetCard,
+} from '../src/game/combat';
 import type { CardInstance, CombatState } from '../src/game/types';
 
 function card(state: CombatState, definitionId: string): CardInstance {
-  const found = state.hand.find(candidate => candidate.definitionId === definitionId);
-  if (!found) throw new Error(`Missing ${definitionId} in opening hand`);
-  return found;
+  const inHand = state.hand.find(candidate => candidate.definitionId === definitionId);
+  if (inHand) return inHand;
+  const drawIndex = state.drawPile.findIndex(candidate => candidate.definitionId === definitionId);
+  if (drawIndex < 0) throw new Error(`Missing ${definitionId} in combat deck`);
+  const [drawn] = state.drawPile.splice(drawIndex, 1);
+  state.hand.push(drawn);
+  return drawn;
 }
 function finish(state: CombatState): CombatState {
   const steps = resolveTurn(state);
@@ -56,7 +73,7 @@ describe('battle planning boundaries', () => {
     expect(finish(state).actors.guard.hp).toBe(42);
   });
 
-  test('moving and swapping preserve targets, and removing an unresolved card refunds its reservation', () => {
+  test('moving through an occupied slot preserves targets, and removing an unresolved card refunds its reservation', () => {
     const state = createCombat(12);
     expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
     expect(queueCard(state, card(state, 'coffee').uid, null, 1).ok).toBe(true);
@@ -66,6 +83,127 @@ describe('battle planning boundaries', () => {
     expect(state.queue[0]).toMatchObject({ kind: 'player', target: 'bob' });
     expect(removeCard(state, 1).ok).toBe(true);
     expect(availableEnergy(state)).toBe(2);
+  });
+
+  test('occupied moves rotate every player card while gaps and the enemy anchor stay fixed', () => {
+    const state = createCombat(12);
+    state.actors.bob.energy = 10;
+    const hammer = card(state, 'hammer');
+    const vest = card(state, 'vest');
+    const tape = card(state, 'tape');
+    const coffee = card(state, 'coffee');
+    const enemy = state.queue[3];
+    queueCard(state, hammer.uid, null, 0);
+    queueCard(state, vest.uid, 'bob', 2);
+    queueCard(state, tape.uid, 'guard', 4);
+    queueCard(state, coffee.uid, 'bob', 5);
+    const energy = availableEnergy(state);
+
+    expect(moveCard(state, 0, 5).ok).toBe(true);
+    expect(state.queue.map(slot => slot?.kind === 'player' ? slot.card.uid : slot?.kind ?? null))
+      .toEqual([vest.uid, null, tape.uid, 'enemy', coffee.uid, hammer.uid]);
+    expect(state.queue.map(slot => slot?.kind === 'player' ? slot.target : null))
+      .toEqual(['bob', null, 'guard', null, 'bob', null]);
+    expect(state.queue[3]).toBe(enemy);
+    expect(availableEnergy(state)).toBe(energy);
+    expect(moveCard(state, 5, 0).ok).toBe(true);
+    expect(state.queue.map(slot => slot?.kind === 'player' ? slot.card.uid : slot?.kind ?? null))
+      .toEqual([hammer.uid, null, vest.uid, 'enemy', tape.uid, coffee.uid]);
+  });
+
+  test('hand insertion shifts toward the nearest hole and breaks equal-distance ties later', () => {
+    const tied = createCombat(12);
+    tied.actors.bob.energy = 10;
+    const tiedHammer = card(tied, 'hammer');
+    const tiedVest = card(tied, 'vest');
+    queueCard(tied, tiedHammer.uid, 'guard', 2);
+    expect(queueCard(tied, tiedVest.uid, 'bob', 2).ok).toBe(true);
+    expect(tied.queue[1]).toBeNull();
+    expect(tied.queue[2]).toMatchObject({ kind: 'player', card: { uid: tiedVest.uid } });
+    expect(tied.queue[4]).toMatchObject({ kind: 'player', card: { uid: tiedHammer.uid } });
+
+    const nearest = createCombat(12);
+    nearest.actors.bob.energy = 10;
+    const hammer = card(nearest, 'hammer');
+    const vest = card(nearest, 'vest');
+    const tape = card(nearest, 'tape');
+    const coffee = card(nearest, 'coffee');
+    queueCard(nearest, hammer.uid, 'guard', 0);
+    queueCard(nearest, vest.uid, 'bob', 1);
+    queueCard(nearest, tape.uid, 'guard', 2);
+    expect(queueCard(nearest, coffee.uid, 'bob', 1).ok).toBe(true);
+    expect(nearest.queue.map(slot => slot?.kind === 'player' ? slot.card.uid : slot?.kind ?? null))
+      .toEqual([hammer.uid, coffee.uid, vest.uid, 'enemy', tape.uid, null]);
+  });
+
+  test('preview is nonmutating and exactly matches hand insertion and queued-card commits', () => {
+    const moved = createCombat(12);
+    moved.actors.bob.energy = 10;
+    const hammer = card(moved, 'hammer');
+    const vest = card(moved, 'vest');
+    const tape = card(moved, 'tape');
+    queueCard(moved, hammer.uid, null, 0);
+    queueCard(moved, vest.uid, 'bob', 1);
+    queueCard(moved, tape.uid, 'guard', 2);
+    const beforeMovePreview = structuredClone(moved);
+    const movePreview = previewPlacement(moved, hammer.uid, 'bob', 2);
+    expect(movePreview).not.toBeNull();
+    expect(moved).toEqual(beforeMovePreview);
+    expect(moveCard(moved, 0, 2).ok).toBe(true);
+    expect(moved.queue).toEqual(movePreview);
+    expect(moved.queue[2]).toMatchObject({ kind: 'player', target: null });
+
+    const inserted = createCombat(12);
+    inserted.actors.bob.energy = 10;
+    const insertedHammer = card(inserted, 'hammer');
+    const insertedVest = card(inserted, 'vest');
+    queueCard(inserted, insertedHammer.uid, 'guard', 0);
+    const beforeInsertPreview = structuredClone(inserted);
+    const insertPreview = previewPlacement(inserted, insertedVest.uid, null, 0);
+    expect(insertPreview).not.toBeNull();
+    expect(inserted).toEqual(beforeInsertPreview);
+    expect(queueCard(inserted, insertedVest.uid, null, 0).ok).toBe(true);
+    expect(inserted.queue).toEqual(insertPreview);
+  });
+
+  test('full, invalid, and unaffordable placements reject without changing state', () => {
+    const invalid = createCombat(12);
+    const invalidCard = card(invalid, 'hammer');
+    const beforeInvalid = structuredClone(invalid);
+    expect(previewPlacement(invalid, invalidCard.uid, 'bob', 0)).toBeNull();
+    expect(queueCard(invalid, invalidCard.uid, 'bob', 0).ok).toBe(false);
+    expect(invalid).toEqual(beforeInvalid);
+    expect(previewPlacement(invalid, invalidCard.uid, 'guard', -1)).toBeNull();
+    expect(queueCard(invalid, invalidCard.uid, 'guard', -1).ok).toBe(false);
+    expect(invalid).toEqual(beforeInvalid);
+
+    const unaffordable = createCombat(12);
+    unaffordable.actors.bob.energy = 0;
+    const costly = card(unaffordable, 'hammer');
+    const beforeUnaffordable = structuredClone(unaffordable);
+    expect(previewPlacement(unaffordable, costly.uid, 'guard', 0)).toBeNull();
+    expect(queueCard(unaffordable, costly.uid, 'guard', 0).ok).toBe(false);
+    expect(unaffordable).toEqual(beforeUnaffordable);
+
+    const full = createCombat(12);
+    full.actors.bob.energy = 10;
+    const plannedCards = [
+      [card(full, 'hammer'), 'guard'],
+      [card(full, 'vest'), 'bob'],
+      [card(full, 'coffee'), 'bob'],
+      [card(full, 'tape'), 'guard'],
+      [card(full, 'heavy'), 'guard'],
+    ] as const;
+    for (const [index, slot] of [0, 1, 2, 4, 5].entries()) {
+      const [next, target] = plannedCards[index];
+      expect(queueCard(full, next.uid, target, slot).ok).toBe(true);
+    }
+    const extra: CardInstance = { uid: 'extra-coffee', definitionId: 'coffee', owner: 'bob' };
+    full.hand.push(extra);
+    const beforeFull = structuredClone(full);
+    expect(previewPlacement(full, extra.uid, 'bob', 0)).toBeNull();
+    expect(queueCard(full, extra.uid, 'bob', 0).ok).toBe(false);
+    expect(full).toEqual(beforeFull);
   });
 
   test('dead and wrong targets are rejected without changing the plan', () => {
@@ -88,6 +226,142 @@ describe('battle planning boundaries', () => {
     queueCard(state, card(state, 'heavy').uid, 'guard', 0);
     const first = resolveTurn(state)[0].state;
     expect(availableEnergy(first)).toBe(0);
+  });
+});
+
+describe('attachments', () => {
+  test('enemy card binding uses the exact intent uid and damage reduction floors at zero', () => {
+    const state = createCombat(12);
+    state.actors.bob.energy = 3;
+    const intent = state.queue[3];
+    if (intent?.kind !== 'enemy') throw new Error('Expected the turn-one enemy intent');
+    const modifiers = [
+      card(state, 'weaken'),
+      { uid: 'weaken-test-2', definitionId: 'weaken', owner: 'bob' as const },
+      { uid: 'weaken-test-3', definitionId: 'weaken', owner: 'bob' as const },
+    ];
+    state.hand.push(...modifiers.slice(1));
+    const queueLength = state.queue.length;
+
+    for (const modifier of modifiers) {
+      expect(attachModifier(state, modifier.uid, { kind: 'card', uid: intent.uid }).ok).toBe(true);
+    }
+
+    expect(state.queue).toHaveLength(queueLength);
+    expect(damageModifier(state, intent.uid, 3)).toBe(-12);
+    expect(availableEnergy(state)).toBe(0);
+    const result = finish(state);
+    expect(result.actors.bob.hp).toBe(42);
+    expect(result.attachments).toEqual([]);
+  });
+
+  test('card binding follows a friendly card through queueing, reordering, and removal', () => {
+    const state = createCombat(12);
+    state.actors.bob.energy = 10;
+    const hammer = card(state, 'hammer');
+    const reinforce = card(state, 'reinforce');
+
+    expect(attachModifier(state, reinforce.uid, { kind: 'card', uid: hammer.uid }).ok).toBe(true);
+    expect(damageModifier(state, hammer.uid, null)).toBe(4);
+    expect(queueCard(state, hammer.uid, 'guard', 0).ok).toBe(true);
+    expect(moveCard(state, 0, 2).ok).toBe(true);
+    expect(damageModifier(state, hammer.uid, 2)).toBe(4);
+    expect(removeCard(state, 2).ok).toBe(true);
+    expect(state.attachments[0].target).toEqual({ kind: 'card', uid: hammer.uid });
+    expect(damageModifier(state, hammer.uid, null)).toBe(4);
+  });
+
+  test('position binding stays put and modifies the compatible card that moves into it', () => {
+    const state = createCombat(12);
+    state.actors.bob.energy = 10;
+    const reinforce = card(state, 'reinforce');
+    const firstHammer = card(state, 'hammer');
+
+    expect(attachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 }).ok).toBe(true);
+    expect(queueCard(state, firstHammer.uid, 'guard', 0).ok).toBe(true);
+    expect(moveCard(state, 0, 1).ok).toBe(true);
+    const secondHammer = card(state, 'hammer');
+    expect(queueCard(state, secondHammer.uid, 'guard', 0).ok).toBe(true);
+
+    expect(state.attachments[0].target).toEqual({ kind: 'slot', slot: 0 });
+    expect(damageModifier(state, firstHammer.uid, 1)).toBe(0);
+    expect(damageModifier(state, secondHammer.uid, 0)).toBe(4);
+    expect(finish(state).actors.guard.hp).toBe(32);
+  });
+
+  test('undo refunds reservation while invalid target, phase, energy, and queue requests are atomic', () => {
+    const state = createCombat(12);
+    const reinforce = card(state, 'reinforce');
+    const vest = card(state, 'vest');
+    const invalidTarget = { kind: 'card', uid: vest.uid } as const;
+    const beforeInvalid = structuredClone(state);
+
+    expect(canAttachModifier(state, reinforce.uid, invalidTarget)).toBe(false);
+    expect(attachModifier(state, reinforce.uid, invalidTarget).ok).toBe(false);
+    expect(queueCard(state, reinforce.uid, 'bob', 0).ok).toBe(false);
+    expect(state).toEqual(beforeInvalid);
+
+    state.actors.bob.energy = 0;
+    const beforeEnergy = structuredClone(state);
+    expect(canAttachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 })).toBe(false);
+    expect(attachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 }).ok).toBe(false);
+    expect(state).toEqual(beforeEnergy);
+
+    state.actors.bob.energy = 2;
+    state.phase = 'resolving';
+    const beforePhase = structuredClone(state);
+    expect(canAttachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 })).toBe(false);
+    expect(attachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 }).ok).toBe(false);
+    expect(state).toEqual(beforePhase);
+
+    state.phase = 'planning';
+    expect(attachModifier(state, reinforce.uid, { kind: 'slot', slot: 0 }).ok).toBe(true);
+    expect(availableEnergy(state)).toBe(1);
+    expect(removeModifier(state, reinforce.uid).ok).toBe(true);
+    expect(availableEnergy(state)).toBe(2);
+    expect(state.hand.some(candidate => candidate.uid === reinforce.uid)).toBe(true);
+  });
+
+  test('an unused attachment spends its cost and expires into discard without blocking Resolve', () => {
+    const state = createCombat(12);
+    const hammer = card(state, 'hammer');
+    const reinforce = card(state, 'reinforce');
+    expect(attachModifier(state, reinforce.uid, { kind: 'card', uid: hammer.uid }).ok).toBe(true);
+
+    const result = finish(state);
+    expect(result.phase).toBe('planning');
+    expect(result.actors.bob.energy).toBe(3);
+    expect(result.attachments).toEqual([]);
+    expect(result.discardPile.some(candidate => candidate.uid === reinforce.uid)).toBe(true);
+    expect(result.queue).toHaveLength(6);
+  });
+
+  test('resolution snapshots isolate attachment cards and targets and preflight broken bindings', () => {
+    const state = createCombat(12);
+    const hammer = card(state, 'hammer');
+    const reinforce = card(state, 'reinforce');
+    expect(attachModifier(state, reinforce.uid, { kind: 'card', uid: hammer.uid }).ok).toBe(true);
+    expect(queueCard(state, hammer.uid, 'guard', 0).ok).toBe(true);
+    const steps = resolveTurn(state);
+    const first = steps[0].state.attachments[0];
+    const second = steps[1].state.attachments[0];
+    if (first.target.kind !== 'card' || second.target.kind !== 'card') {
+      throw new Error('Expected card-bound attachment snapshots');
+    }
+    first.card.uid = 'mutated';
+    first.target.uid = 'mutated';
+    expect(second.card.uid).toBe(reinforce.uid);
+    expect(second.target.uid).toBe(hammer.uid);
+    expect(state.attachments[0].card.uid).toBe(reinforce.uid);
+
+    const broken = createCombat(12);
+    const brokenHammer = card(broken, 'hammer');
+    const brokenReinforce = card(broken, 'reinforce');
+    attachModifier(broken, brokenReinforce.uid, { kind: 'card', uid: brokenHammer.uid });
+    broken.hand = broken.hand.filter(candidate => candidate.uid !== brokenHammer.uid);
+    const before = structuredClone(broken);
+    expect(() => resolveTurn(broken)).toThrow('Attachment has an invalid card target.');
+    expect(broken).toEqual(before);
   });
 });
 

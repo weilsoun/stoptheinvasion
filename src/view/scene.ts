@@ -38,13 +38,17 @@ type CardRig = {
   surface: Entity;
   material: StandardMaterial;
   dots: CardDotRig[];
+  textureKey: string;
   visual: CardVisual;
+  layer: number;
   x: Spring;
   y: Spring;
   z: Spring;
   pitch: Spring;
   yaw: Spring;
   roll: Spring;
+  displayedWidth: number;
+  displayedHeight: number;
 };
 
 function worldX(designX: number): number {
@@ -59,6 +63,11 @@ function spring(current: Spring, target: number, dt: number, stiffness = 500, da
   current.velocity += (target - current.value) * stiffness * dt;
   current.velocity *= Math.exp(-damping * dt);
   current.value += current.velocity * dt;
+}
+
+function snap(current: Spring, target: number): void {
+  current.value = target;
+  current.velocity = 0;
 }
 
 function textureFromCanvas(app: Application, source: HTMLCanvasElement, name: string): Texture {
@@ -196,7 +205,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     range: 11,
     castShadows: false,
   });
-  fill.setPosition(-5.2, -.25, 5.5);
+  fill.setPosition(5.2, -.25, 5.5);
   app.root.addChild(fill);
 
   const handLight = new Entity('Tabletop_Reading_Light', app);
@@ -219,7 +228,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const root = new Entity(actor === 'guard' ? 'Infected_Security_Guard' : 'Hardware_Worker_Bob', app);
     const surface = primitive(app, root, `${actor}_Illustrated_Surface`, 'box', [0, 0, 0], [3.2, 3.5, .09], material, true);
     surface.setLocalPosition(0, 0, 0);
-    const baseX = actor === 'guard' ? worldX(410) : worldX(1500);
+    const baseX = actor === 'bob' ? worldX(410) : worldX(1500);
     root.setPosition(baseX, worldY(400), .45);
     arenaRoot.addChild(root);
     actors.set(actor, { root, material, baseX, defeated: false, hit: 0, action: 0 });
@@ -232,16 +241,24 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
 
   const cardTextures = new Map<string, Texture>();
   const cards = new Map<string, CardRig>();
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let pointerX = DESIGN_WIDTH / 2;
   let pointerY = DESIGN_HEIGHT / 2;
   let target: ActorId | null = null;
   let destroyed = false;
 
-  function getCardTexture(visual: CardVisual): Texture {
-    const key = visual.definition.id;
+  function cardTextureKey(visual: CardVisual): string {
+    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}`;
+  }
+
+  function getCardTexture(visual: CardVisual, key = cardTextureKey(visual)): Texture {
     let texture = cardTextures.get(key);
     if (!texture) {
-      texture = textureFromCanvas(app, drawCardArt(visual.definition), `Card ${visual.definition.name}`);
+      texture = textureFromCanvas(
+        app,
+        drawCardArt(visual.definition, visual.locked, visual.damageModifier),
+        `${visual.locked ? 'Locked intent' : 'Card'} ${visual.definition.name}`,
+      );
       cardTextures.set(key, texture);
     }
     return texture;
@@ -262,11 +279,12 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   }
 
   function syncCardDots(rig: CardRig): void {
-    const targetsChanged = rig.dots.length !== rig.visual.targets.length
-      || rig.dots.some((dot, index) => dot.actor !== rig.visual.targets[index]);
+    const targets = rig.visual.locked ? [] : rig.visual.targets;
+    const targetsChanged = rig.dots.length !== targets.length
+      || rig.dots.some((dot, index) => dot.actor !== targets[index]);
     if (targetsChanged) {
       for (const dot of rig.dots) dot.root.destroy();
-      rig.dots = rig.visual.targets.map((actor) => {
+      rig.dots = targets.map((actor) => {
         const root = new Entity(`Target_Dot_${actor}`, app);
         rig.root.addChild(root);
         const ring = primitive(app, root, 'Target_Ring', 'cylinder', [0, 0, 0], [1, 1, 1], targetDimMaterial);
@@ -287,8 +305,9 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   }
 
 
-  function makeCard(visual: CardVisual): CardRig {
-    const material = texturedMaterial(getCardTexture(visual), false, .025);
+  function makeCard(visual: CardVisual, layer: number): CardRig {
+    const textureKey = cardTextureKey(visual);
+    const material = texturedMaterial(getCardTexture(visual, textureKey), false, .025);
     material.blendType = BLEND_NORMAL;
     material.depthWrite = true;
     material.specular = new Color(.16, .14, .1);
@@ -300,24 +319,49 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const surface = primitive(app, root, 'Printed_Lit_Card', 'box', [0, 0, 0], [visual.width / WORLD_SCALE, visual.height / WORLD_SCALE, .055], material, true);
     const x = worldX(visual.x + visual.width / 2);
     const y = worldY(visual.y + visual.height / 2);
-    root.setPosition(x, y, 2.5);
-    root.setEulerAngles(0, 0, -visual.rotation);
+    const straight = visual.dragged || visual.queued;
+    root.setPosition(x, y, visual.dragged ? 4 : 2.5 + layer * .002);
+    root.setEulerAngles(0, 0, straight ? 0 : -visual.rotation);
     app.root.addChild(root);
     const rig: CardRig = {
       root,
       surface,
       material,
       dots: [],
+      textureKey,
       visual,
+      layer,
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
-      z: { value: 2.5, velocity: 0 },
+      z: { value: visual.dragged ? 4 : 2.5 + layer * .002, velocity: 0 },
       pitch: { value: 0, velocity: 0 },
       yaw: { value: 0, velocity: 0 },
-      roll: { value: -visual.rotation, velocity: 0 },
+      roll: { value: straight ? 0 : -visual.rotation, velocity: 0 },
+      displayedWidth: visual.width,
+      displayedHeight: visual.height,
     };
     syncCardDots(rig);
     return rig;
+  }
+
+  function positionCard(rig: CardRig, dt: number, immediate: boolean): void {
+    const visual = rig.visual;
+    const cx = visual.x + visual.width / 2;
+    const cy = visual.y + visual.height / 2;
+    const handTilt = visual.hovered && !visual.queued && !visual.dragged;
+    const advance = immediate ? snap : spring;
+    const rotate = visual.queued ? snap : advance;
+    advance(rig.x, worldX(cx), dt);
+    advance(rig.y, worldY(cy), dt);
+    advance(rig.z, visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0), dt);
+    rotate(rig.pitch, handTilt ? Math.max(-8, Math.min(8, (cy - pointerY) / Math.max(visual.height, 1) * 13)) : 0, dt);
+    rotate(rig.yaw, handTilt ? Math.max(-10, Math.min(10, (pointerX - cx) / Math.max(visual.width, 1) * 16)) : 0, dt);
+    rotate(rig.roll, visual.dragged || visual.queued ? 0 : -visual.rotation, dt);
+    rig.root.setPosition(rig.x.value, rig.y.value, rig.z.value);
+    rig.root.setEulerAngles(rig.pitch.value, rig.yaw.value, rig.roll.value);
+    rig.surface.setLocalScale(visual.width / WORLD_SCALE, visual.height / WORLD_SCALE, .055);
+    rig.displayedWidth = visual.width;
+    rig.displayedHeight = visual.height;
   }
 
   function applyActorAppearance(actor: ActorId): void {
@@ -352,30 +396,14 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       rig.action = Math.max(0, rig.action - dt);
       const actionPhase = rig.action > 0 ? Math.sin((rig.action / .26) * Math.PI) : 0;
       const hitShake = rig.hit > 0 ? Math.sin(rig.hit * 92) * rig.hit * .32 : 0;
-      const direction = actor === 'guard' ? 1 : -1;
+      const direction = actor === 'bob' ? 1 : -1;
       rig.root.setLocalPosition(rig.baseX + actionPhase * direction * .28 + hitShake, worldY(400) + Math.abs(hitShake) * .15, .45);
       rig.root.setLocalEulerAngles(0, 0, rig.defeated ? direction * 9 : hitShake * 8);
       if (hadHit && rig.hit === 0) applyActorAppearance(actor);
     }
 
     for (const rig of cards.values()) {
-      const visual = rig.visual;
-      const cx = visual.x + visual.width / 2;
-      const cy = visual.y + visual.height / 2;
-      const hover = visual.hovered ? 1 : 0;
-      spring(rig.x, worldX(cx), dt);
-      spring(rig.y, worldY(cy), dt);
-      spring(rig.z, 2.5 + hover * .55 + (visual.queued ? .08 : 0), dt);
-      spring(rig.pitch, visual.hovered ? Math.max(-8, Math.min(8, (cy - pointerY) / Math.max(visual.height, 1) * 13)) : 0, dt);
-      spring(rig.yaw, visual.hovered ? Math.max(-10, Math.min(10, (pointerX - cx) / Math.max(visual.width, 1) * 16)) : 0, dt);
-      spring(rig.roll, -visual.rotation, dt);
-      rig.root.setPosition(rig.x.value, rig.y.value, rig.z.value);
-      rig.root.setEulerAngles(rig.pitch.value, rig.yaw.value, rig.roll.value);
-      rig.surface.setLocalScale(
-        visual.width / WORLD_SCALE,
-        visual.height / WORLD_SCALE,
-        .055,
-      );
+      positionCard(rig, dt, rig.visual.dragged || reduceMotion.matches);
     }
   }
 
@@ -405,21 +433,38 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
         rig.material.destroy();
         cards.delete(uid);
       }
-      for (const visual of visuals) {
+      for (let layer = 0; layer < visuals.length; layer++) {
+        const visual = visuals[layer];
         let rig = cards.get(visual.uid);
         const appearanceChanged = !rig || rig.visual.dimmed !== visual.dimmed;
         if (!rig) {
-          rig = makeCard(visual);
+          rig = makeCard(visual, layer);
           cards.set(visual.uid, rig);
         } else {
+          const textureKey = cardTextureKey(visual);
+          if (rig.textureKey !== textureKey) {
+            const texture = getCardTexture(visual, textureKey);
+            rig.material.diffuseMap = texture;
+            rig.material.emissiveMap = texture;
+            rig.textureKey = textureKey;
+            rig.material.update();
+          }
           rig.visual = visual;
+          rig.layer = layer;
           syncCardDots(rig);
+          if (visual.queued) {
+            snap(rig.pitch, 0);
+            snap(rig.yaw, 0);
+            snap(rig.roll, 0);
+            rig.root.setEulerAngles(0, 0, 0);
+          }
         }
         if (appearanceChanged) {
           rig.material.diffuse = visual.dimmed ? new Color(.32, .36, .36) : new Color(1, 1, 1);
           rig.material.opacity = visual.dimmed ? .62 : 1;
           rig.material.update();
         }
+        if (visual.dragged || reduceMotion.matches) positionCard(rig, 0, true);
       }
     },
 
@@ -444,6 +489,20 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       target = nextTarget;
       if (previous) applyActorAppearance(previous);
       if (target) applyActorAppearance(target);
+    },
+
+    getCardPose(uid) {
+      const rig = cards.get(uid);
+      if (!rig || destroyed) return null;
+      const centerX = rig.x.value * WORLD_SCALE + DESIGN_WIDTH / 2;
+      const centerY = DESIGN_HEIGHT / 2 - rig.y.value * WORLD_SCALE;
+      return {
+        x: centerX - rig.displayedWidth / 2,
+        y: centerY - rig.displayedHeight / 2,
+        width: rig.displayedWidth,
+        height: rig.displayedHeight,
+        rotation: -rig.roll.value,
+      };
     },
 
     playEvent(event: CombatEvent): void {

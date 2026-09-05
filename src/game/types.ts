@@ -12,6 +12,7 @@ export interface CardDefinition {
   icon: 'hammer' | 'shield' | 'tape' | 'coffee' | 'toolbox' | 'boot';
   effects: Effect[];
   retain?: boolean;
+  modifier?: { damage: number };
 }
 export interface CardInstance { uid: string; definitionId: string; owner: ActorId }
 export interface Actor {
@@ -27,8 +28,10 @@ export interface Actor {
   drawCount: number;
 }
 export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId | null }
-export interface EnemyAction { kind: 'enemy'; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[] }
+export interface EnemyAction { kind: 'enemy'; uid: string; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[] }
 export type QueueSlot = PlayerAction | EnemyAction | null;
+export type ModifierTarget = { kind: 'card'; uid: string } | { kind: 'slot'; slot: number };
+export interface Attachment { card: CardInstance; target: ModifierTarget }
 export interface CombatState {
   seed: number;
   turn: number;
@@ -38,6 +41,7 @@ export interface CombatState {
   drawPile: CardInstance[];
   discardPile: CardInstance[];
   queue: QueueSlot[];
+  attachments: Attachment[];
   activeSlot: number | null;
   log: string[];
 }

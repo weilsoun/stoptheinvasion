@@ -16,6 +16,9 @@ export interface CardVisual {
   hovered: boolean;
   dimmed: boolean;
   queued: boolean;
+  dragged: boolean;
+  locked: boolean;
+  damageModifier: number;
   target: ActorId | null;
   targets: ActorId[];
 }
@@ -24,6 +27,7 @@ export interface ScenePort {
   setState(state: CombatState): void;
   setPointer(x: number, y: number): void;
   setTarget(target: ActorId | null): void;
+  getCardPose(uid: string): Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'> | null;
   playEvent(event: CombatEvent): void;
   destroy(): void;
 }

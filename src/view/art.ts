@@ -137,7 +137,7 @@ export function drawArenaArt(): HTMLCanvasElement {
 
   // Acidic infection trail points toward the guard.
   ctx.fillStyle = 'rgba(112,211,45,.34)';
-  for (const [x, y, rx, ry] of [[325, 610, 92, 18], [230, 656, 44, 12], [470, 672, 28, 10]] as const) ellipse(ctx, x, y, rx, ry, ctx.fillStyle as string, '#25411d', 5);
+  for (const [x, y, rx, ry] of [[325, 610, 92, 18], [230, 656, 44, 12], [470, 672, 28, 10]] as const) ellipse(ctx, 1920 - x, y, rx, ry, ctx.fillStyle as string, '#25411d', 5);
 
   // Foreground safety tape is an intentional lower-frame accent behind cards.
   ctx.save();
@@ -175,7 +175,11 @@ function drawGuard(ctx: CanvasRenderingContext2D): void {
   ctx.font = '900 25px Impact, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = '#18282b';
-  ctx.fillText('SECURITY', 316, 401);
+  ctx.save();
+  ctx.translate(316, 401);
+  ctx.scale(-1, 1);
+  ctx.fillText('SECURITY', 0, 0);
+  ctx.restore();
   // Radio antenna and dangling receipt roll.
   line(ctx, [181, 350, 143, 270], '#0b1417', 13);
   ellipse(ctx, 143, 263, 15, 15, '#a7dd31');
@@ -219,6 +223,8 @@ function drawBob(ctx: CanvasRenderingContext2D): void {
 
 export function drawActorArt(actor: ActorId): HTMLCanvasElement {
   const [surface, ctx] = canvas(640, 720);
+  ctx.translate(640, 0);
+  ctx.scale(-1, 1);
   if (actor === 'guard') drawGuard(ctx);
   else drawBob(ctx);
   return surface;
@@ -271,19 +277,31 @@ function drawIcon(ctx: CanvasRenderingContext2D, icon: CardDefinition['icon']): 
   ctx.restore();
 }
 
-export function drawCardArt(card: CardDefinition): HTMLCanvasElement {
+function outgoingDamage(card: CardDefinition, modifier = 0): number {
+  let damage = 0;
+  for (const effect of card.effects) {
+    if (effect.kind === 'damage') damage += Math.max(0, effect.amount + modifier);
+  }
+  return damage;
+}
+
+export function drawCardArt(card: CardDefinition, locked: boolean, damageModifier: number): HTMLCanvasElement {
   const [surface, ctx] = canvas(512, 768);
-  const palette = card.type === 'attack'
-    ? { accent: '#d85a2b', dark: '#3a1715', glow: '#ff9a45' }
-    : card.type === 'skill'
-      ? { accent: '#2e9388', dark: '#0c3435', glow: '#79d7b2' }
-      : { accent: '#927032', dark: '#332816', glow: '#eed36f' };
+  const palette = locked
+    ? { accent: '#b51f2e', dark: '#26090d', glow: '#ff625c' }
+    : card.type === 'attack'
+      ? { accent: '#d85a2b', dark: '#3a1715', glow: '#ff9a45' }
+      : card.type === 'skill'
+        ? { accent: '#2e9388', dark: '#0c3435', glow: '#79d7b2' }
+        : { accent: '#927032', dark: '#332816', glow: '#eed36f' };
+  const baseDamage = outgoingDamage(card);
+  const effectiveDamage = outgoingDamage(card, damageModifier);
   ctx.fillStyle = '#080f11';
   ctx.fillRect(0, 0, 512, 768);
   polygon(ctx, [18, 18, 494, 18, 494, 750, 18, 750], PAPER, '#03090a', 18);
   const wash = ctx.createLinearGradient(0, 0, 512, 768);
   wash.addColorStop(0, palette.accent);
-  wash.addColorStop(.42, '#ead39f');
+  wash.addColorStop(.42, locked ? '#c66a61' : '#ead39f');
   wash.addColorStop(1, palette.dark);
   ctx.fillStyle = wash;
   ctx.fillRect(34, 34, 444, 700);
@@ -293,40 +311,80 @@ export function drawCardArt(card: CardDefinition): HTMLCanvasElement {
   ctx.textBaseline = 'middle';
   ctx.font = '900 37px Impact, Haettenschweiler, sans-serif';
   ctx.fillStyle = palette.dark;
-  wrapText(ctx, card.name.toUpperCase(), 256, 82, 330, 37, 2);
-  ellipse(ctx, 73, 91, 50, 50, palette.glow, INK, 12);
-  ctx.font = '900 50px Impact, sans-serif';
-  ctx.fillStyle = INK;
-  ctx.fillText(String(card.cost), 73, 95);
-  polygon(ctx, [58, 170, 454, 170, 468, 438, 44, 438], '#193638', INK, 12);
+  wrapText(ctx, card.name.toUpperCase(), 256, 82, locked ? 390 : 330, 37, 2);
+  if (!locked) {
+    ellipse(ctx, 73, 91, 50, 50, palette.glow, INK, 12);
+    ctx.font = '900 50px Impact, sans-serif';
+    ctx.fillStyle = INK;
+    ctx.fillText(String(card.cost), 73, 95);
+  }
+  polygon(ctx, [58, 170, 454, 170, 468, 438, 44, 438], locked ? '#3b0c13' : '#193638', INK, 12);
   ctx.save();
   ctx.beginPath();
   ctx.rect(54, 180, 404, 248);
   ctx.clip();
   drawIcon(ctx, card.icon);
   ctx.restore();
-  ctx.font = '900 22px Arial, sans-serif';
+  ctx.font = `900 ${card.modifier ? 18 : 22}px Arial, sans-serif`;
   ctx.fillStyle = '#f4deaa';
-  ctx.fillText(card.type.toUpperCase(), 256, 462);
+  ctx.fillText(card.modifier ? 'ATTACHMENT • NO TIMELINE SLOT' : locked ? 'LOCKED • ENEMY INTENT' : card.type.toUpperCase(), 256, 462);
   polygon(ctx, [53, 480, 459, 480, 449, 602, 63, 602], '#f4e4bd', INK, 10);
   ctx.textBaseline = 'top';
-  ctx.font = '700 24px Arial, sans-serif';
   ctx.fillStyle = '#132527';
-  wrapText(ctx, card.description, 256, 502, 342, 31, 3);
+  if (card.modifier) {
+    const modifier = card.modifier.damage;
+    ctx.font = '900 29px Impact, Haettenschweiler, sans-serif';
+    ctx.fillStyle = modifier > 0 ? '#16654e' : '#a5202d';
+    ctx.fillText(`${modifier > 0 ? '+' : '−'}${Math.abs(modifier)} ATTACK DAMAGE`, 256, 493);
+    ctx.font = '900 15px Arial, sans-serif';
+    ctx.fillStyle = '#526062';
+    ctx.fillText(`ATTACH TO ${card.target === 'self' ? 'FRIENDLY' : 'ENEMY'} ATTACK`, 256, 534);
+    ctx.font = '700 19px Arial, sans-serif';
+    ctx.fillStyle = '#132527';
+    wrapText(ctx, card.description, 256, 558, 342, 24, 2);
+  } else if (damageModifier !== 0 && baseDamage > 0) {
+    ctx.font = '900 27px Impact, Haettenschweiler, sans-serif';
+    ctx.fillText(`ATTACK DAMAGE  ${baseDamage} → ${effectiveDamage}`, 256, 492);
+    ctx.font = '900 19px Arial, sans-serif';
+    ctx.fillStyle = damageModifier > 0 ? '#16654e' : '#a5202d';
+    ctx.fillText(`${damageModifier > 0 ? '+' : '−'}${Math.abs(damageModifier)} MODIFIER`, 256, 527);
+    ctx.font = '900 12px Arial, sans-serif';
+    ctx.fillStyle = '#526062';
+    ctx.fillText('BASE RULE', 256, 549);
+    ctx.font = '700 16px Arial, sans-serif';
+    ctx.fillStyle = '#132527';
+    wrapText(ctx, card.description, 256, 564, 342, 18, 2);
+  } else {
+    ctx.font = '700 24px Arial, sans-serif';
+    wrapText(ctx, card.description, 256, 502, 342, 31, 3);
+  }
   ctx.textBaseline = 'alphabetic';
   ctx.font = 'italic 600 18px Georgia, serif';
   ctx.fillStyle = '#f3d694';
   ctx.fillText(`“${card.flavor}”`, 256, 626, 400);
-  polygon(ctx, [52, 647, 460, 647, 450, 720, 62, 720], '#10292b', INK, 9);
-  ctx.font = '900 21px Arial, sans-serif';
-  ctx.fillStyle = palette.glow;
-  ctx.fillText(card.target === 'self' ? 'SELF' : 'TARGET', 112, 687);
-  ctx.strokeStyle = 'rgba(244,226,182,.42)';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(169, 661);
-  ctx.lineTo(169, 706);
-  ctx.stroke();
+  if (locked) {
+    ctx.save();
+    ctx.translate(256, 685);
+    ctx.rotate(-.035);
+    ctx.strokeStyle = '#ffaaa2';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(-176, -28, 352, 56);
+    ctx.font = '900 27px Impact, sans-serif';
+    ctx.fillStyle = '#ffaaa2';
+    ctx.fillText('LOCKED  //  INTENT', 0, 2);
+    ctx.restore();
+  } else {
+    polygon(ctx, [52, 647, 460, 647, 450, 720, 62, 720], '#10292b', INK, 9);
+    ctx.font = `900 ${card.modifier ? 16 : 21}px Arial, sans-serif`;
+    ctx.fillStyle = palette.glow;
+    ctx.fillText(card.modifier ? card.target === 'self' ? 'FRIENDLY' : 'ENEMY' : card.target === 'self' ? 'SELF' : 'TARGET', 112, 687);
+    ctx.strokeStyle = 'rgba(244,226,182,.42)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(169, 661);
+    ctx.lineTo(169, 706);
+    ctx.stroke();
+  }
   ctx.strokeStyle = palette.glow;
   ctx.lineWidth = 5;
   ctx.strokeRect(27, 27, 458, 714);
