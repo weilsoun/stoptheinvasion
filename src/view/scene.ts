@@ -55,8 +55,8 @@ function worldY(designY: number): number {
   return (DESIGN_HEIGHT / 2 - designY) / WORLD_SCALE;
 }
 
-function spring(current: Spring, target: number, dt: number, frequency = 24, damping = 9): void {
-  current.velocity += (target - current.value) * frequency * dt;
+function spring(current: Spring, target: number, dt: number, stiffness = 500, damping = 30): void {
+  current.velocity += (target - current.value) * stiffness * dt;
   current.velocity *= Math.exp(-damping * dt);
   current.value += current.velocity * dt;
 }
