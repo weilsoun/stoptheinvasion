@@ -62,24 +62,22 @@ describe('battle planning boundaries', () => {
     expect(queueCard(state, hammer.uid, 'guard', 1).ok).toBe(true);
   });
 
-  test('an unresolved attack reserves energy but blocks resolution until assigned', () => {
+  test('obvious attack and self targets resolve without a targeting step', () => {
     const state = createCombat(12);
     expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
-    expect(availableEnergy(state)).toBe(1);
-    const unresolved = structuredClone(state);
-    expect(() => resolveTurn(state)).toThrow();
-    expect(state).toEqual(unresolved);
-    expect(retargetCard(state, 0, 'guard').ok).toBe(true);
-    expect(finish(state).actors.guard.hp).toBe(42);
+    expect(queueCard(state, card(state, 'vest').uid, null, 1).ok).toBe(true);
+    const result = finish(state);
+    expect(result.actors.guard.hp).toBe(42);
+    expect(result.actors.bob.hp).toBe(41);
   });
 
-  test('moving through an occupied slot preserves targets, and removing an unresolved card refunds its reservation', () => {
+  test('moving through an occupied slot preserves targets, and removal refunds its reservation', () => {
     const state = createCombat(12);
     expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
     expect(queueCard(state, card(state, 'coffee').uid, null, 1).ok).toBe(true);
     expect(state.queue[1]).toMatchObject({ kind: 'player', target: 'bob' });
     expect(moveCard(state, 0, 1).ok).toBe(true);
-    expect(state.queue[1]).toMatchObject({ kind: 'player', target: null });
+    expect(state.queue[1]).toMatchObject({ kind: 'player', target: 'guard' });
     expect(state.queue[0]).toMatchObject({ kind: 'player', target: 'bob' });
     expect(removeCard(state, 1).ok).toBe(true);
     expect(availableEnergy(state)).toBe(2);
@@ -103,7 +101,7 @@ describe('battle planning boundaries', () => {
     expect(state.queue.map(slot => slot?.kind === 'player' ? slot.card.uid : slot?.kind ?? null))
       .toEqual([vest.uid, null, tape.uid, 'enemy', coffee.uid, hammer.uid]);
     expect(state.queue.map(slot => slot?.kind === 'player' ? slot.target : null))
-      .toEqual(['bob', null, 'guard', null, 'bob', null]);
+      .toEqual(['bob', null, 'guard', null, 'bob', 'guard']);
     expect(state.queue[3]).toBe(enemy);
     expect(availableEnergy(state)).toBe(energy);
     expect(moveCard(state, 5, 0).ok).toBe(true);
@@ -151,7 +149,7 @@ describe('battle planning boundaries', () => {
     expect(moved).toEqual(beforeMovePreview);
     expect(moveCard(moved, 0, 2).ok).toBe(true);
     expect(moved.queue).toEqual(movePreview);
-    expect(moved.queue[2]).toMatchObject({ kind: 'player', target: null });
+    expect(moved.queue[2]).toMatchObject({ kind: 'player', target: 'guard' });
 
     const inserted = createCombat(12);
     inserted.actors.bob.energy = 10;
@@ -217,8 +215,12 @@ describe('battle planning boundaries', () => {
     const beforeDeadTarget = structuredClone(state);
     expect(retargetCard(state, 0, 'guard').ok).toBe(false);
     expect(state).toEqual(beforeDeadTarget);
+    const nextAttack = card(state, 'heavy');
+    const beforeAutomaticTarget = structuredClone(state);
+    expect(queueCard(state, nextAttack.uid, null, 1).ok).toBe(false);
+    expect(state).toEqual(beforeAutomaticTarget);
     expect(() => resolveTurn(state)).toThrow();
-    expect(state).toEqual(beforeDeadTarget);
+    expect(state).toEqual(beforeAutomaticTarget);
   });
 
   test('resolution does not subtract committed energy twice', () => {

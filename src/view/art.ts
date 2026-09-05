@@ -285,7 +285,7 @@ function outgoingDamage(card: CardDefinition, modifier = 0): number {
   return damage;
 }
 
-export function drawCardArt(card: CardDefinition, locked: boolean, damageModifier: number): HTMLCanvasElement {
+export function drawCardArt(card: CardDefinition, locked: boolean, damageModifier: number, showTargets: boolean): HTMLCanvasElement {
   const [surface, ctx] = canvas(512, 768);
   const palette = locked
     ? { accent: '#b51f2e', dark: '#26090d', glow: '#ff625c' }
@@ -296,9 +296,18 @@ export function drawCardArt(card: CardDefinition, locked: boolean, damageModifie
         : { accent: '#927032', dark: '#332816', glow: '#eed36f' };
   const baseDamage = outgoingDamage(card);
   const effectiveDamage = outgoingDamage(card, damageModifier);
+  ctx.beginPath();
+  ctx.roundRect(0, 0, 512, 768, 36);
+  ctx.clip();
   ctx.fillStyle = '#080f11';
   ctx.fillRect(0, 0, 512, 768);
-  polygon(ctx, [18, 18, 494, 18, 494, 750, 18, 750], PAPER, '#03090a', 18);
+  ctx.fillStyle = PAPER;
+  ctx.strokeStyle = '#03090a';
+  ctx.lineWidth = 18;
+  ctx.beginPath();
+  ctx.roundRect(18, 18, 476, 732, 24);
+  ctx.fill();
+  ctx.stroke();
   const wash = ctx.createLinearGradient(0, 0, 512, 768);
   wash.addColorStop(0, palette.accent);
   wash.addColorStop(.42, locked ? '#c66a61' : '#ead39f');
@@ -373,7 +382,7 @@ export function drawCardArt(card: CardDefinition, locked: boolean, damageModifie
     ctx.fillStyle = '#ffaaa2';
     ctx.fillText('LOCKED  //  INTENT', 0, 2);
     ctx.restore();
-  } else {
+  } else if (showTargets) {
     polygon(ctx, [52, 647, 460, 647, 450, 720, 62, 720], '#10292b', INK, 9);
     ctx.font = `900 ${card.modifier ? 16 : 21}px Arial, sans-serif`;
     ctx.fillStyle = palette.glow;
@@ -387,6 +396,8 @@ export function drawCardArt(card: CardDefinition, locked: boolean, damageModifie
   }
   ctx.strokeStyle = palette.glow;
   ctx.lineWidth = 5;
-  ctx.strokeRect(27, 27, 458, 714);
+  ctx.beginPath();
+  ctx.roundRect(27, 27, 458, 714, 18);
+  ctx.stroke();
   return surface;
 }

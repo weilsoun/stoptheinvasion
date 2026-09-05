@@ -393,7 +393,18 @@ function planPlacement(
   if (queued?.kind === 'player') {
     action = queued;
   } else {
-    const normalizedTarget = cardDefinition.target === 'self' && target === null ? card.owner : target;
+    let normalizedTarget = target;
+    if (normalizedTarget === null) {
+      let choices = 0;
+      for (const actorId in state.actors) {
+        if (!validateTarget(state, card, actorId as ActorId)) {
+          normalizedTarget = actorId as ActorId;
+          choices++;
+        }
+      }
+      if (choices === 0) return { ok: false, reason: 'This card has no living target.' };
+      if (choices > 1) normalizedTarget = null;
+    }
     if (normalizedTarget !== null) {
       const targetFailure = validateTarget(state, card, normalizedTarget);
       if (targetFailure) return { ok: false, reason: targetFailure };

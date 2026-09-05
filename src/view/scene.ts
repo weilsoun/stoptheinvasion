@@ -44,8 +44,6 @@ type CardRig = {
   x: Spring;
   y: Spring;
   z: Spring;
-  pitch: Spring;
-  yaw: Spring;
   roll: Spring;
   displayedWidth: number;
   displayedHeight: number;
@@ -248,7 +246,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   let destroyed = false;
 
   function cardTextureKey(visual: CardVisual): string {
-    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}`;
+    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}`;
   }
 
   function getCardTexture(visual: CardVisual, key = cardTextureKey(visual)): Texture {
@@ -256,7 +254,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     if (!texture) {
       texture = textureFromCanvas(
         app,
-        drawCardArt(visual.definition, visual.locked, visual.damageModifier),
+        drawCardArt(visual.definition, visual.locked, visual.damageModifier, visual.targets.length > 0),
         `${visual.locked ? 'Locked intent' : 'Card'} ${visual.definition.name}`,
       );
       cardTextures.set(key, texture);
@@ -307,9 +305,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
 
   function makeCard(visual: CardVisual, layer: number): CardRig {
     const textureKey = cardTextureKey(visual);
-    const material = texturedMaterial(getCardTexture(visual, textureKey), false, .025);
-    material.blendType = BLEND_NORMAL;
-    material.depthWrite = true;
+    const material = texturedMaterial(getCardTexture(visual, textureKey), true, .025);
     material.specular = new Color(.16, .14, .1);
     material.gloss = .38;
     material.clearCoat = .08;
@@ -334,8 +330,6 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
       z: { value: visual.dragged ? 4 : 2.5 + layer * .002, velocity: 0 },
-      pitch: { value: 0, velocity: 0 },
-      yaw: { value: 0, velocity: 0 },
       roll: { value: straight ? 0 : -visual.rotation, velocity: 0 },
       displayedWidth: visual.width,
       displayedHeight: visual.height,
@@ -348,20 +342,18 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const visual = rig.visual;
     const cx = visual.x + visual.width / 2;
     const cy = visual.y + visual.height / 2;
-    const handTilt = visual.hovered && !visual.queued && !visual.dragged;
     const advance = immediate ? snap : spring;
     const rotate = visual.queued ? snap : advance;
     advance(rig.x, worldX(cx), dt);
     advance(rig.y, worldY(cy), dt);
     advance(rig.z, visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0), dt);
-    rotate(rig.pitch, handTilt ? Math.max(-8, Math.min(8, (cy - pointerY) / Math.max(visual.height, 1) * 13)) : 0, dt);
-    rotate(rig.yaw, handTilt ? Math.max(-10, Math.min(10, (pointerX - cx) / Math.max(visual.width, 1) * 16)) : 0, dt);
     rotate(rig.roll, visual.dragged || visual.queued ? 0 : -visual.rotation, dt);
     rig.root.setPosition(rig.x.value, rig.y.value, rig.z.value);
-    rig.root.setEulerAngles(rig.pitch.value, rig.yaw.value, rig.roll.value);
-    rig.surface.setLocalScale(visual.width / WORLD_SCALE, visual.height / WORLD_SCALE, .055);
-    rig.displayedWidth = visual.width;
-    rig.displayedHeight = visual.height;
+    rig.root.setEulerAngles(0, 0, rig.roll.value);
+    const sizeBlend = immediate ? 1 : 1 - Math.exp(-18 * dt);
+    rig.displayedWidth += (visual.width - rig.displayedWidth) * sizeBlend;
+    rig.displayedHeight += (visual.height - rig.displayedHeight) * sizeBlend;
+    rig.surface.setLocalScale(rig.displayedWidth / WORLD_SCALE, rig.displayedHeight / WORLD_SCALE, .055);
   }
 
   function applyActorAppearance(actor: ActorId): void {
@@ -403,7 +395,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     }
 
     for (const rig of cards.values()) {
-      positionCard(rig, dt, rig.visual.dragged || reduceMotion.matches);
+      positionCard(rig, dt, reduceMotion.matches);
     }
   }
 
@@ -446,6 +438,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
             const texture = getCardTexture(visual, textureKey);
             rig.material.diffuseMap = texture;
             rig.material.emissiveMap = texture;
+            rig.material.opacityMap = texture;
             rig.textureKey = textureKey;
             rig.material.update();
           }
@@ -453,8 +446,6 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
           rig.layer = layer;
           syncCardDots(rig);
           if (visual.queued) {
-            snap(rig.pitch, 0);
-            snap(rig.yaw, 0);
             snap(rig.roll, 0);
             rig.root.setEulerAngles(0, 0, 0);
           }
@@ -464,7 +455,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
           rig.material.opacity = visual.dimmed ? .62 : 1;
           rig.material.update();
         }
-        if (visual.dragged || reduceMotion.matches) positionCard(rig, 0, true);
+        if (reduceMotion.matches) positionCard(rig, 0, true);
       }
     },
 
