@@ -65,7 +65,7 @@ describe('battle planning boundaries', () => {
   test('obvious attack and self targets resolve without a targeting step', () => {
     const state = createCombat(12);
     expect(queueCard(state, card(state, 'hammer').uid, null, 0).ok).toBe(true);
-    expect(queueCard(state, card(state, 'vest').uid, null, 1).ok).toBe(true);
+    expect(queueCard(state, card(state, 'vest').uid, null, 4).ok).toBe(true);
     const result = finish(state);
     expect(result.actors.guard.hp).toBe(42);
     expect(result.actors.bob.hp).toBe(41);
@@ -109,7 +109,7 @@ describe('battle planning boundaries', () => {
       .toEqual([hammer.uid, null, vest.uid, 'enemy', tape.uid, coffee.uid]);
   });
 
-  test('hand insertion shifts toward the nearest hole and breaks equal-distance ties later', () => {
+  test('hand insertion shifts toward the nearest hole and breaks equal-distance ties to the right', () => {
     const tied = createCombat(12);
     tied.actors.bob.energy = 10;
     const tiedHammer = card(tied, 'hammer');
@@ -368,11 +368,11 @@ describe('attachments', () => {
 });
 
 describe('ordered resolution', () => {
-  test('Block before an anchored attack protects; Block after it does not carry over', () => {
+  test('Block right of an anchored attack protects; Block left of it does not carry over', () => {
     const early = createCombat(12);
     const late = createCombat(12);
-    queueCard(early, card(early, 'vest').uid, 'bob', 0);
-    queueCard(late, card(late, 'vest').uid, 'bob', 4);
+    queueCard(early, card(early, 'vest').uid, 'bob', 4);
+    queueCard(late, card(late, 'vest').uid, 'bob', 0);
     const earlyResult = finish(early);
     const lateResult = finish(late);
     expect(earlyResult.actors.bob.hp).toBe(41);
@@ -381,12 +381,18 @@ describe('ordered resolution', () => {
     expect(lateResult.actors.bob.block).toBe(0);
   });
 
-  test('setup amplifies the next hit, and early lethal cancels a committed enemy attack', () => {
+  test('right-to-left setup amplifies the next hit, and early lethal cancels a committed enemy attack', () => {
     const state = createCombat(12);
     state.actors.guard.hp = 11;
-    queueCard(state, card(state, 'tape').uid, 'guard', 0);
-    queueCard(state, card(state, 'hammer').uid, 'guard', 1);
-    const result = finish(state);
+    queueCard(state, card(state, 'tape').uid, 'guard', 5);
+    queueCard(state, card(state, 'hammer').uid, 'guard', 4);
+    const steps = resolveTurn(state);
+    expect(steps.map(step => step.state.activeSlot)).toEqual([5, 4, 3, 2, 1, 0, null]);
+    expect(steps[0].state.actors.guard).toMatchObject({ hp: 11, exposed: 8 });
+    expect(steps[1].state.actors.guard).toMatchObject({ hp: 0, exposed: 0 });
+    expect(steps.flatMap(step => step.events).filter(event => event.kind === 'action').map(event => event.actor))
+      .toEqual(['bob', 'bob']);
+    const result = steps[steps.length - 1].state;
     expect(result.phase).toBe('victory');
     expect(result.actors.guard.hp).toBe(0);
     expect(result.actors.bob.hp).toBe(42);

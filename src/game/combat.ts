@@ -723,7 +723,7 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
 
   const steps: ResolutionStep[] = [];
   const protectedCards = new Set<string>();
-  for (let slot = 0; slot < ENCOUNTER.slotCount; slot += 1) {
+  for (let slot = ENCOUNTER.slotCount - 1; slot >= 0; slot -= 1) {
     working.activeSlot = slot;
     const events: CombatEvent[] = [];
     const action = working.queue[slot];

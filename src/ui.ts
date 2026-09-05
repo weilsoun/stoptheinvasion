@@ -88,8 +88,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
   let notice = 'Place actions directly. Attachments can target a card or a position.';
   let destroyed = false;
   let sequence = 0;
+  let firingCard: CardVisual | null = null;
+  let firingSlot: number | null = null;
+  const completedCards = new Set<string>();
   let suppressClick = false;
-  const timers = new Set<number>();
+  const timers = new Map<number, () => void>();
   const listeners = new AbortController();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -121,6 +124,15 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
   const canAfford = (card: CardInstance) => CARDS[card.definitionId].cost <= availableEnergy(state, card.owner);
   const queuedCard = (uid: string) => state.queue.find((slot): slot is PlayerAction => slot?.kind === 'player' && slot.card.uid === uid)?.card ?? null;
   const queueCardX = (slot: number) => QUEUE_FIRST_X + slot * QUEUE_CARD_STRIDE;
+  const presentedQueue = () => {
+    const queue = drag?.preview ?? state.queue;
+    if (!firingCard && completedCards.size === 0) return queue;
+    return queue.map((slot) => {
+      if (!slot) return null;
+      const uid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
+      return completedCards.has(uid) || firingCard?.uid === uid ? null : slot;
+    });
+  };
   const queueCardPose = (index: number, queue = state.queue) => {
     let inFront = 0;
     for (let next = index + 1; next < queue.length; next++) {
@@ -206,26 +218,19 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
     }
 
     const queued: CardVisual[] = [];
-    const plan = drag?.preview ?? state.queue;
+    const plan = presentedQueue();
     plan.forEach((slot, index) => {
       if (!slot) return;
       const isEnemy = slot.kind === 'enemy';
       const uid = isEnemy ? slot.uid : slot.card.uid;
       if (uid === heldUid) return;
-      const active = mode === 'resolving' && state.activeSlot === index;
       const pose = queueCardPose(index, plan);
-      if (active) {
-        pose.x -= pose.width * .175;
-        pose.y -= pose.height * .175;
-        pose.width *= 1.35;
-        pose.height *= 1.35;
-      }
       const visual: CardVisual = {
         uid,
         definition: isEnemy ? enemyDefinition(slot) : CARDS[slot.card.definitionId],
         ...pose,
-        hovered: active || !modifier && hoveredQueueSlot === index,
-        dimmed: mode !== 'planning' && !active || Boolean(modifier && !attachmentAllowed({ kind: 'card', uid })),
+        hovered: mode === 'planning' && !modifier && hoveredQueueSlot === index,
+        dimmed: mode !== 'planning' || Boolean(modifier && !attachmentAllowed({ kind: 'card', uid })),
         damageModifier: damageModifier(state, uid, index),
         queued: true,
         dragged: false,
@@ -234,10 +239,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
         targets: isEnemy ? [] : targetChoices(slot.card),
       };
       queued.push(visual);
-      if (hoveredQueueSlot === index && !drag) {
+      if (mode === 'planning' && hoveredQueueSlot === index && !drag) {
         queued.push({ ...visual, uid: `${uid}:preview`, ...PREVIEW, rotation: 0, hovered: true });
       }
     });
+    if (firingCard) queued.push(firingCard);
 
     if (drag) {
       const card = handCard(drag.uid) ?? queuedCard(drag.uid);
@@ -302,10 +308,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
   };
 
 
-  const queueMarkup = () => state.queue.map((slot, index) => {
+  const queueMarkup = () => presentedQueue().map((slot, index, queue) => {
     const active = state.activeSlot === index ? ' active' : '';
     const selected = selection?.kind === 'queue' && selection.slot === index ? ' selected' : '';
-    const pose = queueCardPose(index);
+    const pose = queueCardPose(index, queue);
     const position = `style="--slot-x:${queueCardX(index)}px;--slot-z:${index};--card-x:${pose.x - queueCardX(index)}px;--card-y:${pose.y - (QUEUE_CARD_Y - 6)}px;--card-w:${pose.width}px;--card-h:${pose.height}px"`;
     const marker = `<span class="empty-position-marker" aria-hidden="true"${slot ? ' hidden' : ''}></span>`;
     const slotTarget = { kind: 'slot', slot: index } as const;
@@ -365,7 +371,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
   };
 
   const outcomeMarkup = () => {
-    if (state.phase !== 'victory' && state.phase !== 'defeat') return '';
+    if (mode !== 'ended' || state.phase !== 'victory' && state.phase !== 'defeat') return '';
     const victory = state.phase === 'victory';
     return `<div class="outcome-shade"><section class="outcome ${victory ? 'victory' : 'defeat'}" role="dialog" aria-modal="true" aria-labelledby="outcome-title"><span class="stamp">${victory ? 'AISLE SECURED' : 'SHIFT ENDED'}</span><h2 id="outcome-title">${victory ? 'Victory!' : 'Defeat'}</h2><p>${victory ? 'Bob survives another unreasonable customer interaction.' : 'The infected guard wins this round. Reset the aisle and try a new plan.'}</p><button class="primary" data-action="restart">Replay encounter</button></section></div>`;
   };
@@ -387,13 +393,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
     const blocked = resolveReason();
     const modifier = modifierSource();
     const showGuides = Boolean(selection || pending || drag);
+    const activeSlot = firingSlot ?? state.activeSlot;
     root.classList.toggle('resolving', mode === 'resolving');
     root.innerHTML = `<header class="topbar ink-panel"><div><span class="eyebrow">CHAPTER 01 / NIGHT SHIFT</span><h1>STOP THE INVASION</h1></div><div class="turn-badge"><small>TURN</small><b>${state.turn}</b></div><button class="restart" data-action="restart" ${mode === 'resolving' ? 'disabled' : ''}>Restart</button></header>
       <main>${actorMarkup('bob')}${actorMarkup('guard')}
-        <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}" aria-label="Six timing positions"><div class="timeline-title"><b>ACTION TIMELINE</b><span>${state.activeSlot === null ? (modifier ? 'CARD BODY = CARD · BELOW CARD = POSITION' : pending ? 'CHOOSE A TIMING POSITION' : 'DROP NEAR A POINT') : `RESOLVING POSITION ${state.activeSlot + 1}`}</span></div>${queueMarkup()}</section>
+        <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}" aria-label="Six timing positions, resolving right to left"><div class="timeline-title"><b>ACTION TIMELINE</b><span>${activeSlot === null ? (modifier ? 'CARD BODY = CARD · BELOW CARD = POSITION' : pending ? 'CHOOSE A TIMING POSITION' : 'RIGHTMOST FIRES FIRST · DROP NEAR A POINT') : `RESOLVING POSITION ${activeSlot + 1} · RIGHT TO LEFT`}</span></div>${queueMarkup()}</section>
         <section class="piles" aria-label="Card piles">${pileMarkup('draw', state.drawPile)}${pileMarkup('discard', state.discardPile)}</section>
         <section class="combat-log ink-panel" aria-label="Combat log"><h2>FIELD NOTES</h2><ol>${log.length ? log.map((line) => `<li>${escapeHtml(line)}</li>`).join('') : '<li>The aisle is quiet. For now.</li>'}</ol></section>
-        <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn <span>${blocked || 'Execute timeline'}</span></button>
+        <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn <span>${blocked || 'Execute right to left'}</span></button>
         <div id="resolve-reason" class="notice ${blocked || /cannot|need|invalid|occupied|locked/i.test(notice) ? 'warning' : ''}" role="status" aria-live="polite">${escapeHtml(notice)}</div>
         <div class="hand-zone${modifier ? ' attachment-targeting' : ''}" aria-label="Bob's hand">${handMarkup()}</div>
         <section class="energy-bar ink-panel" role="meter" aria-label="Bob's energy" aria-valuemin="0" aria-valuemax="${bob.energyMax}" aria-valuenow="${energy}" aria-valuetext="${energy} available, ${bob.energy - energy} reserved, capacity ${bob.energyMax}">
@@ -471,8 +478,19 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
 
   const wait = (milliseconds: number) => new Promise<void>((resolve) => {
     const timer = window.setTimeout(() => { timers.delete(timer); resolve(); }, milliseconds);
-    timers.add(timer);
+    timers.set(timer, resolve);
   });
+
+  const clearPlayback = () => {
+    for (const [timer, finish] of timers) {
+      clearTimeout(timer);
+      finish();
+    }
+    timers.clear();
+    firingCard = null;
+    firingSlot = null;
+    completedCards.clear();
+  };
 
   const playResolution = async () => {
     if (mode !== 'planning' || state.phase !== 'planning') return;
@@ -482,21 +500,58 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
     const steps = resolveTurn(state);
     mode = 'resolving';
     clearInteraction();
-    notice = 'Hands off — resolving the timeline in order.';
+    notice = 'Hands off — the rightmost card fires first.';
     render();
     for (const step of steps) {
       if (destroyed || run !== sequence) return;
+      const action = step.events.find((event) => event.kind === 'action');
+      if (action && action.slot !== undefined && action.target) {
+        const slot = step.state.queue[action.slot]!;
+        const uid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
+        const card = visualCards().find((visual) => visual.uid === uid)!;
+        firingSlot = action.slot;
+        firingCard = {
+          ...card,
+          x: card.x - card.width * .175,
+          y: card.y - card.height * .175 - 80,
+          width: card.width * 1.35,
+          height: card.height * 1.35,
+          rotation: 0,
+          hovered: true,
+          dimmed: false,
+          queued: false,
+          dragged: false,
+        };
+        notice = `Firing position ${action.slot + 1} at ${state.actors[action.target].name}.`;
+        render();
+        await wait(reduceMotion ? 0 : 150);
+        if (destroyed || run !== sequence) return;
+        firingCard = {
+          ...firingCard,
+          x: (action.target === 'bob' ? 410 : 1500) - firingCard.width / 2,
+          y: 400 - firingCard.height / 2,
+        };
+        scene.setCards(visualCards());
+        await wait(reduceMotion ? 0 : 360);
+        if (destroyed || run !== sequence) return;
+      }
+      if (step.state.activeSlot === null) completedCards.clear();
       state = step.state;
       notice = step.events.length ? step.events.map((event) => event.message).join(' ') : 'Advancing the timeline.';
       render();
-      for (const event of step.events) {
-        scene.playEvent(event);
-        const canceled = event.kind === 'empty' && event.message.includes('canceled: combat is over');
-        if (!canceled) await wait(reduceMotion ? 45 : 180);
+      for (const event of step.events) scene.playEvent(event);
+      if (firingCard) {
+        await wait(reduceMotion ? 60 : 130);
         if (destroyed || run !== sequence) return;
+        firingCard = { ...firingCard, x: DESIGN_WIDTH + firingCard.width };
+        scene.setCards(visualCards());
+        await wait(reduceMotion ? 0 : 380);
+        if (destroyed || run !== sequence) return;
+        completedCards.add(firingCard.uid);
+        firingCard = null;
+        firingSlot = null;
+        render();
       }
-      const canceledStep = step.events.every((event) => event.kind === 'empty' && event.message.includes('canceled: combat is over'));
-      if (!canceledStep) await wait(reduceMotion ? 80 : 430);
     }
     mode = state.phase === 'planning' ? 'planning' : 'ended';
     notice = state.phase === 'planning' ? `Turn ${state.turn}: arrange the next six timings.` : (state.phase === 'victory' ? 'Aisle secured. Victory.' : 'Bob is down. Defeat.');
@@ -505,8 +560,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
 
   const restart = () => {
     sequence++;
-    for (const timer of timers) clearTimeout(timer);
-    timers.clear();
+    clearPlayback();
     clearInteraction();
     state = createCombat(state.seed);
     mode = 'planning';
@@ -777,7 +831,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
     event.preventDefault();
     suppressClick = true;
     const timer = window.setTimeout(() => { suppressClick = false; timers.delete(timer); }, 0);
-    timers.add(timer);
+    timers.set(timer, () => { suppressClick = false; });
     const source = handCard(finished.uid);
     if (source && CARDS[source.definitionId].modifier) {
       if (finished.attachmentTarget) {
@@ -874,8 +928,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): { destroy(): voi
     destroy() {
       destroyed = true;
       sequence++;
-      for (const timer of timers) clearTimeout(timer);
-      timers.clear();
+      clearPlayback();
       clearInteraction();
       listeners.abort();
       root.replaceChildren();

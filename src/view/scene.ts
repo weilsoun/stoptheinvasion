@@ -43,7 +43,6 @@ type CardRig = {
   layer: number;
   x: Spring;
   y: Spring;
-  z: Spring;
   roll: Spring;
   displayedWidth: number;
   displayedHeight: number;
@@ -329,7 +328,6 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       layer,
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
-      z: { value: visual.dragged ? 4 : 2.5 + layer * .002, velocity: 0 },
       roll: { value: straight ? 0 : -visual.rotation, velocity: 0 },
       displayedWidth: visual.width,
       displayedHeight: visual.height,
@@ -340,15 +338,15 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
 
   function positionCard(rig: CardRig, dt: number, immediate: boolean): void {
     const visual = rig.visual;
+    immediate ||= visual.queued && !visual.dragged;
     const cx = visual.x + visual.width / 2;
     const cy = visual.y + visual.height / 2;
     const advance = immediate ? snap : spring;
     const rotate = visual.queued ? snap : advance;
     advance(rig.x, worldX(cx), dt);
     advance(rig.y, worldY(cy), dt);
-    advance(rig.z, visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0), dt);
     rotate(rig.roll, visual.dragged || visual.queued ? 0 : -visual.rotation, dt);
-    rig.root.setPosition(rig.x.value, rig.y.value, rig.z.value);
+    rig.root.setPosition(rig.x.value, rig.y.value, visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0));
     rig.root.setEulerAngles(0, 0, rig.roll.value);
     const sizeBlend = immediate ? 1 : 1 - Math.exp(-18 * dt);
     rig.displayedWidth += (visual.width - rig.displayedWidth) * sizeBlend;
@@ -455,7 +453,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
           rig.material.opacity = visual.dimmed ? .62 : 1;
           rig.material.update();
         }
-        if (reduceMotion.matches) positionCard(rig, 0, true);
+        positionCard(rig, 0, reduceMotion.matches);
       }
     },
 
