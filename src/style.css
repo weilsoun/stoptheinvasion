@@ -472,7 +472,9 @@ canvas#arena { display: block; background: #18201e; }
 .hand-hit[aria-disabled="true"] { cursor: help; }
 
 .game-hud.detail-open > .hud-controls,
-.game-hud.detail-open > main {
+.game-hud.detail-open > main,
+.game-hud.inspector-open > .hud-controls,
+.game-hud.inspector-open > main {
   visibility: hidden;
   pointer-events: none;
 }
@@ -505,7 +507,7 @@ canvas#arena { display: block; background: #18201e; }
   background: rgba(2, 5, 5, .78);
   backdrop-filter: blur(5px);
 }
-.pile-inspector, .outcome, .game-menu {
+.outcome, .game-menu {
   width: 560px;
   max-height: 760px;
   padding: 25px;
@@ -515,13 +517,128 @@ canvas#arena { display: block; background: #18201e; }
   box-shadow: 16px 16px 0 rgba(0,0,0,.7);
   transform: rotate(-.5deg);
 }
-.pile-inspector header { display: flex; align-items: center; justify-content: space-between; border-bottom: 4px solid var(--ink); }
-.pile-inspector h2, .outcome h2 { margin: 0; font-family: 'Bebas Neue'; font-size: 48px; letter-spacing: 2px; }
-.pile-inspector header button { padding: 8px 15px; background: var(--red); color: white; }
-.pile-inspector ol { max-height: 590px; margin: 18px 0 0; padding: 0; overflow: auto; list-style: none; }
-.pile-inspector li { display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; padding: 9px; border-bottom: 2px solid #948a70; font-size: 20px; }
-.pile-inspector li span { color: #a52d26; font-family: 'Bebas Neue'; }
-.pile-inspector li small { font-weight: 700; text-transform: uppercase; }
+.pile-inspector-shade {
+  display: block;
+  background: transparent;
+  backdrop-filter: none;
+}
+.pile-inspector-shade .pile-inspector {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  max-height: none;
+  padding: 0;
+  color: #fff8df;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  transform: none;
+  pointer-events: none;
+}
+.pile-inspector-shade .pile-inspector header {
+  position: absolute;
+  z-index: 2;
+  top: 42px;
+  left: 462px;
+  width: 996px;
+  min-height: 112px;
+  padding: 16px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #fff8df;
+  background: rgba(7, 25, 28, .94);
+  border: 5px solid #050707;
+  box-shadow: 8px 8px 0 rgba(0, 0, 0, .62);
+  pointer-events: auto;
+}
+.pile-inspector-shade .pile-inspector header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+}
+.pile-inspector-shade .pile-inspector h2 {
+  margin: 0;
+  color: #fff8df;
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 48px;
+  letter-spacing: 2px;
+}
+.pile-inspector-shade .pile-inspector header p {
+  margin: 0;
+  color: #e8c47b;
+  font-size: 20px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.pile-inspector-shade .pile-inspector header button {
+  min-width: 110px;
+  min-height: 48px;
+  padding: 8px 15px;
+  color: white;
+  background: var(--red);
+  pointer-events: auto;
+}
+.pile-inspector-shade .pile-inspector ol {
+  position: absolute;
+  inset: 0;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  list-style: none;
+}
+.pile-inspector-shade .pile-inspector li {
+  position: absolute;
+  left: var(--pile-x);
+  top: var(--pile-y);
+  width: var(--pile-w);
+  height: var(--pile-h);
+  display: block;
+  padding: 0;
+  border: 0;
+  pointer-events: auto;
+}
+.pile-inspector-shade .pile-inspector .pile-empty {
+  left: 710px;
+  top: 430px;
+  width: 500px;
+  height: auto;
+  padding: 30px;
+  color: #fff8df;
+  background: rgba(7, 25, 28, .94);
+  border: 5px solid #050707;
+  box-shadow: 8px 8px 0 rgba(0, 0, 0, .62);
+  font-family: Arial, sans-serif;
+  font-size: 30px;
+  font-weight: 800;
+  text-align: center;
+}
+.pile-pagination {
+  position: absolute;
+  z-index: 2;
+  left: 660px;
+  bottom: 22px;
+  width: 600px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  color: #fff8df;
+  background: rgba(7, 25, 28, .94);
+  border: 4px solid #050707;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, .62);
+  font-size: 18px;
+  font-weight: 900;
+  pointer-events: auto;
+}
+.pile-pagination button {
+  min-width: 120px;
+  min-height: 42px;
+  padding: 6px 12px;
+}
+.outcome h2 { margin: 0; font-family: 'Bebas Neue'; font-size: 48px; letter-spacing: 2px; }
 .game-menu {
   width: 500px;
   padding: 38px;

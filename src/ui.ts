@@ -5,6 +5,7 @@ import type { CardVisual, ScenePort } from './view/types';
 
 type Selection = { kind: 'hand'; uid: string } | { kind: 'queue'; slot: number } | null;
 type PendingPlacement = { uid: string; target: ActorId };
+type PileKind = 'draw' | 'discard';
 type CardDetail = {
   uid: string;
   cardUid: string;
@@ -54,6 +55,14 @@ const HOVER_Y = HAND_BOTTOM - HOVER_HEIGHT;
 const DETAIL = { x: 720, y: 180, width: 480, height: 672 };
 const DRAW_PILE = { x: 300, y: 840, width: 96, height: 134, rotation: 0, flip: 180 };
 const DISCARD_PILE = { x: 1524, y: 840, width: 96, height: 134, rotation: 0, flip: 0 };
+const PILE_PAGE_SIZE = 15;
+const PILE_COLUMNS = 5;
+const PILE_CARD_WIDTH = 180;
+const PILE_CARD_HEIGHT = 252;
+const PILE_COLUMN_GAP = 24;
+const PILE_ROW_GAP = 18;
+const PILE_GRID_TOP = 190;
+const PILE_GRID_LEFT = (DESIGN_WIDTH - PILE_COLUMNS * PILE_CARD_WIDTH - (PILE_COLUMNS - 1) * PILE_COLUMN_GAP) / 2;
 const escapeHtml = (value: string | number) => String(value).replace(/[&<>'"]/g, (character) => HTML_ESCAPES[character]);
 
 function effectText(effects: { kind: string; amount: number }[]): string {
@@ -90,6 +99,13 @@ function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
   }));
 }
 
+function pileCardPosition(index: number): { x: number; y: number } {
+  return {
+    x: PILE_GRID_LEFT + index % PILE_COLUMNS * (PILE_CARD_WIDTH + PILE_COLUMN_GAP),
+    y: PILE_GRID_TOP + Math.floor(index / PILE_COLUMNS) * (PILE_CARD_HEIGHT + PILE_ROW_GAP),
+  };
+}
+
 export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   let state = createCombat();
   let mode: Mode = 'dealing';
@@ -98,7 +114,9 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   let drag: Drag | null = null;
   let hoveredUid: string | null = null;
   let hoveredQueueSlot: number | null = null;
-  let inspector: 'draw' | 'discard' | null = null;
+  let inspector: PileKind | null = null;
+  let inspectorPage = 0;
+  let inspectorSerial = 0;
   let detail: CardDetail | null = null;
   let menuOpen = false;
   let focusAfterRender: string | null = null;
@@ -222,6 +240,21 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     x: held.x - held.pose.width / 2,
     y: held.y - held.pose.height / 2,
   });
+
+  const pileInspectorState = () => {
+    if (!inspector) return null;
+    const cards = inspector === 'draw' ? state.drawPile : state.discardPile;
+    const pageCount = Math.max(1, Math.ceil(cards.length / PILE_PAGE_SIZE));
+    inspectorPage = Math.max(0, Math.min(inspectorPage, pageCount - 1));
+    const start = inspectorPage * PILE_PAGE_SIZE;
+    return {
+      cards,
+      pageCount,
+      start,
+      visibleCards: cards.slice(start, start + PILE_PAGE_SIZE),
+      title: inspector === 'draw' ? 'Draw pile' : 'Discard pile',
+    };
+  };
 
   const visualCards = (): CardVisual[] => {
     const hand = cardLayout(state.hand);
@@ -352,7 +385,26 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       ...lingeringAttachments.values(),
       ...inFlight.values(),
     ];
-    if (detail) physical.push({
+    const inspected = pileInspectorState();
+    if (inspected) physical.push(...inspected.visibleCards.map((card, index): CardVisual => ({
+      uid: `pile-inspector:${inspectorSerial}:${inspected.start + index}:${card.uid}`,
+      definition: CARDS[card.definitionId],
+      ...pileCardPosition(index),
+      width: PILE_CARD_WIDTH,
+      height: PILE_CARD_HEIGHT,
+      rotation: 0,
+      hovered: false,
+      dimmed: false,
+      damageModifier: 0,
+      queued: false,
+      dragged: false,
+      locked: false,
+      target: null,
+      targets: [],
+      detail: true,
+      flip: 0,
+    })));
+    else if (detail) physical.push({
       uid: detail.uid,
       definition: detail.definition,
       ...DETAIL,
@@ -449,13 +501,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
 
   const inspectorMarkup = () => {
-    if (!inspector) return '';
-    const cards = inspector === 'draw' ? state.drawPile : state.discardPile;
-    const title = inspector === 'draw' ? 'Draw pile' : 'Discard pile';
-    const rows = cards.length
-      ? cards.map((card, index) => `<li><span>${String(index + 1).padStart(2, '0')}</span><b>${escapeHtml(CARDS[card.definitionId].name)}</b><small>${CARDS[card.definitionId].cost} energy</small></li>`).join('')
+    const visible = pileInspectorState();
+    if (!visible) return '';
+    const items = visible.visibleCards.length
+      ? visible.visibleCards.map((card, index) => {
+        const definition = CARDS[card.definitionId];
+        const position = pileCardPosition(index);
+        const label = `${definition.name}, ${definition.cost} energy, ${definition.description}`;
+        return `<li style="--pile-x:${position.x}px;--pile-y:${position.y}px;--pile-w:${PILE_CARD_WIDTH}px;--pile-h:${PILE_CARD_HEIGHT}px" aria-label="${escapeHtml(label)}"></li>`;
+      }).join('')
       : '<li class="pile-empty">No cards here.</li>';
-    return `<div class="inspector-shade"><section class="pile-inspector" role="dialog" aria-modal="true" aria-labelledby="pile-title"><header><h2 id="pile-title">${title}</h2><button data-action="close-inspector" aria-label="Close pile inspector">Close</button></header><ol>${rows}</ol></section></div>`;
+    const pagination = visible.pageCount > 1
+      ? `<nav class="pile-pagination" aria-label="Pile pages"><button data-action="pile-prev"${inspectorPage === 0 ? ' disabled' : ''}>Previous</button><span>Page ${inspectorPage + 1} of ${visible.pageCount}</span><button data-action="pile-next"${inspectorPage === visible.pageCount - 1 ? ' disabled' : ''}>Next</button></nav>`
+      : '';
+    return `<div class="inspector-shade pile-inspector-shade"><section class="pile-inspector" role="dialog" aria-modal="true" aria-labelledby="pile-inspector-title" aria-describedby="pile-inspector-summary"><header><div><h2 id="pile-inspector-title">${visible.title}</h2><p id="pile-inspector-summary">${visible.cards.length} card${visible.cards.length === 1 ? '' : 's'}</p></div><button data-action="close-inspector" aria-label="Close ${visible.title}">Close</button></header><ol aria-label="${visible.title} cards">${items}</ol>${pagination}</section></div>`;
   };
 
   const detailMarkup = () => {
@@ -513,6 +572,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const activeSlot = firingSlot ?? state.activeSlot;
     root.classList.toggle('resolving', mode === 'resolving');
     root.classList.toggle('detail-open', Boolean(detail));
+    root.classList.toggle('inspector-open', Boolean(inspector));
     root.innerHTML = `<div class="hud-controls" aria-label="Turn and menu"><div class="turn-badge"><small>TURN</small><b>${state.turn}</b></div><button class="menu-trigger" data-action="open-menu" aria-haspopup="dialog">Menu</button></div>
       <main>${actorMarkup('bob')}${actorMarkup('guard')}
         <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}${hasCardTabs ? ' has-card-tabs' : ''}" aria-label="Six timing positions, resolving right to left"><div class="timeline-title"><b>ACTION TIMELINE</b><span>${activeSlot === null ? (modifier ? 'CARD BODY = CARD · BELOW CARD = POSITION' : pending ? 'CHOOSE A TIMING POSITION' : 'RIGHTMOST FIRES FIRST · DROP NEAR A POINT') : `RESOLVING POSITION ${activeSlot + 1} · RIGHT TO LEFT`}</span></div>${queueMarkup()}</section>
@@ -527,7 +587,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         </section>
       </main>${detailMarkup()}${inspectorMarkup()}${outcomeMarkup()}${menuMarkup()}`;
     scene.setState(state);
-    scene.setCards(visualCards());
+    scene.setCards(visualCards(), Boolean(inspector));
     const focusTarget = focusAfterRender ?? (detail ? '.card-detail-controls [data-action="close-card-detail"]' : menuOpen ? `.game-menu [data-action="${focusedMenuAction ?? 'close-menu'}"]` : inspector ? '.pile-inspector button' : mode === 'ended' ? '.outcome button' : null);
     focusAfterRender = null;
     if (focusTarget) root.querySelector<HTMLElement>(focusTarget)?.focus({ preventScroll: true });
@@ -617,7 +677,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const destination = layout.get(card.uid);
       if (!destination) continue;
       inFlight.set(card.uid, { ...destination, flip: 0, locked: false });
-      scene.setCards(visualCards());
+      scene.setCards(visualCards(), Boolean(inspector));
       await wait(reduceMotion ? 0 : 55);
       if (destroyed || run !== sequence) return;
     }
@@ -646,7 +706,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       if (destroyed || run !== sequence) return;
       const flight = inFlight.get(card.uid)!;
       inFlight.set(card.uid, { ...flight, ...DISCARD_PILE, rotation: 0, flip: 180 });
-      scene.setCards(visualCards());
+      scene.setCards(visualCards(), Boolean(inspector));
       await wait(reduceMotion ? 0 : 45);
       if (destroyed || run !== sequence) return;
     }
@@ -717,7 +777,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           x: (action.target === 'bob' ? 410 : 1500) - firingCard.width / 2,
           y: 400 - firingCard.height / 2,
         };
-        scene.setCards(visualCards());
+        scene.setCards(visualCards(), Boolean(inspector));
         await wait(reduceMotion ? 0 : 360);
         if (destroyed || run !== sequence) return;
         if (!firedPlayer) {
@@ -780,7 +840,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         firingCard = firedPlayer
           ? { ...firingCard, ...DISCARD_PILE, rotation: 0, flip: 180 }
           : { ...firingCard, x: DESIGN_WIDTH + firingCard.width, flip: 180 };
-        scene.setCards(visualCards());
+        scene.setCards(visualCards(), Boolean(inspector));
         await wait(reduceMotion ? 0 : 380);
         if (destroyed || run !== sequence) return;
         completedCards.add(firedUid);
@@ -897,13 +957,22 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           candidate.kind === 'slot' && activeTarget.kind === 'slot' && candidate.slot === activeTarget.slot));
       element.classList.toggle('drop-hover', hovered);
     });
-    scene.setCards(visualCards());
+    scene.setCards(visualCards(), Boolean(inspector));
   };
 
   const closeDetail = () => {
     if (!detail) return;
     focusAfterRender = detail.returnFocus;
     detail = null;
+    render();
+  };
+
+  const closeInspector = () => {
+    if (!inspector) return;
+    const pile = inspector;
+    inspector = null;
+    inspectorPage = 0;
+    focusAfterRender = `.pile-button[data-pile="${pile}"]`;
     render();
   };
 
@@ -976,14 +1045,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         focusAfterRender = menuReturnFocus;
         render();
       } else if (action === 'inspect') {
+        clearInteraction();
         detail = null;
-        inspector = actionElement.dataset.pile as 'draw' | 'discard';
+        inspector = actionElement.dataset.pile as PileKind;
+        inspectorPage = 0;
+        inspectorSerial++;
+        render();
+      } else if ((action === 'pile-prev' || action === 'pile-next') && inspector) {
+        inspectorPage += action === 'pile-prev' ? -1 : 1;
+        const visible = pileInspectorState()!;
+        const reachedEnd = action === 'pile-prev' ? inspectorPage === 0 : inspectorPage === visible.pageCount - 1;
+        focusAfterRender = `[data-action="${reachedEnd ? action === 'pile-prev' ? 'pile-next' : 'pile-prev' : action}"]`;
         render();
       } else if (action === 'close-inspector') {
-        const pile = inspector;
-        inspector = null;
-        focusAfterRender = `.pile-button[data-pile="${pile}"]`;
-        render();
+        closeInspector();
       } else if (action === 'close-card-detail' && detail) {
         closeDetail();
       } else if (action === 'detail-play' && detail?.source === 'hand' && mode === 'planning') {
@@ -1015,6 +1090,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         const result = removeModifier(state, actionElement.dataset.card!);
         feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
       }
+      return;
+    }
+    if (inspector) {
+      if (target.classList.contains('inspector-shade')) closeInspector();
       return;
     }
     if (detail) {
@@ -1081,10 +1160,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         clearInteraction(pullingAttachment ? 'Attachment kept; its reserved energy is unchanged.' : 'Placement canceled. No energy was spent.');
         render();
       } else if (inspector) {
-        const pile = inspector;
-        inspector = null;
-        focusAfterRender = `.pile-button[data-pile="${pile}"]`;
-        render();
+        closeInspector();
       } else if (menuOpen) {
         menuOpen = false;
         focusAfterRender = menuReturnFocus;
@@ -1189,7 +1265,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       if (element instanceof HTMLButtonElement) element.disabled = draggingModifier && !valid;
     });
     capture.setPointerCapture?.(event.pointerId);
-    scene.setCards(visualCards());
+    scene.setCards(visualCards(), Boolean(inspector));
   };
 
   const onPointerMove = (event: PointerEvent) => {
@@ -1216,7 +1292,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       return;
     }
     if (!finished.moved) {
-      scene.setCards(visualCards());
+      scene.setCards(visualCards(), Boolean(inspector));
       return;
     }
     event.preventDefault();
@@ -1271,7 +1347,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       if (nextUid !== hoveredUid || nextSlot !== hoveredQueueSlot) {
         hoveredUid = nextUid;
         hoveredQueueSlot = nextSlot;
-        scene.setCards(visualCards());
+        scene.setCards(visualCards(), Boolean(inspector));
       }
     }
   };
@@ -1285,14 +1361,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     let changed = false;
     if (hand && !hand.contains(related)) { hoveredUid = null; changed = true; }
     if (queue && !queue.contains(related)) { hoveredQueueSlot = null; changed = true; }
-    if (changed) scene.setCards(visualCards());
+    if (changed) scene.setCards(visualCards(), Boolean(inspector));
   };
 
   const onFocusIn = (event: FocusEvent) => {
     const queue = (event.target as HTMLElement).closest<HTMLElement>('.queue-slot[data-slot]');
     if (queue) {
       hoveredQueueSlot = Number(queue.dataset.slot);
-      scene.setCards(visualCards());
+      scene.setCards(visualCards(), Boolean(inspector));
     }
   };
   const onFocusOut = (event: FocusEvent) => {
@@ -1300,7 +1376,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const queue = target.closest<HTMLElement>('.queue-slot[data-slot]');
     if (queue && !queue.contains(event.relatedTarget as Node | null)) {
       hoveredQueueSlot = null;
-      scene.setCards(visualCards());
+      scene.setCards(visualCards(), Boolean(inspector));
     }
   };
 
@@ -1327,7 +1403,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       listeners.abort();
       root.replaceChildren();
       scene.setTarget(null);
-      scene.setCards([]);
+      scene.setCards([], false);
     },
   };
 }
