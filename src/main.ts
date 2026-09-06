@@ -1,5 +1,7 @@
 import { createScene } from './view/scene';
-import { mountGame } from './ui';
+import { mountGame, type GamePort } from './ui';
+import { preloadCardArt } from './view/art';
+import type { ScenePort } from './view/types';
 import './style.css';
 
 const shell = document.querySelector<HTMLElement>('#game-shell')!;
@@ -16,15 +18,27 @@ function resize(): void {
 resize();
 window.addEventListener('resize', resize);
 
-try {
-  const scene = createScene(canvas);
-  const game = mountGame(hud, scene);
-  window.addEventListener('pagehide', () => {
-    game.destroy();
-    scene.destroy();
-    window.removeEventListener('resize', resize);
-  }, { once: true });
-} catch (error) {
-  console.error('Unable to start Stop the Invasion', error);
-  hud.innerHTML = '<section class="startup-error"><h1>Could not open the arena</h1><p>This game needs a browser with WebGL support. Check that hardware acceleration is enabled, then reload.</p><button onclick="location.reload()">Try again</button></section>';
+let scene: ScenePort | undefined;
+let game: GamePort | undefined;
+let disposed = false;
+window.addEventListener('pagehide', () => {
+  disposed = true;
+  game?.destroy();
+  scene?.destroy();
+  window.removeEventListener('resize', resize);
+}, { once: true });
+
+async function start(): Promise<void> {
+  try {
+    await preloadCardArt();
+    if (disposed) return;
+    scene = createScene(canvas);
+    game = mountGame(hud, scene);
+  } catch (error) {
+    scene?.destroy();
+    if (disposed) return;
+    console.error('Unable to load the combat arena', error);
+    hud.innerHTML = '<section class="startup-error"><h1>Could not open the arena</h1><p>Check your connection and that browser hardware acceleration is enabled, then reload.</p><button onclick="location.reload()">Try again</button></section>';
+  }
 }
+void start();

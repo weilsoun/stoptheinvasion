@@ -399,6 +399,64 @@ describe('ordered resolution', () => {
     expect(result.actors.guard.exposed).toBe(0);
   });
 
+  test('enemy healing caps at max health without disturbing Block or Exposed', () => {
+    let state = createCombat(12);
+    state = finish(state);
+    state = finish(state);
+    state = finish(state);
+    state.actors.guard.hp = 45;
+    state.actors.guard.block = 5;
+    state.actors.guard.exposed = 7;
+    const before = structuredClone(state);
+
+    const steps = resolveTurn(state);
+    expect(state).toEqual(before);
+    const healStep = steps.find(step => step.events.some(event => event.kind === 'heal'));
+    if (!healStep) throw new Error('Expected the turn-four heal');
+    const heal = healStep.events.find(event => event.kind === 'heal');
+    if (!heal) throw new Error('Expected a heal event');
+    expect(heal).toMatchObject({ actor: 'guard', target: 'guard', amount: 3 });
+    expect(healStep.state.actors.guard).toMatchObject({ hp: 48, maxHp: 48, block: 5, exposed: 7 });
+
+    const final = steps[steps.length - 1].state;
+    healStep.state.actors.guard.hp = 0;
+    expect(final.actors.guard).toMatchObject({ hp: 48, exposed: 7 });
+  });
+
+  test('enemy healing is canceled when an earlier action is lethal', () => {
+    let state = createCombat(12);
+    state = finish(state);
+    state = finish(state);
+    state = finish(state);
+    state.actors.guard.hp = 6;
+    const lethal = { uid: 'lethal-hammer', definitionId: 'hammer', owner: 'bob' as const };
+    state.hand.push(lethal);
+    expect(queueCard(state, lethal.uid, 'guard', 4).ok).toBe(true);
+
+    const steps = resolveTurn(state);
+    expect(steps.flatMap(step => step.events).some(event => event.kind === 'heal')).toBe(false);
+    expect(steps.flatMap(step => step.events).filter(event => event.kind === 'action').map(event => event.actor))
+      .toEqual(['bob']);
+    expect(steps[steps.length - 1].state).toMatchObject({
+      phase: 'victory',
+      actors: { guard: { hp: 0 } },
+    });
+  });
+
+  test('enemy Exposed persists across turn cleanup and is consumed by the next incoming hit', () => {
+    let state = finish(createCombat(12));
+    state = finish(state);
+    expect(state).toMatchObject({
+      turn: 3,
+      actors: { bob: { hp: 34, exposed: 4 } },
+    });
+
+    const steps = resolveTurn(state);
+    const damage = steps.flatMap(step => step.events).find(event => event.kind === 'damage');
+    expect(damage).toMatchObject({ actor: 'guard', target: 'bob', amount: 16 });
+    expect(steps[steps.length - 1].state.actors.bob).toMatchObject({ hp: 18, exposed: 0 });
+  });
+
   test('cards drawn during resolution survive cleanup even when normal draw is debuffed to zero', () => {
     const state = createCombat(12);
     state.actors.bob.drawCount = 0;
@@ -412,6 +470,27 @@ describe('ordered resolution', () => {
     const result = finish(state);
     expect(result.hand.map(value => value.uid).sort()).toEqual(['future-hammer', 'future-vest']);
     expect(result.phase).toBe('planning');
+  });
+
+  test('cleanup reports a discard followed by a redraw even when the same UID returns', () => {
+    const state = createCombat(12);
+    state.hand = [{ uid: 'recycled-vest', definitionId: 'vest', owner: 'bob' }];
+    state.drawPile = [];
+    state.discardPile = [];
+    state.actors.bob.drawCount = 1;
+    const before = structuredClone(state);
+    const steps = resolveTurn(state);
+    const cleanup = steps[steps.length - 1];
+    const movements = cleanup.events.filter(event => event.kind === 'discard' || event.kind === 'draw');
+    expect(movements.map(event => event.kind)).toEqual(['discard', 'draw']);
+    expect(movements.map(event => event.cards?.map(card => card.uid)))
+      .toEqual([['recycled-vest'], ['recycled-vest']]);
+    expect(cleanup.state.hand.map(card => card.uid)).toEqual(['recycled-vest']);
+    expect(cleanup.state.discardPile).toEqual([]);
+    movements[0].cards![0].definitionId = 'hammer';
+    expect(movements[1].cards![0].definitionId).toBe('vest');
+    expect(cleanup.state.hand[0].definitionId).toBe('vest');
+    expect(state).toEqual(before);
   });
 
   test('resolution leaves the committed plan untouched and replays identically from the same seed', () => {

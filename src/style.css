@@ -69,7 +69,7 @@ canvas#arena { display: block; background: #18201e; }
   user-select: none;
   isolation: isolate;
 }
-.game-hud button, .game-hud [role='button'], .game-hud .inspector-shade, .game-hud .outcome-shade { pointer-events: auto; }
+.game-hud button, .game-hud [role='button'], .game-hud .inspector-shade, .game-hud .outcome-shade, .game-hud .menu-shade { pointer-events: auto; }
 .ink-panel {
   background: linear-gradient(165deg, rgba(24, 34, 33, .97), rgba(8, 13, 14, .96));
   border: 4px solid var(--line);
@@ -77,45 +77,32 @@ canvas#arena { display: block; background: #18201e; }
   clip-path: polygon(1% 0, 99% 2%, 100% 93%, 97% 100%, 1% 97%, 0 8%);
 }
 
-.topbar {
+.hud-controls {
   position: absolute;
-  z-index: 12;
-  left: 24px;
-  top: 18px;
-  width: 1872px;
-  height: 108px;
+  z-index: 24;
+  left: 26px;
+  top: 24px;
   display: flex;
   align-items: center;
-  gap: 30px;
-  padding: 12px 22px 12px 28px;
+  gap: 10px;
   pointer-events: auto;
-  clip-path: none;
 }
-.topbar h1 {
-  margin: -3px 0 0;
-  font-family: 'Bebas Neue', Impact, sans-serif;
-  font-size: 47px;
-  line-height: .9;
-  letter-spacing: 2px;
-  color: var(--paper);
-  text-shadow: 3px 3px 0 #000;
-}
-.eyebrow { color: var(--amber); font-size: 16px; font-weight: 900; letter-spacing: 3px; }
 .turn-badge {
-  display: grid;
-  place-items: center;
-  width: 73px;
-  height: 73px;
-  margin-left: auto;
-  transform: rotate(2deg);
-  background: var(--paper);
-  color: var(--ink);
-  border: 4px solid #050707;
-  box-shadow: 4px 4px 0 #000;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 94px;
+  height: 44px;
+  padding: 6px 13px;
+  background: rgba(9, 15, 15, .94);
+  color: var(--paper);
+  border: 3px solid #050707;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, .65), inset 0 0 0 1px #465651;
 }
-.turn-badge small { font-weight: 900; line-height: 1; }
-.turn-badge b { font-family: 'Bebas Neue', Impact, sans-serif; font-size: 40px; line-height: .8; }
-.restart, .primary, .pile-button, .remove-card, .pile-inspector button {
+.turn-badge small { color: var(--amber); font-size: 14px; font-weight: 900; letter-spacing: 2px; line-height: 1; }
+.turn-badge b { font-family: 'Bebas Neue', Impact, sans-serif; font-size: 29px; line-height: 1; }
+.eyebrow { color: var(--amber); font-size: 15px; font-weight: 900; letter-spacing: 3px; }
+.menu-trigger, .menu-restart, .primary, .pile-inspector button, .card-detail-controls button {
   border: 3px solid #050707;
   color: var(--ink);
   background: var(--paper);
@@ -125,7 +112,13 @@ canvas#arena { display: block; background: #18201e; }
   box-shadow: 4px 4px 0 #000;
   cursor: pointer;
 }
-.restart { height: 50px; padding: 0 22px; transform: rotate(1deg); }
+.menu-trigger {
+  height: 40px;
+  padding: 0 15px;
+  color: var(--paper);
+  background: #263431;
+  font-size: 15px;
+}
 
 .actor-target {
   position: absolute;
@@ -135,11 +128,8 @@ canvas#arena { display: block; background: #18201e; }
   height: 445px;
   padding: 12px 35px 300px;
   color: var(--paper);
-  border: 0;
-  background: transparent;
-  cursor: crosshair;
+  pointer-events: none;
 }
-.actor-target:disabled { opacity: 1; filter: none; pointer-events: none; }
 .actor-bob { left: 205px; }
 .actor-guard { left: 1295px; }
 .actor-name {
@@ -183,8 +173,6 @@ canvas#arena { display: block; background: #18201e; }
 .actor-status span { padding: 2px 9px; background: #131b1b; border: 2px solid #050707; font-size: 16px; }
 .actor-status span:first-child b { color: var(--teal); }
 .actor-status span:last-child b { color: var(--amber); }
-.actor-target.target-valid { box-shadow: inset 0 0 0 6px rgba(54, 211, 200, .8); background: radial-gradient(ellipse, transparent 35%, rgba(54,211,200,.13)); }
-.actor-target.target-invalid { opacity: .72; }
 
 .energy-bar {
   position: absolute;
@@ -232,7 +220,7 @@ canvas#arena { display: block; background: #18201e; }
 .timeline-title {
   position: absolute;
   left: 489px;
-  top: 463px;
+  top: 313px;
   width: 942px;
   display: flex;
   justify-content: space-between;
@@ -242,11 +230,12 @@ canvas#arena { display: block; background: #18201e; }
   text-shadow: 2px 2px #000;
 }
 .timeline-title span { color: var(--amber); font-weight: 900; }
+.timeline.has-card-tabs .timeline-title { visibility: hidden; }
 .queue-slot {
   position: absolute;
   z-index: calc(var(--slot-z) + 1);
   left: var(--slot-x);
-  top: 494px;
+  top: var(--slot-y);
   width: 172px;
   height: 292px;
   padding: 0;
@@ -316,6 +305,22 @@ canvas#arena { display: block; background: #18201e; }
 .queue-card-body.attachment-invalid { cursor: not-allowed; }
 .queue-card-body.drop-hover, .hand-hit.drop-hover { outline: 7px solid var(--amber); outline-offset: -4px; }
 .queue-card-body.attachment-valid.drop-hover, .hand-hit.attachment-valid.drop-hover { outline-color: var(--teal); }
+.attachment-tab {
+  position: absolute;
+  z-index: 3;
+  left: var(--tab-x);
+  top: var(--tab-y);
+  width: var(--tab-w);
+  height: var(--tab-h);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 7% 7% 0 0 / 28% 28% 0 0;
+  cursor: grab;
+  touch-action: none;
+}
+.attachment-tab:active { cursor: grabbing; }
+.attachment-tab:focus-visible { outline: 5px solid #fff7d5; outline-offset: -4px; }
 .attachment-chip {
   position: absolute;
   z-index: 12;
@@ -345,102 +350,83 @@ canvas#arena { display: block; background: #18201e; }
   color: #201400;
   background: #ffc75a;
 }
-.physical-drag .attachment-chip { visibility: hidden; pointer-events: none; }
-.remove-card {
-  position: absolute;
-  z-index: 9;
-  right: 12px;
-  bottom: 36px;
-  padding: 3px 7px;
-  background: #d8cfb5;
-  font-size: 11px;
-  box-shadow: 2px 2px #000;
-}
-.queue-dot-layer {
-  position: absolute;
-  z-index: 8;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-.physical-drag .target-dot,
-.physical-drag .remove-card,
-.timeline.pending-placement .queue-dot-layer,
-.timeline.pending-placement .remove-card { pointer-events: none; }
-.physical-drag .target-dot,
-.physical-drag .remove-card { visibility: hidden; }
-.game-hud:has(.hand-hit:hover, .hand-hit.selected) .remove-card:not(:focus-visible) { opacity: 0; }
+.physical-drag .attachment-chip,
+.physical-drag .attachment-tab { visibility: hidden; pointer-events: none; }
 .game-hud.physical-drag .hand-hit, .game-hud.physical-drag .queue-card-body { outline: none; }
 .game-hud.resolving .timeline-title,
-.game-hud.resolving .remove-card,
 .game-hud.resolving .attachment-chip,
-.game-hud.resolving .target-dot { visibility: hidden; }
+.game-hud.resolving .attachment-tab { visibility: hidden; }
 
 .piles {
   position: absolute;
-  z-index: 15;
-  left: 38px;
-  top: 600px;
-  display: flex;
-  gap: 13px;
+  z-index: 22;
+  inset: 0;
+  pointer-events: none;
 }
 .pile-button {
-  width: 135px;
-  height: 78px;
-  transform: rotate(-1deg);
-  background: #d8cfb5;
+  position: absolute;
+  top: 832px;
+  width: 112px;
+  height: 154px;
+  padding: 112px 0 0;
+  color: #fff1bd;
+  background: transparent;
+  border: 0;
+  text-shadow: 2px 2px #000;
+  cursor: pointer;
+  pointer-events: auto;
 }
-.pile-button:nth-child(2) { transform: rotate(1deg); }
-.pile-button b { display: block; color: #a72e25; font-family: 'Bebas Neue'; font-size: 34px; line-height: .8; }
-.pile-button span { font-size: 14px; }
+.pile-draw { left: 292px; }
+.pile-discard { left: 1516px; }
+.pile-button b { display: block; font-family: 'Bebas Neue'; font-size: 24px; line-height: .8; }
+.pile-button span { font-size: 13px; text-transform: uppercase; }
 
 .combat-log {
   position: absolute;
   z-index: 12;
-  left: 810px;
-  top: 330px;
-  width: 300px;
-  height: 130px;
-  padding: 15px 17px;
+  left: 30px;
+  top: 784px;
+  width: 253px;
+  height: 136px;
+  padding: 11px 14px;
   pointer-events: auto;
 }
-.combat-log h2 { margin: 0 0 7px; color: var(--amber); font-family: 'Bebas Neue'; font-size: 25px; letter-spacing: 2px; }
-.combat-log ol { display: flex; flex-direction: column-reverse; gap: 5px; max-height: 63px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
-.combat-log li { padding-top: 5px; border-top: 1px solid #46514e; color: #b9c5c0; font-size: 15px; line-height: 1.05; }
+.combat-log h2 { margin: 0 0 4px; color: var(--amber); font-family: 'Bebas Neue'; font-size: 21px; letter-spacing: 2px; }
+.combat-log ol { display: flex; flex-direction: column-reverse; gap: 3px; max-height: 83px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.combat-log li { padding-top: 3px; border-top: 1px solid #46514e; color: #b9c5c0; font-size: 14px; line-height: 1.05; }
 .combat-log li:last-child { color: #fff0c7; font-weight: 700; }
 
 .resolve {
   position: absolute;
-  z-index: 18;
-  left: 42px;
-  top: 830px;
-  width: 290px;
-  height: 92px;
-  transform: rotate(-1deg);
+  z-index: 23;
+  left: 1650px;
+  top: 884px;
+  width: 232px;
+  height: 76px;
+  transform: rotate(1deg);
   background: var(--amber);
   font-family: 'Bebas Neue', Impact, sans-serif;
-  font-size: 32px;
+  font-size: 28px;
   letter-spacing: 2px;
 }
-.resolve span { display: block; font-family: 'Barlow Condensed'; font-size: 15px; letter-spacing: 1px; }
+.resolve span { display: block; max-width: 210px; overflow: hidden; font-family: 'Barlow Condensed'; font-size: 13px; letter-spacing: 1px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
 .primary:hover:not(:disabled) { background: #ffd05b; transform: translate(-2px, -2px) rotate(-1deg); box-shadow: 7px 7px 0 #000; }
 .notice {
   position: absolute;
   z-index: 17;
-  left: 38px;
-  top: 700px;
-  width: 300px;
+  left: 30px;
+  top: 696px;
+  width: 253px;
   min-height: 30px;
-  padding: 3px 18px;
+  padding: 5px 12px;
   text-align: center;
   color: #e9e1c9;
   background: rgba(7, 11, 11, .9);
   border: 2px solid #293734;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: .5px;
+  line-height: 1.1;
+  letter-spacing: .3px;
   pointer-events: auto;
 }
 .notice.warning { color: #fff0d5; border-color: var(--red); background: rgba(79,20,17,.94); }
@@ -483,30 +469,34 @@ canvas#arena { display: block; background: #18201e; }
 .hand-zone.attachment-targeting .hand-hit.attachment-invalid { cursor: not-allowed; }
 .hand-zone.attachment-targeting .hand-hit.attachment-valid { cursor: crosshair; }
 .hand-hit:active { cursor: grabbing; }
-.hand-hit[aria-disabled="true"] { cursor: not-allowed; }
-.target-dot {
-  position: absolute;
-  z-index: 8;
-  left: var(--dot-x);
-  top: var(--dot-y);
-  width: max(30px, 12%);
-  height: 30px;
-  margin: -15px 0;
-  transform: translateX(-50%);
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  cursor: crosshair;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-/* Keep the dot clickable across the card's hover lift, including a first tap. */
-.hand-hit > .target-dot { height: 74px; margin-top: -37px; }
-.target-dot:hover { outline: 2px dashed rgba(255, 247, 213, .72); outline-offset: -2px; }
-.target-dot:disabled { pointer-events: none; opacity: 1; }
+.hand-hit[aria-disabled="true"] { cursor: help; }
 
-.inspector-shade, .outcome-shade {
+.game-hud.detail-open > .hud-controls,
+.game-hud.detail-open > main {
+  visibility: hidden;
+  pointer-events: none;
+}
+.card-detail-shade {
+  position: absolute;
+  z-index: 100;
+  inset: 0;
+  pointer-events: auto;
+}
+.card-detail-controls {
+  position: absolute;
+  left: 720px;
+  top: 888px;
+  width: 480px;
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  pointer-events: auto;
+}
+.card-detail-controls button { min-width: 150px; min-height: 52px; padding: 10px 18px; font-size: 20px; }
+.detail-refund { color: white !important; background: var(--red) !important; }
+.detail-close { background: var(--amber) !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.inspector-shade, .outcome-shade, .menu-shade {
   position: absolute;
   z-index: 100;
   inset: 0;
@@ -515,7 +505,7 @@ canvas#arena { display: block; background: #18201e; }
   background: rgba(2, 5, 5, .78);
   backdrop-filter: blur(5px);
 }
-.pile-inspector, .outcome {
+.pile-inspector, .outcome, .game-menu {
   width: 560px;
   max-height: 760px;
   padding: 25px;
@@ -532,6 +522,21 @@ canvas#arena { display: block; background: #18201e; }
 .pile-inspector li { display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; padding: 9px; border-bottom: 2px solid #948a70; font-size: 20px; }
 .pile-inspector li span { color: #a52d26; font-family: 'Bebas Neue'; }
 .pile-inspector li small { font-weight: 700; text-transform: uppercase; }
+.game-menu {
+  width: 500px;
+  padding: 38px;
+}
+.game-menu h2 {
+  margin: 2px 0 4px;
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 54px;
+  letter-spacing: 2px;
+}
+.game-menu p { margin: 0 0 28px; color: #4f5048; font-size: 19px; }
+.menu-actions { display: grid; gap: 12px; }
+.menu-actions button { min-height: 54px; font-size: 20px; }
+.menu-actions .primary { background: var(--amber); }
+.menu-restart { color: white; background: var(--red); }
 .outcome { position: relative; width: 670px; padding: 54px; text-align: center; }
 .outcome.victory { box-shadow: 16px 16px 0 #0d5d57; }
 .outcome.defeat { box-shadow: 16px 16px 0 #7a211c; }

@@ -21,13 +21,21 @@ export interface CardVisual {
   damageModifier: number;
   target: ActorId | null;
   targets: ActorId[];
+  /** Attachment drawn behind this host UID, following its displayed pose. */
+  underCard?: string;
+  /** Centered inspection card, drawn above the scene's dimming overlay. */
+  detail?: boolean;
+  /** Rotation around the card's vertical axis: 0 shows its face, 180 its back. */
+  flip?: number;
+  /** Initialize a pile transition at its source pose before animating its destination. */
+  snap?: boolean;
 }
 export interface ScenePort {
   setCards(cards: CardVisual[]): void;
   setState(state: CombatState): void;
   setPointer(x: number, y: number): void;
   setTarget(target: ActorId | null): void;
-  getCardPose(uid: string): Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'> | null;
+  getCardPose(uid: string): Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'> | null;
   playEvent(event: CombatEvent): void;
   destroy(): void;
 }

@@ -1,6 +1,6 @@
 export type ActorId = 'bob' | 'guard';
 export type Phase = 'planning' | 'resolving' | 'victory' | 'defeat';
-export type Effect = { kind: 'damage' | 'block' | 'exposed' | 'energy' | 'draw'; amount: number; recipient: 'self' | 'target' };
+export type Effect = { kind: 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw'; amount: number; recipient: 'self' | 'target' };
 export interface CardDefinition {
   id: string;
   name: string;
@@ -46,12 +46,14 @@ export interface CombatState {
   log: string[];
 }
 export interface CombatEvent {
-  kind: 'action' | 'damage' | 'block' | 'exposed' | 'energy' | 'draw' | 'empty' | 'victory' | 'defeat' | 'turn';
+  kind: 'action' | 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'discard' | 'empty' | 'victory' | 'defeat' | 'turn';
   message: string;
   actor?: ActorId;
   target?: ActorId;
   amount?: number;
   slot?: number;
+  /** Exact moved cards, including cards discarded and redrawn in one cleanup. */
+  cards?: CardInstance[];
 }
 export interface ResolutionStep { state: CombatState; events: CombatEvent[] }
 export interface CommandResult { ok: boolean; reason?: string }

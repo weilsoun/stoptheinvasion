@@ -247,33 +247,71 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: num
   return y + (lineNumber + 1) * lineHeight;
 }
 
-function drawIcon(ctx: CanvasRenderingContext2D, icon: CardDefinition['icon']): void {
+
+const CARD_ART_URLS: Record<string, string> = {
+  hammer: new URL('../assets/cards/hammer.png', import.meta.url).href,
+  vest: new URL('../assets/cards/vest.png', import.meta.url).href,
+  tape: new URL('../assets/cards/tape.png', import.meta.url).href,
+  heavy: new URL('../assets/cards/heavy.png', import.meta.url).href,
+  coffee: new URL('../assets/cards/coffee.png', import.meta.url).href,
+  toolbox: new URL('../assets/cards/toolbox.png', import.meta.url).href,
+  brace: new URL('../assets/cards/brace.png', import.meta.url).href,
+  weaken: new URL('../assets/cards/weaken.png', import.meta.url).href,
+  reinforce: new URL('../assets/cards/reinforce.png', import.meta.url).href,
+  enemy: new URL('../assets/cards/enemy.png', import.meta.url).href,
+  'enemy-heal': new URL('../assets/cards/enemy-heal.png', import.meta.url).href,
+  'enemy-expose': new URL('../assets/cards/enemy-expose.png', import.meta.url).href,
+};
+const cardImages: Partial<Record<string, HTMLImageElement>> = {};
+let cardArtLoad: Promise<void> | undefined;
+
+export function preloadCardArt(): Promise<void> {
+  cardArtLoad ??= Promise.all(Object.entries(CARD_ART_URLS).map(([id, url]) => new Promise<void>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      cardImages[id] = image;
+      resolve();
+    };
+    image.onerror = () => reject(new Error(`Could not load card illustration: ${id}`));
+    image.src = url;
+  }))).then(() => undefined);
+  return cardArtLoad;
+}
+
+function drawCardIllustration(
+  ctx: CanvasRenderingContext2D,
+  artId: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): void {
+  const image = cardImages[artId];
+  if (!image) throw new Error(`Card illustration was not preloaded: ${artId}`);
   ctx.save();
-  ctx.translate(256, 295);
-  ctx.rotate(-0.12);
-  if (icon === 'hammer') {
-    line(ctx, [-80, 95, 65, -75], '#8b5830', 34);
-    polygon(ctx, [-68, -95, 104, -95, 124, -27, -56, -15], '#99a5a0', INK, 16);
-  } else if (icon === 'shield') {
-    polygon(ctx, [0, -116, 103, -77, 86, 57, 0, 126, -86, 57, -103, -77], '#ef8c32', INK, 17);
-    line(ctx, [0, -82, 0, 83], '#ffe199', 15);
-  } else if (icon === 'tape') {
-    ellipse(ctx, 0, 0, 112, 94, '#e5ba38', INK, 17);
-    ellipse(ctx, 0, 0, 44, 36, '#26383a', INK, 12);
-    polygon(ctx, [69, 61, 151, 88, 128, 125, 51, 85], '#e5ba38', INK, 12);
-  } else if (icon === 'coffee') {
-    polygon(ctx, [-75, -65, 62, -65, 48, 90, -62, 90], '#f1e1b4', INK, 16);
-    line(ctx, [60, -27, 113, -14, 105, 52, 53, 58], INK, 16);
-    line(ctx, [-35, -96, -51, -134, -28, -166], '#d7efe4', 12);
-    line(ctx, [9, -96, -1, -139, 24, -171], '#d7efe4', 12);
-  } else if (icon === 'toolbox') {
-    polygon(ctx, [-132, -42, 132, -42, 117, 101, -117, 101], '#d65729', INK, 17);
-    line(ctx, [-54, -48, -41, -105, 42, -105, 56, -48], INK, 19);
-    polygon(ctx, [-27, 8, 27, 8, 27, 43, -27, 43], '#efc54d', INK, 9);
-  } else {
-    polygon(ctx, [-108, -85, -4, -62, 52, 25, 132, 57, 102, 116, 0, 94, -47, 36, -126, 7], '#9a6a3c', INK, 17);
-    line(ctx, [-48, -42, 51, 26], '#e4c48b', 16);
-  }
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 14);
+  ctx.clip();
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const sourceWidth = width / scale;
+  const sourceHeight = height / scale;
+  ctx.drawImage(
+    image,
+    (image.naturalWidth - sourceWidth) / 2,
+    (image.naturalHeight - sourceHeight) / 2,
+    sourceWidth,
+    sourceHeight,
+    x,
+    y,
+    width,
+    height,
+  );
+  const shade = ctx.createLinearGradient(0, y, 0, y + height);
+  shade.addColorStop(0, 'rgba(4,13,15,.04)');
+  shade.addColorStop(.72, 'rgba(4,13,15,0)');
+  shade.addColorStop(1, 'rgba(4,13,15,.34)');
+  ctx.fillStyle = shade;
+  ctx.fillRect(x, y, width, height);
   ctx.restore();
 }
 
@@ -285,119 +323,226 @@ function outgoingDamage(card: CardDefinition, modifier = 0): number {
   return damage;
 }
 
-export function drawCardArt(card: CardDefinition, locked: boolean, damageModifier: number, showTargets: boolean): HTMLCanvasElement {
-  const [surface, ctx] = canvas(512, 768);
-  const palette = locked
-    ? { accent: '#b51f2e', dark: '#26090d', glow: '#ff625c' }
-    : card.type === 'attack'
-      ? { accent: '#d85a2b', dark: '#3a1715', glow: '#ff9a45' }
-      : card.type === 'skill'
-        ? { accent: '#2e9388', dark: '#0c3435', glow: '#79d7b2' }
-        : { accent: '#927032', dark: '#332816', glow: '#eed36f' };
-  const baseDamage = outgoingDamage(card);
-  const effectiveDamage = outgoingDamage(card, damageModifier);
-  ctx.beginPath();
-  ctx.roundRect(0, 0, 512, 768, 36);
-  ctx.clip();
-  ctx.fillStyle = '#080f11';
-  ctx.fillRect(0, 0, 512, 768);
-  ctx.fillStyle = PAPER;
-  ctx.strokeStyle = '#03090a';
-  ctx.lineWidth = 18;
-  ctx.beginPath();
-  ctx.roundRect(18, 18, 476, 732, 24);
-  ctx.fill();
-  ctx.stroke();
-  const wash = ctx.createLinearGradient(0, 0, 512, 768);
-  wash.addColorStop(0, palette.accent);
-  wash.addColorStop(.42, locked ? '#c66a61' : '#ead39f');
-  wash.addColorStop(1, palette.dark);
-  ctx.fillStyle = wash;
-  ctx.fillRect(34, 34, 444, 700);
-  halftone(ctx, 34, 34, 444, 700, 'rgba(4,16,18,.18)', 18);
-  polygon(ctx, [45, 48, 467, 48, 445, 154, 66, 154], '#f4e2b6', INK, 11);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '900 37px Impact, Haettenschweiler, sans-serif';
-  ctx.fillStyle = palette.dark;
-  wrapText(ctx, card.name.toUpperCase(), 256, 82, locked ? 390 : 330, 37, 2);
-  if (!locked) {
-    ellipse(ctx, 73, 91, 50, 50, palette.glow, INK, 12);
-    ctx.font = '900 50px Impact, sans-serif';
-    ctx.fillStyle = INK;
-    ctx.fillText(String(card.cost), 73, 95);
+function secondaryRules(card: CardDefinition): string[] {
+  return card.effects.flatMap((effect) => {
+    if (effect.kind === 'damage') return [];
+    if (effect.kind === 'block') return [`Gain ${effect.amount} Block this turn.`];
+    if (effect.kind === 'exposed') return [`Apply ${effect.amount} Exposed.`];
+    if (effect.kind === 'heal') return [`Restore ${effect.amount} health.`];
+    if (effect.kind === 'energy') return [`Bank ${effect.amount} energy for next turn.`];
+    return [`Draw ${effect.amount} card${effect.amount === 1 ? '' : 's'}.`];
+  });
+}
+function grayscale(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  const image = ctx.getImageData(0, 0, width, height);
+  for (let index = 0; index < image.data.length; index += 4) {
+    const luminance = Math.round(
+      image.data[index] * .299 + image.data[index + 1] * .587 + image.data[index + 2] * .114,
+    );
+    image.data[index] = luminance;
+    image.data[index + 1] = luminance;
+    image.data[index + 2] = luminance;
   }
-  polygon(ctx, [58, 170, 454, 170, 468, 438, 44, 438], locked ? '#3b0c13' : '#193638', INK, 12);
+  ctx.putImageData(image, 0, 0);
+}
+
+
+export function drawCardBack(): HTMLCanvasElement {
+  const [surface, ctx] = canvas(512, 768);
+  ctx.beginPath();
+  ctx.roundRect(0, 0, 512, 768, 38);
+  ctx.clip();
+  ctx.fillStyle = '#07191c';
+  ctx.fillRect(0, 0, 512, 768);
+
+  ctx.fillStyle = '#123d3c';
+  ctx.beginPath();
+  ctx.roundRect(22, 22, 468, 724, 24);
+  ctx.fill();
+  ctx.strokeStyle = '#e56532';
+  ctx.lineWidth = 10;
+  ctx.stroke();
+
   ctx.save();
   ctx.beginPath();
-  ctx.rect(54, 180, 404, 248);
+  ctx.roundRect(42, 42, 428, 684, 15);
   ctx.clip();
-  drawIcon(ctx, card.icon);
-  ctx.restore();
-  ctx.font = `900 ${card.modifier ? 18 : 22}px Arial, sans-serif`;
-  ctx.fillStyle = '#f4deaa';
-  ctx.fillText(card.modifier ? 'ATTACHMENT • NO TIMELINE SLOT' : locked ? 'LOCKED • ENEMY INTENT' : card.type.toUpperCase(), 256, 462);
-  polygon(ctx, [53, 480, 459, 480, 449, 602, 63, 602], '#f4e4bd', INK, 10);
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = '#132527';
-  if (card.modifier) {
-    const modifier = card.modifier.damage;
-    ctx.font = '900 29px Impact, Haettenschweiler, sans-serif';
-    ctx.fillStyle = modifier > 0 ? '#16654e' : '#a5202d';
-    ctx.fillText(`${modifier > 0 ? '+' : '−'}${Math.abs(modifier)} ATTACK DAMAGE`, 256, 493);
-    ctx.font = '900 15px Arial, sans-serif';
-    ctx.fillStyle = '#526062';
-    ctx.fillText(`ATTACH TO ${card.target === 'self' ? 'FRIENDLY' : 'ENEMY'} ATTACK`, 256, 534);
-    ctx.font = '700 19px Arial, sans-serif';
-    ctx.fillStyle = '#132527';
-    wrapText(ctx, card.description, 256, 558, 342, 24, 2);
-  } else if (damageModifier !== 0 && baseDamage > 0) {
-    ctx.font = '900 27px Impact, Haettenschweiler, sans-serif';
-    ctx.fillText(`ATTACK DAMAGE  ${baseDamage} → ${effectiveDamage}`, 256, 492);
-    ctx.font = '900 19px Arial, sans-serif';
-    ctx.fillStyle = damageModifier > 0 ? '#16654e' : '#a5202d';
-    ctx.fillText(`${damageModifier > 0 ? '+' : '−'}${Math.abs(damageModifier)} MODIFIER`, 256, 527);
-    ctx.font = '900 12px Arial, sans-serif';
-    ctx.fillStyle = '#526062';
-    ctx.fillText('BASE RULE', 256, 549);
-    ctx.font = '700 16px Arial, sans-serif';
-    ctx.fillStyle = '#132527';
-    wrapText(ctx, card.description, 256, 564, 342, 18, 2);
-  } else {
-    ctx.font = '700 24px Arial, sans-serif';
-    wrapText(ctx, card.description, 256, 502, 342, 31, 3);
-  }
-  ctx.textBaseline = 'alphabetic';
-  ctx.font = 'italic 600 18px Georgia, serif';
-  ctx.fillStyle = '#f3d694';
-  ctx.fillText(`“${card.flavor}”`, 256, 626, 400);
-  if (locked) {
-    ctx.save();
-    ctx.translate(256, 685);
-    ctx.rotate(-.035);
-    ctx.strokeStyle = '#ffaaa2';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(-176, -28, 352, 56);
-    ctx.font = '900 27px Impact, sans-serif';
-    ctx.fillStyle = '#ffaaa2';
-    ctx.fillText('LOCKED  //  INTENT', 0, 2);
-    ctx.restore();
-  } else if (showTargets) {
-    polygon(ctx, [52, 647, 460, 647, 450, 720, 62, 720], '#10292b', INK, 9);
-    ctx.font = `900 ${card.modifier ? 16 : 21}px Arial, sans-serif`;
-    ctx.fillStyle = palette.glow;
-    ctx.fillText(card.modifier ? card.target === 'self' ? 'FRIENDLY' : 'ENEMY' : card.target === 'self' ? 'SELF' : 'TARGET', 112, 687);
-    ctx.strokeStyle = 'rgba(244,226,182,.42)';
-    ctx.lineWidth = 3;
+  ctx.fillStyle = '#0b2b2e';
+  ctx.fillRect(42, 42, 428, 684);
+  ctx.strokeStyle = 'rgba(239,191,104,.26)';
+  ctx.lineWidth = 18;
+  for (let offset = -650; offset < 900; offset += 68) {
     ctx.beginPath();
-    ctx.moveTo(169, 661);
-    ctx.lineTo(169, 706);
+    ctx.moveTo(offset, 42);
+    ctx.lineTo(offset + 470, 726);
     ctx.stroke();
   }
-  ctx.strokeStyle = palette.glow;
-  ctx.lineWidth = 5;
+  ctx.restore();
+
+  ctx.fillStyle = '#e56532';
   ctx.beginPath();
-  ctx.roundRect(27, 27, 458, 714, 18);
+  ctx.roundRect(106, 247, 300, 274, 28);
+  ctx.fill();
+  ctx.strokeStyle = '#f0c875';
+  ctx.lineWidth = 8;
   ctx.stroke();
+  ctx.fillStyle = '#092427';
+  ctx.beginPath();
+  ctx.roundRect(132, 273, 248, 222, 18);
+  ctx.fill();
+
+  ctx.strokeStyle = '#f0c875';
+  ctx.lineWidth = 22;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(176, 432);
+  ctx.lineTo(336, 336);
+  ctx.moveTo(176, 336);
+  ctx.lineTo(336, 432);
+  ctx.stroke();
+  ctx.fillStyle = '#f0c875';
+  ctx.beginPath();
+  ctx.arc(176, 336, 24, 0, Math.PI * 2);
+  ctx.arc(336, 336, 24, 0, Math.PI * 2);
+  ctx.fill();
+  return surface;
+}
+
+export function drawCardArt(
+  card: CardDefinition,
+  locked: boolean,
+  damageModifier: number,
+  showTargets: boolean,
+  dimmed: boolean,
+): HTMLCanvasElement {
+  const [surface, ctx] = canvas(512, 768);
+  const palette = locked
+    ? { accent: '#c74736', dark: '#eddbb8', glow: '#ff9c68', paper: '#101e24' }
+    : card.type === 'attack'
+      ? { accent: '#d95d2c', dark: '#331719', glow: '#ffad55', paper: '#f3dfb8' }
+      : card.type === 'skill'
+        ? { accent: '#278f83', dark: '#0b3031', glow: '#7de2bd', paper: '#e9dfb9' }
+        : { accent: '#a27a2e', dark: '#302515', glow: '#f3d56b', paper: '#eee0b7' };
+  const baseDamage = outgoingDamage(card);
+  const effectiveDamage = outgoingDamage(card, damageModifier);
+  const modifier = card.modifier?.damage;
+  const illustration = locked
+    ? card.effects.some((effect) => effect.kind === 'heal')
+      ? 'enemy-heal'
+      : card.effects.some((effect) => effect.kind === 'exposed')
+        ? 'enemy-expose'
+        : 'enemy'
+    : card.id;
+  const border = locked ? '#eddbb8' : '#07191c';
+
+  ctx.beginPath();
+  ctx.roundRect(0, 0, 512, 768, 38);
+  ctx.clip();
+  ctx.fillStyle = border;
+  ctx.fillRect(0, 0, 512, 768);
+  ctx.fillStyle = palette.paper;
+  ctx.beginPath();
+  ctx.roundRect(14, 14, 484, 740, 28);
+  ctx.fill();
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 10;
+  ctx.stroke();
+
+  // Attachments expose only this top section while tucked under their host.
+  ctx.fillStyle = modifier === undefined ? palette.dark : modifier > 0 ? '#08715a' : '#a92238';
+  ctx.beginPath();
+  ctx.roundRect(28, 28, 456, 124, 16);
+  ctx.fill();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (modifier !== undefined) {
+    ctx.fillStyle = palette.paper;
+    ctx.beginPath();
+    ctx.arc(70, 60, 28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#14282a';
+    ctx.font = '900 31px Impact, "Arial Black", sans-serif';
+    ctx.fillText(String(card.cost), 70, 62);
+    ctx.fillStyle = '#fff0c9';
+    ctx.font = '900 39px Impact, "Arial Black", sans-serif';
+    ctx.fillText(`${modifier > 0 ? '+' : '−'}${Math.abs(modifier)} DAMAGE`, 282, 60);
+    ctx.font = '900 31px Impact, "Arial Narrow", sans-serif';
+    wrapText(ctx, card.name.toUpperCase(), 256, 99, 408, 31, 2);
+  } else {
+    if (!locked) {
+      ctx.fillStyle = palette.glow;
+      ctx.beginPath();
+      ctx.arc(72, 90, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#07191c';
+      ctx.lineWidth = 7;
+      ctx.stroke();
+      ctx.fillStyle = '#07191c';
+      ctx.font = '900 42px Impact, "Arial Black", sans-serif';
+      ctx.fillText(String(card.cost), 72, 92);
+    }
+    ctx.fillStyle = locked ? '#101e24' : '#fff0ce';
+    ctx.font = '900 35px Impact, "Arial Narrow", sans-serif';
+    wrapText(ctx, card.name.toUpperCase(), locked ? 256 : 283, 62, locked ? 400 : 344, 39, 2);
+  }
+
+  drawCardIllustration(ctx, illustration, 36, 168, 440, 350);
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.roundRect(36, 168, 440, 350, 15);
+  ctx.stroke();
+
+  const panelFill = damageModifier > 0 && baseDamage > 0
+    ? locked ? '#12362d' : '#cce8cf'
+    : damageModifier < 0 && baseDamage > 0
+      ? locked ? '#45212c' : '#f2cbc0'
+      : locked ? '#18282d' : '#f7e9c7';
+  ctx.fillStyle = panelFill;
+  ctx.beginPath();
+  ctx.roundRect(36, 536, 440, 180, 15);
+  ctx.fill();
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 7;
+  ctx.stroke();
+
+  ctx.fillStyle = locked ? '#fff0ce' : '#14282a';
+  ctx.textBaseline = 'top';
+  if (modifier !== undefined) {
+    ctx.font = '700 28px "Avenir Next", Arial, sans-serif';
+    wrapText(ctx, card.description, 256, 566, 382, 36, 4);
+  } else if (damageModifier !== 0 && baseDamage > 0) {
+    const upgraded = damageModifier > 0;
+    ctx.fillStyle = locked
+      ? upgraded ? '#88e2aa' : '#ffa99b'
+      : upgraded ? '#08715a' : '#a92238';
+    ctx.font = '900 46px Impact, "Arial Black", sans-serif';
+    ctx.fillText(`${effectiveDamage} DAMAGE`, 256, 546);
+    ctx.font = '900 19px "Arial Narrow", Arial, sans-serif';
+    ctx.fillText(
+      `${baseDamage} BASE ${upgraded ? '+' : '−'} ${Math.abs(damageModifier)} ${upgraded ? 'UPGRADE' : 'DEBUFF'}`,
+      256,
+      600,
+    );
+    const rules = secondaryRules(card);
+    if (rules.length > 0) {
+      ctx.fillStyle = locked ? '#fff0ce' : '#23383a';
+      ctx.font = '750 20px "Avenir Next", Arial, sans-serif';
+      wrapText(ctx, rules.join(' '), 256, 641, 382, 27, 2);
+    }
+  } else {
+    ctx.font = '750 23px "Avenir Next", Arial, sans-serif';
+    wrapText(ctx, card.description, 256, 559, 382, 31, 4);
+  }
+
+  if (showTargets && !locked && modifier === undefined) {
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = palette.dark;
+    ctx.font = '900 17px "Arial Narrow", Arial, sans-serif';
+    ctx.fillText(card.target === 'self' ? 'SELF' : 'CHOOSE TARGET', 256, 697);
+  }
+
+  if (dimmed) grayscale(ctx, surface.width, surface.height);
   return surface;
 }

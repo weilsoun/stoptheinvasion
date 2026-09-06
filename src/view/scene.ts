@@ -3,15 +3,17 @@ import {
   BLEND_NORMAL,
   Color,
   Entity,
+  FOG_LINEAR,
   GAMMA_SRGB,
   PROJECTION_ORTHOGRAPHIC,
   SHADOW_PCF3,
   StandardMaterial,
   Texture,
   TONEMAP_ACES,
+  Vec3,
 } from 'playcanvas';
 import type { ActorId, CombatEvent, CombatState } from '../game/types';
-import { drawActorArt, drawArenaArt, drawCardArt } from './art';
+import { drawActorArt, drawArenaArt, drawCardArt, drawCardBack } from './art';
 import { CARD_TARGET_GAP, CARD_TARGET_Y, type CardVisual, type ScenePort } from './types';
 
 const DESIGN_WIDTH = 1920;
@@ -25,6 +27,8 @@ type ActorRig = {
   baseX: number;
   defeated: boolean;
   hit: number;
+  heal: number;
+  exposed: number;
   action: number;
 };
 type CardDotRig = {
@@ -36,6 +40,7 @@ type CardDotRig = {
 type CardRig = {
   root: Entity;
   surface: Entity;
+  backSurface: Entity;
   material: StandardMaterial;
   dots: CardDotRig[];
   textureKey: string;
@@ -44,6 +49,7 @@ type CardRig = {
   x: Spring;
   y: Spring;
   roll: Spring;
+  flip: Spring;
   displayedWidth: number;
   displayedHeight: number;
 };
@@ -117,7 +123,7 @@ function primitive(
   app: Application,
   parent: Entity,
   name: string,
-  type: 'box' | 'sphere' | 'cylinder',
+  type: 'box' | 'sphere' | 'cylinder' | 'plane',
   position: [number, number, number],
   scale: [number, number, number],
   material: StandardMaterial,
@@ -136,12 +142,16 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     graphicsDeviceOptions: { alpha: false, antialias: true, depth: true, stencil: false },
   });
   app.graphicsDevice.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-  app.scene.ambientLight = new Color(.15, .24, .23);
-  app.scene.exposure = 1.05;
+  app.scene.ambientLight = new Color(.13, .18, .17);
+  app.scene.exposure = .98;
+  app.scene.fog.type = FOG_LINEAR;
+  app.scene.fog.color = new Color(.025, .065, .065);
+  app.scene.fog.start = 11.65;
+  app.scene.fog.end = 14.2;
 
   const camera = new Entity('FightCamera', app);
   camera.addComponent('camera', {
-    clearColor: new Color(.025, .07, .075),
+    clearColor: new Color(.025, .065, .065),
     projection: PROJECTION_ORTHOGRAPHIC,
     orthoHeight: DESIGN_HEIGHT / WORLD_SCALE / 2,
     nearClip: .1,
@@ -157,24 +167,39 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
 
   const arenaRoot = new Entity('MOREMART_Arena', app);
   app.root.addChild(arenaRoot);
-  const backdropTexture = textureFromCanvas(app, drawArenaArt(), 'MOREMART procedural arena');
-  const backdropMaterial = texturedMaterial(backdropTexture, false, .1);
-  primitive(app, arenaRoot, 'Painted_Arena', 'box', [0, 0, -.65], [19.5, 11.1, .08], backdropMaterial);
-
-  // A few real depth cues catch highlights while the painted shelf bays carry the detail.
-  const shelfMaterial = solidMaterial(new Color(.12, .24, .23), .5);
-  const shelfEdgeMaterial = solidMaterial(new Color(.38, .43, .34), .65);
+  // Separate painted distance, dimensional fixtures and the playable plane without a full-screen
+  // depth-of-field pass, which would soften card text along with the background.
+  const backdropRoot = new Entity('Distant_Aisle', app);
+  arenaRoot.addChild(backdropRoot);
+  const fixtureRoot = new Entity('Aisle_Fixtures', app);
+  arenaRoot.addChild(fixtureRoot);
+  const backdropArt = drawArenaArt();
+  const backdropContext = backdropArt.getContext('2d')!;
+  backdropContext.save();
+  backdropContext.filter = 'blur(3px)';
+  backdropContext.globalCompositeOperation = 'copy';
+  backdropContext.drawImage(backdropArt, 0, 0);
+  backdropContext.restore();
+  const backdropTexture = textureFromCanvas(app, backdropArt, 'MOREMART soft-focus arena');
+  const backdropMaterial = texturedMaterial(backdropTexture, false, .025);
+  backdropMaterial.specular = new Color(.08, .08, .065);
+  backdropMaterial.gloss = .18;
+  backdropMaterial.clearCoat = 0;
+  backdropMaterial.update();
+  primitive(app, backdropRoot, 'Painted_Arena', 'box', [0, 0, -.95], [19.5, 11.1, .08], backdropMaterial);
+  const shelfMaterial = solidMaterial(new Color(.105, .19, .185), .32);
+  const shelfEdgeMaterial = solidMaterial(new Color(.28, .34, .29), .38);
   for (const side of [-8.9, 8.9]) {
-    primitive(app, arenaRoot, 'Shelf_Post', 'box', [side, .55, -.22], [.13, 3.9, .32], shelfEdgeMaterial, true);
+    primitive(app, fixtureRoot, 'Shelf_Post', 'box', [side, .55, -.22], [.13, 3.9, .32], shelfEdgeMaterial, true);
     for (const y of [-.75, .15, 1.05, 1.95]) {
-      primitive(app, arenaRoot, 'Shelf_Lip', 'box', [side, y, -.17], [1.3, .09, .38], shelfMaterial, true);
+      primitive(app, fixtureRoot, 'Shelf_Lip', 'box', [side, y, -.17], [1.3, .09, .38], shelfMaterial, true);
     }
   }
-  const amberMaterial = solidMaterial(new Color(1, .57, .17), .6, new Color(.7, .26, .035));
+  const amberMaterial = solidMaterial(new Color(.78, .44, .13), .38, new Color(.28, .09, .012));
   for (const x of [-6.6, -2.2, 2.2, 6.6]) {
-    primitive(app, arenaRoot, 'Amber_Practical', 'box', [x, 3.72, -.1], [1.15, .08, .18], amberMaterial);
+    primitive(app, fixtureRoot, 'Amber_Practical', 'box', [x, 3.72, -.1], [1.15, .08, .18], amberMaterial);
   }
-  const foregroundMaterial = solidMaterial(new Color(.79, .47, .08), .42);
+  const foregroundMaterial = solidMaterial(new Color(.68, .4, .09), .34);
   const leftBollard = primitive(app, arenaRoot, 'Foreground_Bollard', 'cylinder', [-8.55, -4.45, .35], [.28, .75, .28], foregroundMaterial, true);
   leftBollard.setLocalEulerAngles(0, 0, -8);
   const rightBollard = primitive(app, arenaRoot, 'Foreground_Bollard', 'cylinder', [8.62, -4.4, .35], [.3, .84, .3], foregroundMaterial, true);
@@ -183,33 +208,32 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   const key = new Entity('Warm_Aisle_Key', app);
   key.addComponent('light', {
     type: 'omni',
-    color: new Color(1, .63, .32),
-    intensity: 2.1,
-    range: 24,
+    color: new Color(.96, .7, .46),
+    intensity: 1.6,
+    range: 22,
     castShadows: true,
     shadowType: SHADOW_PCF3,
     shadowResolution: 1024,
-    shadowBias: .15,
+    shadowBias: .08,
+    normalOffsetBias: .04,
   });
   key.setPosition(-2.5, 5.2, 7.5);
   app.root.addChild(key);
-
-  const fill = new Entity('Acidic_Fill', app);
+  const fill = new Entity('Muted_Aisle_Fill', app);
   fill.addComponent('light', {
     type: 'omni',
-    color: new Color(.36, .88, .24),
-    intensity: .7,
-    range: 11,
+    color: new Color(.3, .5, .34),
+    intensity: .34,
+    range: 12,
     castShadows: false,
   });
   fill.setPosition(5.2, -.25, 5.5);
   app.root.addChild(fill);
-
   const handLight = new Entity('Tabletop_Reading_Light', app);
   handLight.addComponent('light', {
     type: 'omni',
-    color: new Color(1, .9, .72),
-    intensity: .8,
+    color: new Color(1, .9, .74),
+    intensity: .9,
     range: 13,
     castShadows: false,
   });
@@ -228,7 +252,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const baseX = actor === 'bob' ? worldX(410) : worldX(1500);
     root.setPosition(baseX, worldY(400), .45);
     arenaRoot.addChild(root);
-    actors.set(actor, { root, material, baseX, defeated: false, hit: 0, action: 0 });
+    actors.set(actor, { root, material, baseX, defeated: false, hit: 0, heal: 0, exposed: 0, action: 0 });
   }
 
   const targetWellMaterial = solidMaterial(new Color(.025, .075, .08), .3);
@@ -236,16 +260,43 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   const targetTealMaterial = solidMaterial(new Color(.08, .82, .72), .7, new Color(.02, .25, .21));
   const targetAmberMaterial = solidMaterial(new Color(1, .57, .16), .7, new Color(.34, .13, .02));
 
+  const detailScrimMaterial = solidMaterial(new Color(0, 0, 0), 0);
+  detailScrimMaterial.opacity = .62;
+  detailScrimMaterial.blendType = BLEND_NORMAL;
+  detailScrimMaterial.depthWrite = false;
+  detailScrimMaterial.update();
+  const detailScrim = primitive(
+    app,
+    app.root,
+    'Card_Detail_Scene_Scrim',
+    'box',
+    [0, 0, 4.5],
+    [DESIGN_WIDTH / WORLD_SCALE, DESIGN_HEIGHT / WORLD_SCALE, .01],
+    detailScrimMaterial,
+  );
+  detailScrim.enabled = false;
+
+  const cardBackTexture = textureFromCanvas(app, drawCardBack(), 'Printed card back');
+  const cardBackMaterial = texturedMaterial(cardBackTexture, true, .025);
+  cardBackMaterial.opacity = 1;
+  cardBackMaterial.specular = new Color(.16, .14, .1);
+  cardBackMaterial.gloss = .38;
+  cardBackMaterial.clearCoat = .08;
+  cardBackMaterial.clearCoatGloss = .4;
+  cardBackMaterial.update();
+
   const cardTextures = new Map<string, Texture>();
   const cards = new Map<string, CardRig>();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let pointerX = DESIGN_WIDTH / 2;
   let pointerY = DESIGN_HEIGHT / 2;
+  let parallaxX = 0;
+  let parallaxY = 0;
   let target: ActorId | null = null;
   let destroyed = false;
 
   function cardTextureKey(visual: CardVisual): string {
-    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}`;
+    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}:dimmed:${visual.dimmed}`;
   }
 
   function getCardTexture(visual: CardVisual, key = cardTextureKey(visual)): Texture {
@@ -253,7 +304,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     if (!texture) {
       texture = textureFromCanvas(
         app,
-        drawCardArt(visual.definition, visual.locked, visual.damageModifier, visual.targets.length > 0),
+        drawCardArt(visual.definition, visual.locked, visual.damageModifier, visual.targets.length > 0, visual.dimmed),
         `${visual.locked ? 'Locked intent' : 'Card'} ${visual.definition.name}`,
       );
       cardTextures.set(key, texture);
@@ -302,25 +353,51 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   }
 
 
+  function syncCardMaterial(rig: CardRig): void {
+    const glow = rig.visual.detail ? .14 : .025;
+    rig.material.emissive = new Color(glow, glow, glow);
+    rig.material.opacity = 1;
+    rig.material.update();
+  }
+
+  function scaleCardFaces(rig: CardRig): void {
+    rig.surface.setLocalScale(
+      rig.displayedWidth / WORLD_SCALE,
+      1,
+      rig.displayedHeight / WORLD_SCALE,
+    );
+    rig.backSurface.setLocalScale(
+      rig.displayedWidth / WORLD_SCALE,
+      1,
+      rig.displayedHeight / WORLD_SCALE,
+    );
+  }
+
   function makeCard(visual: CardVisual, layer: number): CardRig {
     const textureKey = cardTextureKey(visual);
     const material = texturedMaterial(getCardTexture(visual, textureKey), true, .025);
+    material.opacity = 1;
     material.specular = new Color(.16, .14, .1);
     material.gloss = .38;
     material.clearCoat = .08;
     material.clearCoatGloss = .4;
     material.update();
     const root = new Entity(`Card_${visual.uid}`, app);
-    const surface = primitive(app, root, 'Printed_Lit_Card', 'box', [0, 0, 0], [visual.width / WORLD_SCALE, visual.height / WORLD_SCALE, .055], material, true);
+    const surface = primitive(app, root, 'Printed_Lit_Card_Front', 'plane', [0, 0, .006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], material, true);
+    surface.setLocalEulerAngles(90, 0, 0);
+    const backSurface = primitive(app, root, 'Printed_Lit_Card_Back', 'plane', [0, 0, -.006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], cardBackMaterial, true);
+    backSurface.setLocalEulerAngles(-90, 0, 0);
     const x = worldX(visual.x + visual.width / 2);
     const y = worldY(visual.y + visual.height / 2);
-    const straight = visual.dragged || visual.queued;
-    root.setPosition(x, y, visual.dragged ? 4 : 2.5 + layer * .002);
-    root.setEulerAngles(0, 0, straight ? 0 : -visual.rotation);
+    const initialRotation = -desiredCardRotation(visual);
+    const initialFlip = visual.flip ?? 0;
+    root.setPosition(x, y, visual.detail ? 5 : visual.dragged ? 4 : 2.5 + layer * .002);
+    root.setEulerAngles(0, initialFlip, initialRotation);
     app.root.addChild(root);
     const rig: CardRig = {
       root,
       surface,
+      backSurface,
       material,
       dots: [],
       textureKey,
@@ -328,31 +405,77 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       layer,
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
-      roll: { value: straight ? 0 : -visual.rotation, velocity: 0 },
+      roll: { value: initialRotation, velocity: 0 },
+      flip: { value: initialFlip, velocity: 0 },
       displayedWidth: visual.width,
       displayedHeight: visual.height,
     };
+    syncCardMaterial(rig);
     syncCardDots(rig);
     return rig;
   }
+  function desiredCardRotation(visual: CardVisual): number {
+    return visual.dragged || visual.queued ? 0 : visual.rotation;
+  }
+
 
   function positionCard(rig: CardRig, dt: number, immediate: boolean): void {
     const visual = rig.visual;
-    immediate ||= visual.queued && !visual.dragged;
+    immediate ||= (visual.queued && !visual.dragged) || Boolean(visual.detail || visual.snap);
     const cx = visual.x + visual.width / 2;
     const cy = visual.y + visual.height / 2;
     const advance = immediate ? snap : spring;
     const rotate = visual.queued ? snap : advance;
     advance(rig.x, worldX(cx), dt);
     advance(rig.y, worldY(cy), dt);
-    rotate(rig.roll, visual.dragged || visual.queued ? 0 : -visual.rotation, dt);
-    rig.root.setPosition(rig.x.value, rig.y.value, visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0));
-    rig.root.setEulerAngles(0, 0, rig.roll.value);
+    rotate(rig.roll, -desiredCardRotation(visual), dt);
+    advance(rig.flip, visual.flip ?? 0, dt);
+    rig.root.setPosition(
+      rig.x.value,
+      rig.y.value,
+      visual.detail ? 5 : visual.dragged ? 4 : 2.5 + rig.layer * .002 + (visual.hovered ? .55 : 0) + (visual.queued ? .08 : 0),
+    );
+    rig.root.setEulerAngles(0, rig.flip.value, rig.roll.value);
     const sizeBlend = immediate ? 1 : 1 - Math.exp(-18 * dt);
     rig.displayedWidth += (visual.width - rig.displayedWidth) * sizeBlend;
     rig.displayedHeight += (visual.height - rig.displayedHeight) * sizeBlend;
-    rig.surface.setLocalScale(rig.displayedWidth / WORLD_SCALE, rig.displayedHeight / WORLD_SCALE, .055);
+    scaleCardFaces(rig);
+    const frontVisible = Math.cos(rig.flip.value * Math.PI / 180) > 0;
+    for (const dot of rig.dots) dot.root.enabled = frontVisible;
   }
+
+  const attachmentOffset = new Vec3();
+  const displayedAttachmentOffset = new Vec3();
+
+  function positionAttachedCard(rig: CardRig, host: CardRig): void {
+    const visual = rig.visual;
+    const hostVisual = host.visual;
+    const hostTargetRotation = desiredCardRotation(hostVisual) * Math.PI / 180;
+    const targetX = visual.x + visual.width / 2 - hostVisual.x - hostVisual.width / 2;
+    const targetY = visual.y + visual.height / 2 - hostVisual.y - hostVisual.height / 2;
+    const targetCos = Math.cos(hostTargetRotation);
+    const targetSin = Math.sin(hostTargetRotation);
+    const localX = (targetCos * targetX + targetSin * targetY) * host.displayedWidth / hostVisual.width;
+    const localY = (-targetSin * targetX + targetCos * targetY) * host.displayedHeight / hostVisual.height;
+    attachmentOffset.set(localX / WORLD_SCALE, -localY / WORLD_SCALE, 0);
+    host.root.getRotation().transformVector(attachmentOffset, displayedAttachmentOffset);
+    snap(rig.x, host.x.value + displayedAttachmentOffset.x);
+    snap(rig.y, host.y.value + displayedAttachmentOffset.y);
+    snap(rig.roll, host.roll.value - visual.rotation + desiredCardRotation(hostVisual));
+    snap(rig.flip, host.flip.value);
+    rig.displayedWidth = visual.width * host.displayedWidth / hostVisual.width;
+    rig.displayedHeight = visual.height * host.displayedHeight / hostVisual.height;
+    rig.root.setPosition(
+      rig.x.value,
+      rig.y.value,
+      host.root.getPosition().z - Math.max(1, host.layer - rig.layer) * .002,
+    );
+    rig.root.setEulerAngles(0, rig.flip.value, rig.roll.value);
+    scaleCardFaces(rig);
+    const frontVisible = Math.cos(rig.flip.value * Math.PI / 180) > 0;
+    for (const dot of rig.dots) dot.root.enabled = frontVisible;
+  }
+
 
   function applyActorAppearance(actor: ActorId): void {
     const rig = actors.get(actor);
@@ -362,6 +485,12 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       rig.material.opacity = .38;
     } else if (rig.hit > 0) {
       rig.material.diffuse = new Color(1, .5, .38);
+      rig.material.opacity = 1;
+    } else if (rig.heal > 0) {
+      rig.material.diffuse = new Color(.62, 1, .68);
+      rig.material.opacity = 1;
+    } else if (rig.exposed > 0) {
+      rig.material.diffuse = new Color(1, .72, .34);
       rig.material.opacity = 1;
     } else if (target === actor) {
       rig.material.diffuse = actor === 'guard' ? new Color(.72, 1, .42) : new Color(1, .78, .42);
@@ -375,25 +504,38 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
 
   function update(dtRaw: number): void {
     const dt = Math.min(dtRaw, .05);
-    const parallaxX = (pointerX / DESIGN_WIDTH - .5) * .09;
-    const parallaxY = (.5 - pointerY / DESIGN_HEIGHT) * .055;
-    arenaRoot.setLocalPosition(parallaxX, parallaxY, 0);
-    key.setPosition(-2.5 + parallaxX * 5, 5.2 + parallaxY * 4, 7.5);
+    const motionScale = reduceMotion.matches ? 0 : 1;
+    const desiredParallaxX = (pointerX / DESIGN_WIDTH - .5) * .05 * motionScale;
+    const desiredParallaxY = (.5 - pointerY / DESIGN_HEIGHT) * .032 * motionScale;
+    const parallaxBlend = reduceMotion.matches ? 1 : 1 - Math.exp(-5 * dt);
+    parallaxX += (desiredParallaxX - parallaxX) * parallaxBlend;
+    parallaxY += (desiredParallaxY - parallaxY) * parallaxBlend;
+    backdropRoot.setLocalPosition(parallaxX, parallaxY, 0);
+    fixtureRoot.setLocalPosition(parallaxX * .45, parallaxY * .45, 0);
 
     for (const [actor, rig] of actors) {
-      const hadHit = rig.hit > 0;
+      const hadFeedback = rig.hit > 0 || rig.heal > 0 || rig.exposed > 0;
       rig.hit = Math.max(0, rig.hit - dt);
+      rig.heal = Math.max(0, rig.heal - dt);
+      rig.exposed = Math.max(0, rig.exposed - dt);
       rig.action = Math.max(0, rig.action - dt);
       const actionPhase = rig.action > 0 ? Math.sin((rig.action / .26) * Math.PI) : 0;
+      const healPhase = rig.heal > 0 ? Math.sin((rig.heal / .42) * Math.PI) : 0;
       const hitShake = rig.hit > 0 ? Math.sin(rig.hit * 92) * rig.hit * .32 : 0;
       const direction = actor === 'bob' ? 1 : -1;
-      rig.root.setLocalPosition(rig.baseX + actionPhase * direction * .28 + hitShake, worldY(400) + Math.abs(hitShake) * .15, .45);
+      rig.root.setLocalPosition(rig.baseX + actionPhase * direction * .28 + hitShake, worldY(400) + Math.abs(hitShake) * .15 + healPhase * .05, .45);
       rig.root.setLocalEulerAngles(0, 0, rig.defeated ? direction * 9 : hitShake * 8);
-      if (hadHit && rig.hit === 0) applyActorAppearance(actor);
+      if (hadFeedback && rig.hit === 0 && rig.heal === 0 && rig.exposed === 0) applyActorAppearance(actor);
     }
 
     for (const rig of cards.values()) {
-      positionCard(rig, dt, reduceMotion.matches);
+      if (!rig.visual.underCard) positionCard(rig, dt, reduceMotion.matches);
+    }
+    for (const rig of cards.values()) {
+      if (!rig.visual.underCard) continue;
+      const host = cards.get(rig.visual.underCard);
+      if (host) positionAttachedCard(rig, host);
+      else positionCard(rig, dt, reduceMotion.matches);
     }
   }
 
@@ -416,6 +558,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   return {
     setCards(visuals): void {
       if (destroyed) return;
+      detailScrim.enabled = visuals.some((visual) => visual.detail);
       const live = new Set(visuals.map((visual) => visual.uid));
       for (const [uid, rig] of cards) {
         if (live.has(uid)) continue;
@@ -426,7 +569,6 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       for (let layer = 0; layer < visuals.length; layer++) {
         const visual = visuals[layer];
         let rig = cards.get(visual.uid);
-        const appearanceChanged = !rig || rig.visual.dimmed !== visual.dimmed;
         if (!rig) {
           rig = makeCard(visual, layer);
           cards.set(visual.uid, rig);
@@ -438,22 +580,21 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
             rig.material.emissiveMap = texture;
             rig.material.opacityMap = texture;
             rig.textureKey = textureKey;
-            rig.material.update();
           }
           rig.visual = visual;
           rig.layer = layer;
+          syncCardMaterial(rig);
           syncCardDots(rig);
-          if (visual.queued) {
-            snap(rig.roll, 0);
-            rig.root.setEulerAngles(0, 0, 0);
-          }
         }
-        if (appearanceChanged) {
-          rig.material.diffuse = visual.dimmed ? new Color(.32, .36, .36) : new Color(1, 1, 1);
-          rig.material.opacity = visual.dimmed ? .62 : 1;
-          rig.material.update();
-        }
-        positionCard(rig, 0, reduceMotion.matches);
+      }
+      for (const rig of cards.values()) {
+        if (!rig.visual.underCard) positionCard(rig, 0, reduceMotion.matches);
+      }
+      for (const rig of cards.values()) {
+        if (!rig.visual.underCard) continue;
+        const host = cards.get(rig.visual.underCard);
+        if (host) positionAttachedCard(rig, host);
+        else positionCard(rig, 0, reduceMotion.matches);
       }
     },
 
@@ -491,6 +632,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
         width: rig.displayedWidth,
         height: rig.displayedHeight,
         rotation: -rig.roll.value,
+        flip: rig.flip.value,
       };
     },
 
@@ -507,6 +649,20 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
           applyActorAppearance(event.target);
         }
       }
+      if (event.kind === 'heal' && event.target) {
+        const rig = actors.get(event.target);
+        if (rig && !rig.defeated) {
+          rig.heal = .42;
+          applyActorAppearance(event.target);
+        }
+      }
+      if (event.kind === 'exposed' && event.target) {
+        const rig = actors.get(event.target);
+        if (rig && !rig.defeated) {
+          rig.exposed = .36;
+          applyActorAppearance(event.target);
+        }
+      }
     },
 
     destroy(): void {
@@ -520,6 +676,9 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       for (const rig of actors.values()) rig.material.destroy();
       for (const texture of cardTextures.values()) texture.destroy();
       for (const texture of actorTextures.values()) texture.destroy();
+      cardBackMaterial.destroy();
+      cardBackTexture.destroy();
+      detailScrimMaterial.destroy();
       backdropTexture.destroy();
       backdropMaterial.destroy();
       shelfMaterial.destroy();

@@ -1,0 +1,33 @@
+name: Balance cards
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/game/**'
+      - 'scripts/balance*.ts'
+      - '.github/workflows/balance.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/game/**'
+      - 'scripts/balance*.ts'
+      - '.github/workflows/balance.yml'
+permissions:
+  contents: read
+jobs:
+  balance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun scripts/balance.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: card-balance-report
+          path: .balance/report.json
+          include-hidden-files: true
+          retention-days: 14

@@ -16,6 +16,13 @@ export const CARDS: Record<string, CardDefinition> = {
 export const STARTER_DECK = ['hammer', 'vest', 'weaken', 'reinforce', 'coffee', 'tape', 'heavy', 'hammer', 'vest', 'brace', 'toolbox', 'hammer', 'vest', 'brace'];
 export const ENCOUNTER = { playerHp: 42, enemyHp: 48, startingEnergy: 2, energyGain: 2, energyMax: 4, drawCount: 5, slotCount: 6 };
 export function enemyIntent(turn: number): { slot: number; action: EnemyAction }[] {
-  const heavy = turn % 3 === 0;
+  const phase = (turn - 1) % 4;
+  if (phase === 1) {
+    return [{ slot: 4, action: { kind: 'enemy', uid: `guard:intent:${turn}`, actor: 'guard', target: 'bob', name: 'Marked for Review', description: 'Apply 4 Exposed to Bob. His next incoming hit deals 4 extra damage.', effects: [{ kind: 'exposed', amount: 4, recipient: 'target' }] } }];
+  }
+  if (phase === 3) {
+    return [{ slot: 3, action: { kind: 'enemy', uid: `guard:intent:${turn}`, actor: 'guard', target: 'guard', name: 'First Aid Violation', description: 'Restore 6 health to the guard, up to maximum health.', effects: [{ kind: 'heal', amount: 6, recipient: 'self' }] } }];
+  }
+  const heavy = phase === 2;
   return [{ slot: heavy ? 2 : 3, action: { kind: 'enemy', uid: `guard:intent:${turn}`, actor: 'guard', target: 'bob', name: heavy ? 'Excessive Force' : 'Receipt Check', description: `Deal ${heavy ? 12 : 8} damage to Bob.`, effects: [{ kind: 'damage', amount: heavy ? 12 : 8, recipient: 'target' }] } }];
 }

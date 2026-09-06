@@ -34,6 +34,9 @@ function cloneCard(card: CardInstance): CardInstance {
 function cloneAttachment(attachment: Attachment): Attachment {
   return { card: cloneCard(attachment.card), target: { ...attachment.target } };
 }
+function cloneEvent(event: CombatEvent): CombatEvent {
+  return { ...event, cards: event.cards?.map(cloneCard) };
+}
 
 
 function cloneSlot(slot: QueueSlot): QueueSlot {
@@ -589,6 +592,7 @@ function drawCards(
     kind: 'draw',
     actor,
     amount: drawn.length,
+    cards: drawn,
     message: drawn.length ? `${state.actors[actor].name} drew ${drawn.length}: ${names}.` : 'No cards left to draw.',
   });
 }
@@ -651,6 +655,16 @@ function applyEffect(
     applyTerminal(state, events);
     return;
   }
+  if (effect.kind === 'heal') {
+    const restored = recipient.hp <= 0 ? 0 : Math.min(effect.amount, Math.max(0, recipient.maxHp - recipient.hp));
+    recipient.hp += restored;
+    record(state, events, {
+      kind: 'heal', actor: actorId, target: recipientId, amount: restored,
+      message: `${recipient.name} restored ${restored} health.`,
+    });
+    return;
+  }
+
 
   if (effect.kind === 'block') {
     recipient.block += effect.amount;
@@ -757,9 +771,10 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
         }
       }
     }
-    steps.push({ state: cloneState(working), events: events.map((event) => ({ ...event })) });
+    steps.push({ state: cloneState(working), events: events.map(cloneEvent) });
   }
 
+  const discardStart = working.discardPile.length;
   cleanupHand(working, protectedCards);
   working.queue = Array<QueueSlot>(ENCOUNTER.slotCount).fill(null);
   working.activeSlot = null;
@@ -767,6 +782,13 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
   working.actors.bob.block = 0;
   working.actors.guard.block = 0;
   const finalEvents: CombatEvent[] = [];
+  const discarded = working.discardPile.slice(discardStart);
+  if (discarded.length) {
+    record(working, finalEvents, {
+      kind: 'discard', actor: 'bob', amount: discarded.length, cards: discarded,
+      message: `Bob discarded ${discarded.length} cards.`,
+    });
+  }
   const terminal = terminalPhase(working);
   if (terminal) {
     working.phase = terminal;
@@ -784,6 +806,6 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
     working.phase = 'planning';
     record(working, finalEvents, { kind: 'turn', actor: 'bob', message: `Turn ${working.turn}: plan Bob’s actions.` });
   }
-  steps.push({ state: cloneState(working), events: finalEvents.map((event) => ({ ...event })) });
+  steps.push({ state: cloneState(working), events: finalEvents.map(cloneEvent) });
   return steps;
 }
