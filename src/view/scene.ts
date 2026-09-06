@@ -556,9 +556,9 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   app.start();
 
   return {
-    setCards(visuals): void {
+    setCards(visuals, dimmed = false): void {
       if (destroyed) return;
-      detailScrim.enabled = visuals.some((visual) => visual.detail);
+      detailScrim.enabled = dimmed || visuals.some((visual) => visual.detail);
       const live = new Set(visuals.map((visual) => visual.uid));
       for (const [uid, rig] of cards) {
         if (live.has(uid)) continue;

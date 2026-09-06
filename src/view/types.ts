@@ -31,7 +31,8 @@ export interface CardVisual {
   snap?: boolean;
 }
 export interface ScenePort {
-  setCards(cards: CardVisual[]): void;
+  /** `dimmed` explicitly requests the scene scrim; card details also dim automatically. */
+  setCards(cards: CardVisual[], dimmed?: boolean): void;
   setState(state: CombatState): void;
   setPointer(x: number, y: number): void;
   setTarget(target: ActorId | null): void;
