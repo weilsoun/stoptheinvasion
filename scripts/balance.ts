@@ -9,7 +9,10 @@ import {
   canAttachModifier,
   createCombat,
   queueCard,
+  removeModifier,
   resolveTurn,
+  turnEnd,
+  visibleEnd,
 } from '../src/game/combat';
 import type { CardDefinition, CombatState, ModifierTarget } from '../src/game/types';
 
@@ -19,8 +22,11 @@ export type CardUsage = {
   handOpportunities: number;
   affordableOpportunities: number;
   legalOpportunities: number;
+  playablePositionOpportunities: number;
+  visiblePositionOpportunities: number;
   played: number;
   attached: number;
+  scoutedPositions: number;
   energySpent: number;
 };
 export type PolicySummary = {
@@ -38,6 +44,7 @@ export type PolicySummary = {
 export type BalanceChange =
   | { kind: 'baseline' }
   | { kind: 'card-effect'; cardId: string; effectKind: string; delta: number }
+  | { kind: 'card-bracket'; cardId: string; field: 'positions' | 'scouting'; delta: number }
   | { kind: 'card-cost'; cardId: string; delta: number }
   | { kind: 'encounter'; hpScale: number; damageScale: number };
 export type BalanceRun = {
@@ -46,7 +53,7 @@ export type BalanceRun = {
   policies: Record<PolicyName, PolicySummary>;
 };
 export type BalanceReport = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   generatedAt: string;
   rulesModel: string;
   fingerprint: string;
@@ -93,14 +100,22 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+/** History is presentation-only, so analysis projects it away before branching or resolving. */
+function clonePlanningState(state: CombatState): CombatState {
+  return clone({ ...state, history: [] });
+}
+
 function emptyUsage(): CardUsage {
   return {
     drawn: 0,
     handOpportunities: 0,
     affordableOpportunities: 0,
     legalOpportunities: 0,
+    playablePositionOpportunities: 0,
+    visiblePositionOpportunities: 0,
     played: 0,
     attached: 0,
+    scoutedPositions: 0,
     energySpent: 0,
   };
 }
@@ -112,32 +127,52 @@ function usageTable(): Record<string, CardUsage> {
 function definitionIdForUid(state: CombatState, uid: string): string | undefined {
   const card = state.hand.find((entry) => entry.uid === uid)
     ?? state.attachments.find((entry) => entry.card.uid === uid)?.card
-    ?? state.queue.flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []).find((entry) => entry.uid === uid);
+    ?? state.queue.slice(state.position, visibleEnd(state)).flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []).find((entry) => entry.uid === uid);
   return card?.definitionId;
 }
 
 function targetLabel(state: CombatState, target: ModifierTarget): string {
-  if (target.kind === 'slot') return `slot:${target.slot}`;
+  if (target.kind === 'bracket') return 'bracket';
+  if (target.kind === 'slot') return `position:${target.slot}`;
   const player = state.hand.find((card) => card.uid === target.uid)
-    ?? state.queue.flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []).find((card) => card.uid === target.uid);
+    ?? state.queue.slice(state.position, turnEnd(state)).flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []).find((card) => card.uid === target.uid);
   if (player) return `card:${player.definitionId}`;
-  const enemy = state.queue.find((entry) => entry?.kind === 'enemy' && entry.uid === target.uid);
+  const enemy = state.queue.slice(state.position, turnEnd(state)).find((entry) => entry?.kind === 'enemy' && entry.uid === target.uid);
   return enemy?.kind === 'enemy' ? `intent:${enemy.name}` : 'card:unknown';
 }
 
 function planKey(state: CombatState): string {
-  const actions = state.queue.flatMap((entry, slot) => entry?.kind === 'player' ? [`${entry.card.definitionId}@${slot}`] : []);
+  const actions: string[] = [];
+  for (let position = state.position; position < turnEnd(state); position += 1) {
+    const action = state.queue[position];
+    if (action?.kind === 'player') actions.push(`${action.card.definitionId}@${position}`);
+  }
   const modifiers = state.attachments.map((entry) => `${entry.card.definitionId}>${targetLabel(state, entry.target)}`);
   return [...actions, ...modifiers].join(',') || 'pass';
 }
 
 function stateKey(state: CombatState): string {
-  const queue = state.queue.map((entry) => {
-    if (!entry) return '-';
-    return entry.kind === 'player' ? `p:${entry.card.uid}` : `e:${entry.uid}`;
+  const queue: string[] = [];
+  for (let position = state.position; position < visibleEnd(state); position += 1) {
+    const entry = state.queue[position];
+    if (entry) {
+      queue.push(`${position}:${entry.kind === 'player' ? `p:${entry.card.uid}>${entry.target}` : `e:${entry.uid}`}`);
+    }
+  }
+  const attachments = state.attachments.map((entry) => {
+    const target = entry.target.kind === 'bracket'
+      ? 'bracket'
+      : entry.target.kind === 'card' ? `card:${entry.target.uid}` : `position:${entry.target.slot}`;
+    return `${entry.card.uid}>${target}`;
   }).join('|');
-  const attachments = state.attachments.map((entry) => `${entry.card.uid}>${entry.target.kind}:${entry.target.kind === 'card' ? entry.target.uid : entry.target.slot}`).join('|');
-  return `${queue}/${attachments}`;
+  const actors = (['bob', 'guard'] as const).map((id) => {
+    const actor = state.actors[id];
+    return `${id}:${actor.hp}:${actor.block}:${actor.exposed}:${Number(actor.ringing)}:${Number(actor.ringingNextTurn)}:${actor.energy}:${actor.turnLength}:${actor.scouting}`;
+  }).join('|');
+  const inventory = [state.hand, state.drawPile, state.discardPile]
+    .map((pile) => pile.map((card) => card.uid).join(','))
+    .join('/');
+  return `${state.seed}:${state.turn}@${state.position}-${turnEnd(state)}:${visibleEnd(state)}/${actors}/${inventory}/${queue.join('|')}/${attachments}`;
 }
 
 function hash(value: string, seed = 2166136261): number {
@@ -165,63 +200,90 @@ function canonicalModifierTargets(state: CombatState, uid: string): ModifierTarg
     const target = { kind: 'card', uid: card.uid } as const;
     if (canAttachModifier(state, uid, target)) targets.push(target);
   }
-  for (const action of state.queue) {
+  for (let position = state.position; position < turnEnd(state); position += 1) {
+    const action = state.queue[position];
     if (!action) continue;
     const target = { kind: 'card', uid: action.kind === 'player' ? action.card.uid : action.uid } as const;
     if (canAttachModifier(state, uid, target)) targets.push(target);
   }
-  // Occupied position targets are resolution-equivalent to their card target. Empty positions are
-  // equivalent for a completed plan, so retain one representative instead of multiplying no-op plans.
-  const emptySlot = state.queue.findIndex((entry) => entry === null);
-  if (emptySlot >= 0) {
-    const target = { kind: 'slot', slot: emptySlot } as const;
+  // Occupied position targets are resolution-equivalent to their card target. Empty current-bracket
+  // positions are equivalent for a completed plan, so retain one representative.
+  for (let position = state.position; position < turnEnd(state); position += 1) {
+    if (state.queue[position] !== null) continue;
+    const target = { kind: 'slot', slot: position } as const;
     if (canAttachModifier(state, uid, target)) targets.push(target);
+    break;
   }
   return targets;
 }
 
 function enumeratePlans(source: CombatState): Plan[] {
-  const ordinary = source.hand.filter((card) => !CARDS[card.definitionId].modifier).map((card) => card.uid);
-  const modifiers = source.hand.filter((card) => CARDS[card.definitionId].modifier).map((card) => card.uid);
-  let states = [clone(source)];
+  const bracketModifiers = source.hand.filter((card) => CARDS[card.definitionId].bracket).map((card) => card.uid);
+  const ordinary = source.hand.filter((card) => {
+    const cardDefinition = CARDS[card.definitionId];
+    return !cardDefinition.modifier && !cardDefinition.bracket;
+  }).map((card) => card.uid);
+  const damageModifiers = source.hand.filter((card) => CARDS[card.definitionId].modifier).map((card) => card.uid);
+  let states = [clonePlanningState(source)];
+
+  // Bracket changes come first because they define the legal absolute action range and visible future.
+  for (const uid of bracketModifiers) {
+    const expanded = [...states];
+    for (const state of states) {
+      const sourceCard = state.hand.find((card) => card.uid === uid);
+      if (!sourceCard) continue;
+      const scouting = CARDS[sourceCard.definitionId].bracket?.scouting ?? 0;
+      const next = clonePlanningState(state);
+      if (!attachModifier(next, uid, { kind: 'bracket' }).ok) continue;
+      expanded.push(next);
+      if (scouting > 0) {
+        const refunded = clonePlanningState(next);
+        if (removeModifier(refunded, uid).ok) expanded.push(refunded);
+      }
+    }
+    states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:bracket:${uid}`);
+  }
 
   for (const uid of ordinary) {
     const expanded = [...states];
     for (const state of states) {
       if (!state.hand.some((card) => card.uid === uid)) continue;
-      for (let slot = 0; slot < state.queue.length; slot += 1) {
-        if (state.queue[slot] !== null) continue;
-        const next = clone(state);
-        if (queueCard(next, uid, null, slot).ok) expanded.push(next);
+      for (let position = state.position; position < turnEnd(state); position += 1) {
+        if (state.queue[position] !== null) continue;
+        const next = clonePlanningState(state);
+        if (queueCard(next, uid, null, position).ok) expanded.push(next);
       }
     }
-    states = bounded(expanded, MAX_ACTION_STATES, `${source.seed}:${source.turn}:action:${uid}`);
+    states = bounded(expanded, MAX_ACTION_STATES, `${source.seed}:${source.position}:action:${uid}`);
   }
 
-  for (const uid of modifiers) {
+  for (const uid of damageModifiers) {
     const expanded = [...states];
     for (const state of states) {
       if (!state.hand.some((card) => card.uid === uid)) continue;
       for (const target of canonicalModifierTargets(state, uid)) {
-        const next = clone(state);
+        const next = clonePlanningState(state);
         if (attachModifier(next, uid, target).ok) expanded.push(next);
       }
     }
-    states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.turn}:modifier:${uid}`);
+    states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:damage-modifier:${uid}`);
   }
-  states = bounded(states, MAX_PLANS, `${source.seed}:${source.turn}:complete`);
+  states = bounded(states, MAX_PLANS, `${source.seed}:${source.position}:complete`);
 
   return states.map((state) => {
-    const played = state.queue.flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []);
+    const played = state.queue.slice(state.position, turnEnd(state))
+      .flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []);
     const attached = state.attachments.map((entry) => entry.card);
     const printedDamage = played.reduce((total, card) => total + CARDS[card.definitionId].effects
       .filter((effect) => effect.kind === 'damage')
       .reduce((sum, effect) => sum + effect.amount, 0), 0);
     const modifierValue = state.attachments.reduce((total, attachment) => {
+      if (!CARDS[attachment.card.definitionId].modifier) return total;
       const target = attachment.target;
       const hasAction = target.kind === 'slot'
-        ? state.queue[target.slot] !== null
-        : state.queue.some((action) => action && (action.kind === 'player' ? action.card.uid : action.uid) === target.uid);
+        ? target.slot >= state.position && target.slot < turnEnd(state) && state.queue[target.slot] !== null
+        : target.kind === 'card' && state.queue.slice(state.position, turnEnd(state))
+          .some((action) => action && (action.kind === 'player' ? action.card.uid : action.uid) === target.uid);
       return total + (hasAction ? Math.max(0, CARDS[attachment.card.definitionId].modifier?.damage ?? 0) : 0);
     }, 0);
     return {
@@ -235,23 +297,29 @@ function enumeratePlans(source: CombatState): Plan[] {
   });
 }
 
-function scaleCurrentIntentDamage(state: CombatState, scale: number): void {
+function scaleVisibleIntentDamage(state: CombatState, scale: number): void {
   if (scale === 1) return;
-  for (const action of state.queue) {
+  for (let position = state.position; position < visibleEnd(state); position += 1) {
+    const action = state.queue[position];
     if (action?.kind !== 'enemy') continue;
-    for (const effect of action.effects) {
-      if (effect.kind === 'damage') effect.amount = Math.round(effect.amount * scale);
+    const baseline = enemyIntent(position);
+    if (!baseline) continue;
+    for (let index = 0; index < action.effects.length; index += 1) {
+      if (action.effects[index].kind === 'damage') {
+        action.effects[index].amount = Math.round(baseline.effects[index].amount * scale);
+      }
     }
   }
 }
 
 function evaluatePlans(state: CombatState, damageScale: number, counters: Counters): Evaluation[] {
   return enumeratePlans(state).map((plan) => {
+    scaleVisibleIntentDamage(plan.state, damageScale);
     const steps = resolveTurn(plan.state);
     counters.evaluatedPlans += 1;
     counters.resolvedTransitions += 1;
     const next = steps.at(-1)!.state;
-    if (next.phase === 'planning') scaleCurrentIntentDamage(next, damageScale);
+    if (next.phase === 'planning') scaleVisibleIntentDamage(next, damageScale);
     const drawnDefinitionIds = steps.flatMap((step) => step.events.flatMap((event) =>
       event.kind === 'draw' ? (event.cards ?? []).map((card) => card.definitionId) : []));
     const firedUids = steps.flatMap(step => step.events.flatMap(event => {
@@ -302,19 +370,29 @@ function choose(evaluations: Evaluation[], policy: PolicyName, rng: () => number
 function hasLegalUse(state: CombatState, uid: string): boolean {
   const card = state.hand.find((entry) => entry.uid === uid);
   if (!card) return false;
-  if (CARDS[card.definitionId].modifier) return canonicalModifierTargets(state, uid).length > 0;
-  for (let slot = 0; slot < state.queue.length; slot += 1) {
-    if (state.queue[slot] !== null) continue;
-    if (queueCard(clone(state), uid, null, slot).ok) return true;
+  const cardDefinition = CARDS[card.definitionId];
+  if (cardDefinition.bracket) return canAttachModifier(state, uid, { kind: 'bracket' });
+  if (cardDefinition.modifier) return canonicalModifierTargets(state, uid).length > 0;
+  for (let position = state.position; position < turnEnd(state); position += 1) {
+    if (state.queue[position] !== null) continue;
+    if (queueCard(clonePlanningState(state), uid, null, position).ok) return true;
   }
   return false;
 }
 
-function observeOpportunities(state: CombatState, usage: Record<string, CardUsage>): void {
+function observeOpportunities(state: CombatState, planned: CombatState, usage: Record<string, CardUsage>): void {
   const energy = availableEnergy(state);
+  const end = turnEnd(planned);
+  let playablePositions = 0;
+  for (let position = planned.position; position < end; position += 1) {
+    if (planned.queue[position]?.kind !== 'enemy') playablePositions += 1;
+  }
+  const visiblePositions = visibleEnd(planned) - planned.position;
   for (const card of state.hand) {
     const entry = usage[card.definitionId];
     entry.handOpportunities += 1;
+    entry.playablePositionOpportunities += playablePositions;
+    entry.visiblePositionOpportunities += visiblePositions;
     if (CARDS[card.definitionId].cost <= energy) entry.affordableOpportunities += 1;
     if (hasLegalUse(state, card.uid)) entry.legalOpportunities += 1;
   }
@@ -331,6 +409,7 @@ function observeChoice(evaluation: Evaluation, usage: Record<string, CardUsage>)
     const definitionId = definitionIdForUid(evaluation.state, uid);
     if (!definitionId) throw new Error(`Chosen attachment ${uid} has no live definition.`);
     usage[definitionId].attached += 1;
+    usage[definitionId].scoutedPositions += CARDS[definitionId].bracket?.scouting ?? 0;
     usage[definitionId].energySpent += CARDS[definitionId].cost;
   }
   for (const definitionId of evaluation.drawnDefinitionIds) usage[definitionId].drawn += 1;
@@ -338,7 +417,7 @@ function observeChoice(evaluation: Evaluation, usage: Record<string, CardUsage>)
 
 function fight(seed: number, policy: PolicyName, damageScale: number, counters: Counters): FightResult {
   let state = createCombat(seed);
-  scaleCurrentIntentDamage(state, damageScale);
+  scaleVisibleIntentDamage(state, damageScale);
   const usage = usageTable();
   for (const card of state.hand) usage[card.definitionId].drawn += 1;
   const rng = random(hash(`${policy}:${seed}`));
@@ -346,10 +425,10 @@ function fight(seed: number, policy: PolicyName, damageScale: number, counters: 
   let turns = 0;
 
   while (state.phase === 'planning' && turns < MAX_TURNS) {
-    observeOpportunities(state, usage);
     const selected = choose(evaluatePlans(state, damageScale, counters), policy, rng);
+    observeOpportunities(state, selected.state, usage);
     observeChoice(selected, usage);
-    trajectory.push(`t${state.turn}:${selected.key}`);
+    trajectory.push(`t${state.turn}@${state.position}:${selected.key}`);
     state = selected.next;
     turns += 1;
   }
@@ -416,6 +495,11 @@ function applyChange(change: BalanceChange, cards: Record<string, CardDefinition
     CARDS[change.cardId].cost += change.delta;
     return 1;
   }
+  if (change.kind === 'card-bracket') {
+    const bracket = CARDS[change.cardId].bracket!;
+    bracket[change.field] = (bracket[change.field] ?? 0) + change.delta;
+    return 1;
+  }
   if (change.kind === 'card-effect') {
     const card = CARDS[change.cardId];
     if (change.effectKind === 'modifier') card.modifier!.damage += change.delta;
@@ -438,6 +522,19 @@ function candidates(cards: Record<string, CardDefinition>): Candidate[] {
           id: `card:${id}:${primaryKind}:${delta > 0 ? '+1' : '-1'}`,
           change: { kind: 'card-effect', cardId: id, effectKind: primaryKind, delta },
         });
+      }
+    }
+    if (card.bracket) {
+      for (const field of ['positions', 'scouting'] as const) {
+        const amount = card.bracket[field];
+        if (amount === undefined) continue;
+        for (const delta of [-1, 1]) {
+          if (field === 'scouting' && amount + delta < 0) continue;
+          result.push({
+            id: `card:${id}:bracket-${field}:${delta > 0 ? '+1' : '-1'}`,
+            change: { kind: 'card-bracket', cardId: id, field, delta },
+          });
+        }
       }
     }
     for (const delta of [-1, 1]) {
@@ -463,6 +560,10 @@ function roles(card: CardDefinition): string[] {
     const polarity = card.modifier.damage < 0 ? 'negative' : card.modifier.damage > 0 ? 'positive' : 'neutral';
     result.push(`modifier:damage:${polarity}`);
   }
+  if (card.bracket?.positions) {
+    result.push(`bracket:positions:${card.bracket.positions > 0 ? 'extend' : 'shorten'}`);
+  }
+  if (card.bracket?.scouting) result.push('bracket:scouting');
   return [...new Set(result)];
 }
 
@@ -480,8 +581,8 @@ async function fingerprint(cards: Record<string, CardDefinition>, encounter: typ
     Bun.file(new URL('./balance.ts', import.meta.url)).text(),
     Bun.file(new URL('./balance-feedback.ts', import.meta.url)).text(),
   ]);
-  const intents = [1, 2, 3, 4].map(enemyIntent);
-  const bytes = new TextEncoder().encode(`${source.join('\n')}\n${stable({ cards, encounter, deck: STARTER_DECK, intents })}`);
+  const all24Schedule = Array.from({ length: 24 }, (_, position) => ({ position, intent: enemyIntent(position) }));
+  const bytes = new TextEncoder().encode(`${source.join('\n')}\n${stable({ cards, encounter, deck: STARTER_DECK, all24Schedule })}`);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -512,9 +613,9 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
     }
     restoreContent(originalCards, originalEncounter);
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt: new Date().toISOString(),
-      rulesModel: 'Canonical production combat engine: six fixed slots resolving right-to-left; this is not the proposed shaped-card model.',
+      rulesModel: 'Canonical production combat engine: persistent absolute-position timeline resolving toward higher indices; current turn bracket is playable and scouted future is inspectable only.',
       fingerprint: await fingerprint(originalCards, originalEncounter),
       seeds,
       counts: counters,
@@ -523,13 +624,16 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
       coverage: { uncoveredCards: Object.keys(originalCards).filter((id) => !exercised.has(id)) },
       limitations: [
         `Heuristic policies are neither human nor optimal play and look ahead only one canonical resolveTurn transition, for at most ${MAX_TURNS} turns.`,
-        `Search keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; large hands can leave legal combinations unevaluated.`,
-        'Equivalent occupied card/position attachment routes are represented by the card target, and equivalent empty-position routes by one position.',
-        'The model uses the current six-slot right-to-left timeline, not shaped cards; no shape metrics are inferred.',
-        'Confidence intervals reflect sampled seeds and policy behavior, not player populations; paired probes isolate only the named data change.',
+        `Search keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; bracket modifiers are enumerated before actions, but large hands can still leave legal combinations unevaluated.`,
+        'Only the absolute current bracket is planned or scored. Scouted positions are read only after a real scouting attachment reveals them; cached positions beyond visibleEnd are never inspected.',
+        'Scouting has no combat score or fabricated information-value bonus. Its attachment and revealed-position counts prove actual use, but this one-turn policy cannot measure how a human values future knowledge.',
+        'Opportunity counts include the changing playable and visible position exposure available while each card is in hand; raw use rates remain policy-dependent.',
+        'Equivalent occupied card/position damage-attachment routes are represented by the card target, and equivalent empty current-bracket routes by one position.',
+        'Analysis projects presentation-only timeline history to an empty array before every branch and resolution; absolute position, queue, actors, cards, attachments, and resources remain in the simulation and state keys.',
+        'Confidence intervals reflect sampled seeds and policy behavior, not player populations; every candidate reuses the same paired seed set and isolates only the named data change.',
         'Strong scores one-turn outcomes; tactical uses that score but makes a uniformly random legal choice on 25% of turns; greedy prioritizes printed damage. Policy randomness is separate from combat RNG.',
         'Played counts include only actions that actually fire; energy spent includes all commitments, including actions canceled by earlier lethal damage.',
-        'Tactical planning has no realtime countdown. Completion-edge firing, marked sockets, and ordinary holes are approved concepts, not implemented production rules, and are not simulated.',
+        'Candidates are diagnostics only. The runner reports measured comparisons and never applies tuning to production content.',
       ],
     };
   } finally {
