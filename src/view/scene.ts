@@ -248,7 +248,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const texture = textureFromCanvas(app, drawActorArt(actor), `${actor} procedural character`);
     actorTextures.set(actor, texture);
     const material = texturedMaterial(texture, true, .055);
-    const root = new Entity(actor === 'guard' ? 'Infected_Security_Guard' : 'Hardware_Worker_Bob', app);
+    const root = new Entity(actor === 'guard' ? 'Possessed_Security_Guard' : 'Hardware_Worker_Bob', app);
     const surface = primitive(app, root, `${actor}_Illustrated_Surface`, 'box', [0, 0, 0], [3.2, 3.5, .09], material, true);
     surface.setLocalPosition(0, -1.65, 0);
     const center = ACTOR_CENTERS[actor];
