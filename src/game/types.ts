@@ -2,6 +2,12 @@ export type ActorId = 'bob' | 'guard';
 export type Phase = 'planning' | 'resolving' | 'victory' | 'defeat';
 export type Effect = { kind: 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'ringing'; amount: number; recipient: 'self' | 'target' };
 export type CardRarity = 'basic' | 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+/** Authored changes per signed upgrade level; templates reference effect indices and bracket stats. */
+export interface UpgradeScaling {
+  effects?: number[];
+  bracket?: { positions?: number; scouting?: number };
+  description: string;
+}
 export interface CardDefinition {
   id: string;
   name: string;
@@ -21,7 +27,8 @@ export interface CardDefinition {
   /** Character identity color; the current builder deck defaults to Bob's orange. */
   characterColor?: string;
   retain?: boolean;
-  modifier?: { damage: number };
+  modifier?: { levels: number };
+  scaling?: UpgradeScaling;
   /** Planning-only modifier attached to the current turn bracket. Expires at cleanup. */
   bracket?: { positions?: number; scouting?: number };
 }
@@ -46,7 +53,7 @@ export interface Actor {
   scouting: number;
 }
 export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId | null }
-export interface EnemyAction { kind: 'enemy'; uid: string; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[] }
+export interface EnemyAction { kind: 'enemy'; uid: string; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[]; scaling?: UpgradeScaling }
 export type QueueSlot = PlayerAction | EnemyAction | null;
 export type ModifierTarget = { kind: 'card'; uid: string } | { kind: 'slot'; slot: number } | { kind: 'bracket' };
 export interface Attachment { card: CardInstance; target: ModifierTarget }
@@ -56,7 +63,7 @@ export interface TimelineEntry {
   action: QueueSlot;
   /** Player definition frozen at resolution; enemy actions already contain their rules. */
   definition: CardDefinition | null;
-  damageModifier: number;
+  upgradeLevel: number;
   attachments: Attachment[];
   events: CombatEvent[];
 }

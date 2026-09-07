@@ -13,7 +13,9 @@ import {
   resolveTurn,
   turnEnd,
   visibleEnd,
+  upgradeLevel,
 } from '../src/game/combat';
+import { scaledBracket } from '../src/game/upgrades';
 import type { CardDefinition, CombatState, ModifierTarget } from '../src/game/types';
 
 export type PolicyName = 'strong' | 'tactical' | 'greedy';
@@ -27,6 +29,7 @@ export type CardUsage = {
   played: number;
   attached: number;
   scoutedPositions: number;
+  upgradeTargets: Record<string, number>;
   energySpent: number;
 };
 export type PolicySummary = {
@@ -45,6 +48,9 @@ export type BalanceChange =
   | { kind: 'baseline' }
   | { kind: 'card-effect'; cardId: string; effectKind: string; delta: number }
   | { kind: 'card-bracket'; cardId: string; field: 'positions' | 'scouting'; delta: number }
+  | { kind: 'card-level'; cardId: string; delta: number }
+  | { kind: 'card-scaling-effect'; cardId: string; effectIndex: number; delta: number }
+  | { kind: 'card-scaling-bracket'; cardId: string; field: 'positions' | 'scouting'; delta: number }
   | { kind: 'card-cost'; cardId: string; delta: number }
   | { kind: 'encounter'; hpScale: number; damageScale: number };
 export type BalanceRun = {
@@ -53,7 +59,7 @@ export type BalanceRun = {
   policies: Record<PolicyName, PolicySummary>;
 };
 export type BalanceReport = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   generatedAt: string;
   rulesModel: string;
   fingerprint: string;
@@ -61,7 +67,7 @@ export type BalanceReport = {
   counts: { evaluatedPlans: number; resolvedTransitions: number; fights: number; elapsedMs: number };
   cards: Record<string, { name: string; cost: number; roles: string[] }>;
   runs: BalanceRun[];
-  coverage: { uncoveredCards: string[] };
+  coverage: { uncoveredCards: string[]; unexercisedScalingTargets: string[] };
   limitations: string[];
 };
 
@@ -117,6 +123,7 @@ function emptyUsage(): CardUsage {
     attached: 0,
     scoutedPositions: 0,
     energySpent: 0,
+    upgradeTargets: {},
   };
 }
 
@@ -135,10 +142,58 @@ function targetLabel(state: CombatState, target: ModifierTarget): string {
   if (target.kind === 'bracket') return 'bracket';
   if (target.kind === 'slot') return `position:${target.slot}`;
   const player = state.hand.find((card) => card.uid === target.uid)
+    ?? state.attachments.find((entry) => entry.card.uid === target.uid)?.card
     ?? state.queue.slice(state.position, turnEnd(state)).flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []).find((card) => card.uid === target.uid);
   if (player) return `card:${player.definitionId}`;
   const enemy = state.queue.slice(state.position, turnEnd(state)).find((entry) => entry?.kind === 'enemy' && entry.uid === target.uid);
   return enemy?.kind === 'enemy' ? `intent:${enemy.name}` : 'card:unknown';
+}
+
+type UpgradeTarget = Pick<CardDefinition, 'effects' | 'scaling' | 'bracket'>;
+
+function scalingTargetKeys(prefix: string, target: UpgradeTarget): string[] {
+  const keys = (target.scaling?.effects ?? []).flatMap((step, index) => {
+    const effect = target.effects[index];
+    return step && effect ? [`${prefix}:effect:${effect.kind}:${index}`] : [];
+  });
+  for (const field of ['positions', 'scouting'] as const) {
+    if (target.scaling?.bracket?.[field]) keys.push(`${prefix}:bracket:${field}`);
+  }
+  return keys;
+}
+
+function upgradeTarget(state: CombatState, target: ModifierTarget): { prefix: string; value: UpgradeTarget } | undefined {
+  const action = target.kind === 'slot'
+    ? state.queue[target.slot]
+    : target.kind === 'card'
+      ? state.queue.slice(state.position, turnEnd(state)).find((entry) =>
+        entry && (entry.kind === 'player' ? entry.card.uid : entry.uid) === target.uid)
+      : null;
+  if (action?.kind === 'enemy') return { prefix: `intent:${action.name}`, value: action };
+  const card = action?.kind === 'player'
+    ? action.card
+    : target.kind === 'card'
+      ? state.hand.find((entry) => entry.uid === target.uid)
+        ?? state.attachments.find((entry) => entry.card.uid === target.uid)?.card
+      : undefined;
+  return card ? { prefix: `card:${card.definitionId}`, value: CARDS[card.definitionId] } : undefined;
+}
+
+function upgradeTargetKeys(state: CombatState, target: ModifierTarget): string[] {
+  const resolved = upgradeTarget(state, target);
+  return resolved ? scalingTargetKeys(resolved.prefix, resolved.value) : [];
+}
+
+function isActiveTemporalTarget(state: CombatState, target: ModifierTarget): boolean {
+  if (target.kind !== 'card') return false;
+  const host = state.attachments.find((entry) => entry.card.uid === target.uid)?.card;
+  return !!host && !!CARDS[host.definitionId].bracket;
+}
+
+function effectiveDamage(card: CardDefinition, level: number): number {
+  return card.effects.reduce((total, effect, index) => effect.kind === 'damage'
+    ? total + Math.max(0, effect.amount + (card.scaling?.effects?.[index] ?? 0) * level)
+    : total, 0);
 }
 
 function planKey(state: CombatState): string {
@@ -196,14 +251,14 @@ function bounded(states: CombatState[], limit: number, salt: string): CombatStat
 
 function canonicalModifierTargets(state: CombatState, uid: string): ModifierTarget[] {
   const targets: ModifierTarget[] = [];
-  for (const card of state.hand) {
-    const target = { kind: 'card', uid: card.uid } as const;
-    if (canAttachModifier(state, uid, target)) targets.push(target);
-  }
+  const cardUids = new Set<string>();
+  for (const card of [...state.hand, ...state.attachments.map((entry) => entry.card)]) cardUids.add(card.uid);
   for (let position = state.position; position < turnEnd(state); position += 1) {
     const action = state.queue[position];
-    if (!action) continue;
-    const target = { kind: 'card', uid: action.kind === 'player' ? action.card.uid : action.uid } as const;
+    if (action) cardUids.add(action.kind === 'player' ? action.card.uid : action.uid);
+  }
+  for (const targetUid of cardUids) {
+    const target = { kind: 'card', uid: targetUid } as const;
     if (canAttachModifier(state, uid, target)) targets.push(target);
   }
   // Occupied position targets are resolution-equivalent to their card target. Empty current-bracket
@@ -223,10 +278,10 @@ function enumeratePlans(source: CombatState): Plan[] {
     const cardDefinition = CARDS[card.definitionId];
     return !cardDefinition.modifier && !cardDefinition.bracket;
   }).map((card) => card.uid);
-  const damageModifiers = source.hand.filter((card) => CARDS[card.definitionId].modifier).map((card) => card.uid);
+  const gradeSources = source.hand.filter((card) => CARDS[card.definitionId].modifier).map((card) => card.uid);
   let states = [clonePlanningState(source)];
 
-  // Bracket changes come first because they define the legal absolute action range and visible future.
+  // Temporal cards come first because their effective grades define the legal range and visible future.
   for (const uid of bracketModifiers) {
     const expanded = [...states];
     for (const state of states) {
@@ -244,6 +299,26 @@ function enumeratePlans(source: CombatState): Plan[] {
     states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:bracket:${uid}`);
   }
 
+  const attachGrades = (initial: CombatState[], phase: string, temporal: boolean): CombatState[] => {
+    let graded = initial;
+    for (const uid of gradeSources) {
+      const expanded = [...graded];
+      for (const state of graded) {
+        if (!state.hand.some((card) => card.uid === uid)) continue;
+        for (const target of canonicalModifierTargets(state, uid)) {
+          if (isActiveTemporalTarget(state, target) !== temporal) continue;
+          const next = clonePlanningState(state);
+          if (attachModifier(next, uid, target).ok) expanded.push(next);
+        }
+      }
+      graded = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:${phase}:${uid}`);
+    }
+    return graded;
+  };
+
+  // Grade active temporal hosts before placing actions so their authored range is planned immediately.
+  states = attachGrades(states, 'temporal-grade', true);
+
   for (const uid of ordinary) {
     const expanded = [...states];
     for (const state of states) {
@@ -257,34 +332,21 @@ function enumeratePlans(source: CombatState): Plan[] {
     states = bounded(expanded, MAX_ACTION_STATES, `${source.seed}:${source.position}:action:${uid}`);
   }
 
-  for (const uid of damageModifiers) {
-    const expanded = [...states];
-    for (const state of states) {
-      if (!state.hand.some((card) => card.uid === uid)) continue;
-      for (const target of canonicalModifierTargets(state, uid)) {
-        const next = clonePlanningState(state);
-        if (attachModifier(next, uid, target).ok) expanded.push(next);
-      }
-    }
-    states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:damage-modifier:${uid}`);
-  }
+  // Sources skipped above may now grade any other eligible card or position, but remain spend-once.
+  states = attachGrades(states, 'ordinary-grade', false);
   states = bounded(states, MAX_PLANS, `${source.seed}:${source.position}:complete`);
 
   return states.map((state) => {
     const played = state.queue.slice(state.position, turnEnd(state))
       .flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []);
     const attached = state.attachments.map((entry) => entry.card);
-    const printedDamage = played.reduce((total, card) => total + CARDS[card.definitionId].effects
-      .filter((effect) => effect.kind === 'damage')
-      .reduce((sum, effect) => sum + effect.amount, 0), 0);
-    const modifierValue = state.attachments.reduce((total, attachment) => {
-      if (!CARDS[attachment.card.definitionId].modifier) return total;
-      const target = attachment.target;
-      const hasAction = target.kind === 'slot'
-        ? target.slot >= state.position && target.slot < turnEnd(state) && state.queue[target.slot] !== null
-        : target.kind === 'card' && state.queue.slice(state.position, turnEnd(state))
-          .some((action) => action && (action.kind === 'player' ? action.card.uid : action.uid) === target.uid);
-      return total + (hasAction ? Math.max(0, CARDS[attachment.card.definitionId].modifier?.damage ?? 0) : 0);
+    const effectivePlayerDamage = state.queue.slice(state.position, turnEnd(state)).reduce((total, action, offset) => {
+      if (action?.kind !== 'player') return total;
+      const position = state.position + offset;
+      return total + effectiveDamage(
+        CARDS[action.card.definitionId],
+        upgradeLevel(state, action.card.uid, position),
+      );
     }, 0);
     return {
       key: planKey(state),
@@ -292,7 +354,7 @@ function enumeratePlans(source: CombatState): Plan[] {
       playedUids: played.map((card) => card.uid),
       attachedUids: attached.map((card) => card.uid),
       spent: state.actors.bob.energy - availableEnergy(state),
-      greedyValue: printedDamage + modifierValue,
+      greedyValue: effectivePlayerDamage,
     };
   });
 }
@@ -388,13 +450,17 @@ function observeOpportunities(state: CombatState, planned: CombatState, usage: R
     if (planned.queue[position]?.kind !== 'enemy') playablePositions += 1;
   }
   const visiblePositions = visibleEnd(planned) - planned.position;
+  const selectedUids = new Set([
+    ...planned.attachments.map((entry) => entry.card.uid),
+    ...planned.queue.slice(planned.position, end).flatMap((entry) => entry?.kind === 'player' ? [entry.card.uid] : []),
+  ]);
   for (const card of state.hand) {
     const entry = usage[card.definitionId];
     entry.handOpportunities += 1;
     entry.playablePositionOpportunities += playablePositions;
     entry.visiblePositionOpportunities += visiblePositions;
     if (CARDS[card.definitionId].cost <= energy) entry.affordableOpportunities += 1;
-    if (hasLegalUse(state, card.uid)) entry.legalOpportunities += 1;
+    if (selectedUids.has(card.uid) || hasLegalUse(state, card.uid)) entry.legalOpportunities += 1;
   }
 }
 
@@ -408,9 +474,18 @@ function observeChoice(evaluation: Evaluation, usage: Record<string, CardUsage>)
   for (const uid of evaluation.attachedUids) {
     const definitionId = definitionIdForUid(evaluation.state, uid);
     if (!definitionId) throw new Error(`Chosen attachment ${uid} has no live definition.`);
+    const attachment = evaluation.state.attachments.find((entry) => entry.card.uid === uid);
     usage[definitionId].attached += 1;
-    usage[definitionId].scoutedPositions += CARDS[definitionId].bracket?.scouting ?? 0;
-    usage[definitionId].energySpent += CARDS[definitionId].cost;
+    if (attachment && CARDS[definitionId].modifier) {
+      for (const key of upgradeTargetKeys(evaluation.state, attachment.target)) {
+        usage[definitionId].upgradeTargets[key] = (usage[definitionId].upgradeTargets[key] ?? 0) + 1;
+      }
+    }
+    const card = CARDS[definitionId];
+    if (card.bracket) {
+      usage[definitionId].scoutedPositions += scaledBracket(card, upgradeLevel(evaluation.state, uid, null))?.scouting ?? 0;
+    }
+    usage[definitionId].energySpent += card.cost;
   }
   for (const definitionId of evaluation.drawnDefinitionIds) usage[definitionId].drawn += 1;
 }
@@ -465,7 +540,15 @@ function summarize(fights: FightResult[]): PolicySummary {
   for (const fight of fights) {
     for (const [id, source] of Object.entries(fight.usage)) {
       const target = usage[id];
-      for (const key of Object.keys(source) as (keyof CardUsage)[]) target[key] += source[key];
+      for (const key of Object.keys(source) as (keyof CardUsage)[]) {
+        if (key === 'upgradeTargets') {
+          for (const [role, count] of Object.entries(source.upgradeTargets)) {
+            target.upgradeTargets[role] = (target.upgradeTargets[role] ?? 0) + count;
+          }
+        } else {
+          target[key] += source[key];
+        }
+      }
     }
   }
   return {
@@ -500,10 +583,21 @@ function applyChange(change: BalanceChange, cards: Record<string, CardDefinition
     bracket[change.field] = (bracket[change.field] ?? 0) + change.delta;
     return 1;
   }
+  if (change.kind === 'card-level') {
+    CARDS[change.cardId].modifier!.levels += change.delta;
+    return 1;
+  }
+  if (change.kind === 'card-scaling-effect') {
+    CARDS[change.cardId].scaling!.effects![change.effectIndex] += change.delta;
+    return 1;
+  }
+  if (change.kind === 'card-scaling-bracket') {
+    const bracket = CARDS[change.cardId].scaling!.bracket!;
+    bracket[change.field] = (bracket[change.field] ?? 0) + change.delta;
+    return 1;
+  }
   if (change.kind === 'card-effect') {
-    const card = CARDS[change.cardId];
-    if (change.effectKind === 'modifier') card.modifier!.damage += change.delta;
-    else card.effects.find((effect) => effect.kind === change.effectKind)!.amount += change.delta;
+    CARDS[change.cardId].effects.find((effect) => effect.kind === change.effectKind)!.amount += change.delta;
     return 1;
   }
   ENCOUNTER.enemyHp = Math.round(encounter.enemyHp * change.hpScale);
@@ -512,27 +606,55 @@ function applyChange(change: BalanceChange, cards: Record<string, CardDefinition
 
 function candidates(cards: Record<string, CardDefinition>): Candidate[] {
   const result: Candidate[] = [{ id: 'baseline', change: { kind: 'baseline' } }];
+  const validSignedDeltas = (value: number): number[] => [-1, 1].filter((delta) =>
+    Number.isSafeInteger(value + delta) && value + delta !== 0 && Math.sign(value + delta) === Math.sign(value));
   for (const [id, card] of Object.entries(cards)) {
-    const primaryKind = card.modifier ? 'modifier' : card.effects[0]?.kind;
-    const primaryAmount = card.modifier?.damage ?? card.effects[0]?.amount;
+    const primaryKind = card.effects[0]?.kind;
+    const primaryAmount = card.effects[0]?.amount;
     if (primaryKind !== undefined && primaryAmount !== undefined) {
       for (const delta of [-1, 1]) {
-        if (primaryKind !== 'modifier' && primaryAmount + delta < 0) continue;
+        if (primaryAmount + delta < 0) continue;
         result.push({
           id: `card:${id}:${primaryKind}:${delta > 0 ? '+1' : '-1'}`,
           change: { kind: 'card-effect', cardId: id, effectKind: primaryKind, delta },
         });
       }
     }
+    if (card.modifier) {
+      for (const delta of validSignedDeltas(card.modifier.levels)) {
+        result.push({
+          id: `card:${id}:level:${delta > 0 ? '+1' : '-1'}`,
+          change: { kind: 'card-level', cardId: id, delta },
+        });
+      }
+    }
+    for (const [effectIndex, step] of (card.scaling?.effects ?? []).entries()) {
+      if (!step) continue;
+      for (const delta of validSignedDeltas(step)) {
+        result.push({
+          id: `card:${id}:scaling-effect-${effectIndex}:${delta > 0 ? '+1' : '-1'}`,
+          change: { kind: 'card-scaling-effect', cardId: id, effectIndex, delta },
+        });
+      }
+    }
     if (card.bracket) {
       for (const field of ['positions', 'scouting'] as const) {
         const amount = card.bracket[field];
-        if (amount === undefined) continue;
-        for (const delta of [-1, 1]) {
-          if (field === 'scouting' && amount + delta < 0) continue;
+        if (amount !== undefined) {
+          for (const delta of [-1, 1]) {
+            if (field === 'scouting' && amount + delta < 0) continue;
+            result.push({
+              id: `card:${id}:bracket-${field}:${delta > 0 ? '+1' : '-1'}`,
+              change: { kind: 'card-bracket', cardId: id, field, delta },
+            });
+          }
+        }
+        const step = card.scaling?.bracket?.[field];
+        if (!step) continue;
+        for (const delta of validSignedDeltas(step)) {
           result.push({
-            id: `card:${id}:bracket-${field}:${delta > 0 ? '+1' : '-1'}`,
-            change: { kind: 'card-bracket', cardId: id, field, delta },
+            id: `card:${id}:scaling-bracket-${field}:${delta > 0 ? '+1' : '-1'}`,
+            change: { kind: 'card-scaling-bracket', cardId: id, field, delta },
           });
         }
       }
@@ -557,9 +679,10 @@ function candidates(cards: Record<string, CardDefinition>): Candidate[] {
 function roles(card: CardDefinition): string[] {
   const result = card.effects.map((effect) => `effect:${effect.kind}:${effect.recipient}`);
   if (card.modifier) {
-    const polarity = card.modifier.damage < 0 ? 'negative' : card.modifier.damage > 0 ? 'positive' : 'neutral';
-    result.push(`modifier:damage:${polarity}`);
+    const polarity = card.modifier.levels < 0 ? 'negative' : 'positive';
+    result.push(`modifier:level:${polarity}`);
   }
+  for (const key of scalingTargetKeys('scalable', card)) result.push(key);
   if (card.bracket?.positions) {
     result.push(`bracket:positions:${card.bracket.positions > 0 ? 'extend' : 'shorten'}`);
   }
@@ -578,6 +701,7 @@ async function fingerprint(cards: Record<string, CardDefinition>, encounter: typ
     Bun.file(new URL('../src/game/combat.ts', import.meta.url)).text(),
     Bun.file(new URL('../src/game/content.ts', import.meta.url)).text(),
     Bun.file(new URL('../src/game/types.ts', import.meta.url)).text(),
+    Bun.file(new URL('../src/game/upgrades.ts', import.meta.url)).text(),
     Bun.file(new URL('./balance.ts', import.meta.url)).text(),
     Bun.file(new URL('./balance-feedback.ts', import.meta.url)).text(),
   ]);
@@ -604,16 +728,26 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
     }
     counters.elapsedMs = performance.now() - started;
     const exercised = new Set<string>();
+    const exercisedScalingTargets = new Set<string>();
     for (const run of runs) {
       for (const policy of POLICIES) {
         for (const [id, usage] of Object.entries(run.policies[policy].usage)) {
           if (usage.played + usage.attached > 0) exercised.add(id);
+          for (const [target, uses] of Object.entries(usage.upgradeTargets)) {
+            if (uses > 0) exercisedScalingTargets.add(target);
+          }
         }
       }
     }
+    const expectedScalingTargets = new Set(Object.entries(originalCards)
+      .flatMap(([id, card]) => scalingTargetKeys(`card:${id}`, card)));
+    for (let position = 0; position < 24; position += 1) {
+      const intent = enemyIntent(position);
+      if (intent) for (const key of scalingTargetKeys(`intent:${intent.name}`, intent)) expectedScalingTargets.add(key);
+    }
     restoreContent(originalCards, originalEncounter);
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       generatedAt: new Date().toISOString(),
       rulesModel: 'Canonical production combat engine: persistent absolute-position timeline resolving toward higher indices; current turn bracket is playable and scouted future is inspectable only.',
       fingerprint: await fingerprint(originalCards, originalEncounter),
@@ -621,19 +755,22 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
       counts: counters,
       cards: Object.fromEntries(Object.entries(originalCards).map(([id, card]) => [id, { name: card.name, cost: card.cost, roles: roles(card) }])),
       runs,
-      coverage: { uncoveredCards: Object.keys(originalCards).filter((id) => !exercised.has(id)) },
+      coverage: {
+        uncoveredCards: Object.keys(originalCards).filter((id) => !exercised.has(id)),
+        unexercisedScalingTargets: [...expectedScalingTargets].filter((target) => !exercisedScalingTargets.has(target)),
+      },
       limitations: [
         `Heuristic policies are neither human nor optimal play and look ahead only one canonical resolveTurn transition, for at most ${MAX_TURNS} turns.`,
-        `Search keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; bracket modifiers are enumerated before actions, but large hands can still leave legal combinations unevaluated.`,
+        `Search keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; temporal cards are enumerated and graded before actions, but large hands can still leave legal combinations unevaluated.`,
         'Only the absolute current bracket is planned or scored. Scouted positions are read only after a real scouting attachment reveals them; cached positions beyond visibleEnd are never inspected.',
-        'Scouting has no combat score or fabricated information-value bonus. Its attachment and revealed-position counts prove actual use, but this one-turn policy cannot measure how a human values future knowledge.',
-        'Opportunity counts include the changing playable and visible position exposure available while each card is in hand; raw use rates remain policy-dependent.',
-        'Equivalent occupied card/position damage-attachment routes are represented by the card target, and equivalent empty current-bracket routes by one position.',
+        'Scouting has no combat score or fabricated information-value bonus. Its attachment, authored-scaling target, and revealed-position counts prove actual use, but this one-turn policy cannot measure how a human values future knowledge.',
+        'Opportunity counts include the changing playable and visible position exposure available while each card is in hand; a selected sequential use is counted as legal even when an earlier attachment created its target or range.',
+        'Equivalent occupied card/position grade routes are represented by the card target, and equivalent empty current-bracket routes by one position.',
         'Analysis projects presentation-only timeline history to an empty array before every branch and resolution; absolute position, queue, actors, cards, attachments, and resources remain in the simulation and state keys.',
         'Confidence intervals reflect sampled seeds and policy behavior, not player populations; every candidate reuses the same paired seed set and isolates only the named data change.',
-        'Strong scores one-turn outcomes; tactical uses that score but makes a uniformly random legal choice on 25% of turns; greedy prioritizes printed damage. Policy randomness is separate from combat RNG.',
+        'Strong scores resolved one-turn outcomes; tactical uses that score but makes a uniformly random legal choice on 25% of turns; greedy prioritizes effective authored player damage after grades. Policy randomness is separate from combat RNG.',
         'Played counts include only actions that actually fire; energy spent includes all commitments, including actions canceled by earlier lethal damage.',
-        'Candidates are diagnostics only. The runner reports measured comparisons and never applies tuning to production content.',
+        'Base-stat, authored scaling-step, source-level, and encounter candidates are diagnostics only. The runner never applies tuning to production content.',
       ],
     };
   } finally {
@@ -668,8 +805,12 @@ async function main(): Promise<void> {
   await Bun.write(options.output, `${JSON.stringify({ ...report, feedback }, null, 2)}\n`);
   console.log(formatFeedback(feedback));
   console.log(`Report: ${options.output} | ${report.counts.fights} fights | ${report.counts.evaluatedPlans} evaluated plans | fingerprint ${report.fingerprint.slice(0, 12)}`);
-  if (report.coverage.uncoveredCards.length) {
-    console.error(`Balance coverage failed: no chosen play or attachment for ${report.coverage.uncoveredCards.join(', ')}. The report was still written.`);
+  const coverageFailures = [
+    ...report.coverage.uncoveredCards.map((id) => `card:${id}`),
+    ...report.coverage.unexercisedScalingTargets.map((target) => `scaling:${target}`),
+  ];
+  if (coverageFailures.length) {
+    console.error(`Balance coverage failed: no chosen play or attachment for ${coverageFailures.join(', ')}. The report was still written.`);
     process.exitCode = 1;
   }
 }

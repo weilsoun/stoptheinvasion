@@ -1,4 +1,5 @@
 import { CARDS, ENCOUNTER, STARTER_DECK, enemyIntent } from './content';
+import { applyUpgrade, scaledBracket } from './upgrades';
 import type {
   Actor,
   ActorId,
@@ -46,12 +47,25 @@ function cloneDefinition(value: CardDefinition | null): CardDefinition | null {
     onCritical: value.onCritical?.map((effect) => ({ ...effect })),
     modifier: value.modifier && { ...value.modifier },
     bracket: value.bracket && { ...value.bracket },
+    scaling: value.scaling && {
+      ...value.scaling,
+      effects: value.scaling.effects && [...value.scaling.effects],
+      bracket: value.scaling.bracket && { ...value.scaling.bracket },
+    },
   };
 }
 function cloneSlot(slot: QueueSlot): QueueSlot {
   if (!slot) return null;
   if (slot.kind === 'player') return { ...slot, card: cloneCard(slot.card) };
-  return { ...slot, effects: slot.effects.map((effect) => ({ ...effect })) };
+  return {
+    ...slot,
+    effects: slot.effects.map((effect) => ({ ...effect })),
+    scaling: slot.scaling && {
+      ...slot.scaling,
+      effects: slot.scaling.effects && [...slot.scaling.effects],
+      bracket: slot.scaling.bracket && { ...slot.scaling.bracket },
+    },
+  };
 }
 function cloneHistory(entry: TimelineEntry): TimelineEntry {
   return {
@@ -152,18 +166,19 @@ function validateAction(state: CombatState, action: QueueSlot): void {
   action.effects.forEach((effect) => validateEffect(effect, `${action.name} effect`));
 }
 
-function bracketValue(card: CardInstance, key: 'positions' | 'scouting'): number {
+function bracketValue(state: CombatState, card: CardInstance, key: 'positions' | 'scouting'): number {
   const cardDefinition = definition(card);
   if (cardDefinition.modifier && cardDefinition.bracket) {
-    throw new Error(`${cardDefinition.name} cannot be both damage and bracket modifier.`);
+    throw new Error(`${cardDefinition.name} cannot be both an upgrade and bracket modifier.`);
   }
   if (!cardDefinition.bracket) return 0;
-  const positions = cardDefinition.bracket.positions ?? 0;
-  const scouting = cardDefinition.bracket.scouting ?? 0;
-  if (!Number.isFinite(positions) || !Number.isInteger(positions)) {
+  const bracket = scaledBracket(cardDefinition, upgradeLevel(state, card.uid, null));
+  const positions = bracket?.positions ?? 0;
+  const scouting = bracket?.scouting ?? 0;
+  if (!Number.isSafeInteger(positions)) {
     throw new Error(`${cardDefinition.name} has invalid bracket positions.`);
   }
-  if (!Number.isFinite(scouting) || !Number.isInteger(scouting) || scouting < 0) {
+  if (!Number.isSafeInteger(scouting) || scouting < 0) {
     throw new Error(`${cardDefinition.name} has invalid bracket scouting.`);
   }
   return key === 'positions' ? positions : scouting;
@@ -173,7 +188,7 @@ function bracketValue(card: CardInstance, key: 'positions' | 'scouting'): number
 export function turnLength(state: CombatState): number {
   let length = state.actors.bob.turnLength;
   for (const attachment of state.attachments) {
-    if (attachment.target.kind === 'bracket') length += bracketValue(attachment.card, 'positions');
+    if (attachment.target.kind === 'bracket') length += bracketValue(state, attachment.card, 'positions');
   }
   return Math.max(1, length);
 }
@@ -185,7 +200,7 @@ export function turnEnd(state: CombatState): number {
 export function visibleEnd(state: CombatState): number {
   let scouting = state.actors.bob.scouting;
   for (const attachment of state.attachments) {
-    if (attachment.target.kind === 'bracket') scouting += bracketValue(attachment.card, 'scouting');
+    if (attachment.target.kind === 'bracket') scouting += bracketValue(state, attachment.card, 'scouting');
   }
   return turnEnd(state) + Math.max(0, scouting);
 }
@@ -281,51 +296,65 @@ export function availableEnergy(state: CombatState, actor: ActorId = 'bob'): num
   }
   return source.energy - reserved;
 }
-interface DamageCandidate {
+interface UpgradeCandidate {
   uid: string;
   owner: ActorId;
-  effects: Effect[];
+  scaling: CardDefinition['scaling'] | EnemyAction['scaling'];
   modifier: boolean;
+  position: number | null;
 }
 
-function cardCandidate(card: CardInstance): DamageCandidate {
+function cardCandidate(card: CardInstance, position: number | null = null): UpgradeCandidate {
   const cardDefinition = definition(card);
   return {
     uid: card.uid,
     owner: card.owner,
-    effects: cardDefinition.effects,
+    scaling: cardDefinition.scaling,
     modifier: cardDefinition.modifier !== undefined,
+    position,
   };
 }
 
-function slotCandidate(action: Exclude<QueueSlot, null>): DamageCandidate {
+function slotCandidate(action: Exclude<QueueSlot, null>, position: number | null = null): UpgradeCandidate {
   return action.kind === 'player'
-    ? cardCandidate(action.card)
-    : { uid: action.uid, owner: action.actor, effects: action.effects, modifier: false };
+    ? cardCandidate(action.card, position)
+    : {
+      uid: action.uid,
+      owner: action.actor,
+      scaling: action.scaling,
+      modifier: false,
+      position,
+    };
 }
 
-function damageCandidate(state: CombatState, uid: string): DamageCandidate | undefined {
+// This lookup deliberately does not call turnEnd: active bracket grades are
+// themselves part of turnLength, so range-aware lookup here would recurse.
+function upgradeCandidate(state: CombatState, uid: string): UpgradeCandidate | undefined {
   const handCard = state.hand.find((card) => card.uid === uid);
   if (handCard) return cardCandidate(handCard);
-  for (let position = state.position; position < turnEnd(state); position += 1) {
+  for (let position = state.position; position < state.queue.length; position += 1) {
     const action = state.queue[position];
     if (action && (action.kind === 'player' ? action.card.uid : action.uid) === uid) {
-      return slotCandidate(action);
+      return slotCandidate(action, position);
     }
   }
+  const bracketCard = state.attachments.find((attachment) =>
+    attachment.target.kind === 'bracket' && attachment.card.uid === uid
+  )?.card;
+  return bracketCard ? cardCandidate(bracketCard) : undefined;
 }
 
 function compatibleModifierTarget(
   state: CombatState,
   modifierCard: CardInstance,
-  candidate: DamageCandidate,
+  candidate: UpgradeCandidate,
 ): boolean {
   const modifierDefinition = definition(modifierCard);
   if (
     !modifierDefinition.modifier
     || candidate.uid === modifierCard.uid
     || candidate.modifier
-    || !candidate.effects.some((effect) => effect.kind === 'damage')
+    || !candidate.scaling
     || state.actors[candidate.owner].hp <= 0
   ) return false;
   const expectedOwner = modifierDefinition.target === 'self'
@@ -345,7 +374,7 @@ function modifierAttachmentFailure(
   if (!modifierCard) return 'That modifier card is not in hand.';
   const modifierDefinition = definition(modifierCard);
   if (modifierDefinition.modifier && modifierDefinition.bracket) {
-    return 'An attachment cannot modify both damage and the turn bracket.';
+    return 'An attachment cannot modify both a card level and the turn bracket.';
   }
   if (!modifierDefinition.modifier && !modifierDefinition.bracket) return 'That card is not an attachment.';
   validateAmount(modifierDefinition.cost, 'attachment cost');
@@ -354,15 +383,18 @@ function modifierAttachmentFailure(
   }
   if (target?.kind === 'bracket') {
     if (!modifierDefinition.bracket || modifierCard.owner !== 'bob') return 'That card cannot modify this turn bracket.';
-    bracketValue(modifierCard, 'positions');
+    bracketValue(state, modifierCard, 'positions');
     return;
   }
   if (!modifierDefinition.modifier) return 'Bracket attachments can only target the turn bracket.';
-  if (!Number.isFinite(modifierDefinition.modifier.damage)) {
-    return 'Attachment has invalid damage.';
+  if (!Number.isSafeInteger(modifierDefinition.modifier.levels) || modifierDefinition.modifier.levels === 0) {
+    return 'Attachment has invalid upgrade levels.';
   }
   if (target?.kind === 'card') {
-    const candidate = damageCandidate(state, target.uid);
+    const candidate = upgradeCandidate(state, target.uid);
+    if (candidate?.position !== null && candidate?.position !== undefined && !validIndex(state, candidate.position)) {
+      return 'That card is outside the current turn bracket.';
+    }
     if (!candidate || !compatibleModifierTarget(state, modifierCard, candidate)) {
       return 'That card cannot receive this attachment.';
     }
@@ -371,7 +403,7 @@ function modifierAttachmentFailure(
   if (target?.kind === 'slot') {
     if (!validIndex(state, target.slot)) return 'Attachment slot must be in the current turn bracket.';
     const action = state.queue[target.slot];
-    if (action && !compatibleModifierTarget(state, modifierCard, slotCandidate(action))) {
+    if (action && !compatibleModifierTarget(state, modifierCard, slotCandidate(action, target.slot))) {
       return 'That slot cannot receive this attachment.';
     }
     return;
@@ -435,7 +467,7 @@ export function attachModifier(state: CombatState, uid: string, target: Modifier
   const [card] = next.hand.splice(handIndex, 1);
   next.attachments.push({ card, target: { ...target } });
   appendLog(next, `Attached ${definition(card).name}.`);
-  if (target.kind === 'bracket') reconcileBracket(next);
+  reconcileBracket(next);
   commitPlanningMutation(state, next);
   return { ok: true };
 }
@@ -449,24 +481,27 @@ export function removeModifier(state: CombatState, uid: string): CommandResult {
   const [attachment] = next.attachments.splice(attachmentIndex, 1);
   next.hand.push(attachment.card);
   appendLog(next, `Returned ${definition(attachment.card).name} to hand.`);
-  if (attachment.target.kind === 'bracket') reconcileBracket(next);
+  reconcileBracket(next);
   commitPlanningMutation(state, next);
   return { ok: true };
 }
 
-export function damageModifier(state: CombatState, uid: string, slot: number | null): number {
-  const candidate = damageCandidate(state, uid);
+export function upgradeLevel(state: CombatState, uid: string, slot: number | null): number {
+  const candidate = upgradeCandidate(state, uid);
   if (!candidate) return 0;
-  let damage = 0;
+  let level = 0;
   for (const attachment of state.attachments) {
     const applies = attachment.target.kind === 'card'
       ? attachment.target.uid === uid
       : attachment.target.kind === 'slot' && slot !== null && attachment.target.slot === slot;
-    if (applies && compatibleModifierTarget(state, attachment.card, candidate)) {
-      damage += definition(attachment.card).modifier!.damage;
+    if (!applies || !compatibleModifierTarget(state, attachment.card, candidate)) continue;
+    const levels = definition(attachment.card).modifier!.levels;
+    if (!Number.isSafeInteger(levels) || levels === 0 || !Number.isSafeInteger(level + levels)) {
+      throw new Error('Attachment has invalid upgrade levels.');
     }
+    level += levels;
   }
-  return damage;
+  return level;
 }
 
 function validateInventory(state: CombatState): void {
@@ -508,14 +543,20 @@ function validateAttachments(state: CombatState): void {
       if (!cardDefinition.bracket || attachment.card.owner !== 'bob') {
         throw new Error('Bracket attachment has an invalid target.');
       }
-      bracketValue(attachment.card, 'positions');
+      bracketValue(state, attachment.card, 'positions');
     } else if (cardDefinition.bracket) {
       throw new Error('Bracket attachment has an invalid target.');
     } else {
-      if (!Number.isFinite(cardDefinition.modifier!.damage)) throw new Error('Attachment has invalid damage.');
+      if (!Number.isSafeInteger(cardDefinition.modifier!.levels) || cardDefinition.modifier!.levels === 0) {
+        throw new Error('Attachment has invalid upgrade levels.');
+      }
       if (attachment.target.kind === 'card') {
-        const candidate = damageCandidate(state, attachment.target.uid);
-        if (!candidate || !compatibleModifierTarget(state, attachment.card, candidate)) {
+        const candidate = upgradeCandidate(state, attachment.target.uid);
+        if (
+          !candidate
+          || (candidate.position !== null && !validIndex(state, candidate.position))
+          || !compatibleModifierTarget(state, attachment.card, candidate)
+        ) {
           throw new Error('Attachment has an invalid card target.');
         }
       } else if (!validIndex(state, attachment.target.slot)) {
@@ -810,7 +851,6 @@ function applyEffect(
   effect: Effect,
   events: CombatEvent[],
   protectedCards: Set<string>,
-  damageBonus = 0,
 ): boolean {
   validateEffect(effect, `${effect.kind} effect`);
   const actorId = action.kind === 'player' ? action.card.owner : action.actor;
@@ -820,7 +860,7 @@ function applyEffect(
   if (recipient.hp <= 0) return false;
 
   if (effect.kind === 'damage') {
-    const baseDamage = Math.max(0, effect.amount + damageBonus);
+    const baseDamage = effect.amount;
     const exposed = recipient.exposed;
     const critical = recipientId !== actorId && exposed > 0;
     const incoming = baseDamage + exposed;
@@ -980,7 +1020,11 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
     const events: CombatEvent[] = [];
     const action = working.queue[position];
     const actionUid = action?.kind === 'player' ? action.card.uid : action?.uid;
-    const appliedDamageModifier = actionUid ? damageModifier(working, actionUid, position) : 0;
+    const appliedUpgradeLevel = actionUid ? upgradeLevel(working, actionUid, position) : 0;
+    const effectiveAction = action && applyUpgrade(
+      action.kind === 'player' ? definition(action.card) : action,
+      appliedUpgradeLevel,
+    );
 
     if (!action) {
       record(working, events, { kind: 'empty', slot: position, message: `Position ${position} is empty.` });
@@ -1009,14 +1053,13 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
           }.`,
         });
         let critical = false;
-        for (const effect of action.kind === 'player' ? definition(action.card).effects : action.effects) {
+        for (const effect of effectiveAction!.effects) {
           critical = applyEffect(
             working,
             action,
             effect,
             events,
             protectedCards,
-            appliedDamageModifier,
           ) || critical;
           if (terminalPhase(working)) break;
         }
@@ -1034,7 +1077,7 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       turn: working.turn,
       action: cloneSlot(action),
       definition: action?.kind === 'player' ? cloneDefinition(definition(action.card)) : null,
-      damageModifier: appliedDamageModifier,
+      upgradeLevel: appliedUpgradeLevel,
       attachments: historyAttachments(working, position, action),
       events: events.map(cloneEvent),
     });

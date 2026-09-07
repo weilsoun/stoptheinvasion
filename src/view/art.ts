@@ -1,4 +1,5 @@
 import type { ActorId, CardDefinition, CardRarity } from '../game/types';
+import { applyUpgrade } from '../game/upgrades';
 
 const INK = '#07191c';
 const PAPER = '#f3dfb3';
@@ -252,7 +253,7 @@ export function drawActorArt(actor: ActorId): HTMLCanvasElement {
 function centeredText(
   ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
   maxWidth: number, lineHeight: number, numberSize = 0,
-  damageColor?: string,
+  numberColor?: string, originalText?: string,
 ): void {
   const baseFont = ctx.font;
   const baseColor = ctx.fillStyle;
@@ -262,14 +263,17 @@ function centeredText(
   const minusWidth = numberSize > 0 ? ctx.measureText('−').width + numberSize * .12 : 0;
   ctx.font = baseFont;
   const gap = ctx.measureText(' ').width;
-  const paragraphs = text.split('\n').map((paragraph) => paragraph.split(/\s+/).filter(Boolean).map((word, index, words) => {
+  const originals = numberColor && originalText
+    ? originalText.split('\n').map((paragraph) => paragraph.split(/\s+/).filter(Boolean))
+    : undefined;
+  const paragraphs = text.split('\n').map((paragraph, paragraphIndex) => paragraph.split(/\s+/).filter(Boolean).map((word, index) => {
     const numeric = numberSize > 0 && /^[+−-]?\d+[.,]?$/.test(word);
+    const changed = numeric && numberColor !== undefined && word !== originals?.[paragraphIndex]?.[index];
     const negative = numeric && /^[−-]/.test(word);
     if (negative) word = word.slice(1);
     ctx.font = numeric ? numberFont : baseFont;
     const metrics = ctx.measureText(word);
-    const damage = numeric && damageColor !== undefined && /^damage\b/.test(words[index + 1] ?? '');
-    return { word, numeric, negative, damage, metrics, width: metrics.width + (negative ? minusWidth : 0) };
+    return { word, numeric, negative, changed, metrics, width: metrics.width + (negative ? minusWidth : 0) };
   }));
   type TextWord = (typeof paragraphs)[number][number];
   type TextLine = { words: TextWord[]; width: number; ascent: number; descent: number };
@@ -294,7 +298,7 @@ function centeredText(
     const line = lines[index];
     let left = x - line.width / 2;
     for (const word of line.words) {
-      ctx.fillStyle = word.damage ? damageColor! : baseColor;
+      ctx.fillStyle = word.changed ? numberColor! : baseColor;
       if (word.negative) {
         ctx.font = minusFont;
         ctx.fillText('−', left, firstBaseline + index * lineHeight);
@@ -517,7 +521,7 @@ export function drawEnergyBadge(cost: number, dimmed: boolean): HTMLCanvasElemen
 export function drawCardArt(
   card: CardDefinition,
   locked: boolean,
-  damageModifier: number,
+  upgradeLevel: number,
   showTargets: boolean,
   dimmed: boolean,
 ): HTMLCanvasElement {
@@ -529,7 +533,7 @@ export function drawCardArt(
       : card.type === 'skill'
         ? { dark: '#0b3031', paper: '#e9dfb9' }
         : { dark: '#302515', paper: '#eee0b7' };
-  const modifier = card.modifier?.damage;
+  const modifier = card.modifier?.levels;
   const illustration = locked
     ? card.effects.some((effect) => effect.kind === 'heal')
       ? 'enemy-heal'
@@ -588,20 +592,18 @@ export function drawCardArt(
   ctx.stroke();
 
   ctx.fillStyle = locked ? '#fff0ce' : '#14282a';
-  const modified = damageModifier !== 0 && card.effects.some((effect) => effect.kind === 'damage');
-  const description = modified
-    ? card.description.replace(/\b(\d+)(?= damage\b)/g, (_, amount: string) => String(Math.max(0, Number(amount) + damageModifier)))
-    : card.description;
-  const damageColor = !modified ? undefined : locked
-    ? damageModifier > 0 ? '#88e2aa' : '#ffa99b'
-    : damageModifier > 0 ? '#08715a' : '#a92238';
+  const description = applyUpgrade(card, upgradeLevel).description;
+  const numberColor = upgradeLevel === 0 ? undefined : locked
+    ? upgradeLevel > 0 ? '#88e2aa' : '#ffa99b'
+    : upgradeLevel > 0 ? '#08715a' : '#a92238';
   const [primaryRule, ...secondaryActions] = description.split('\n');
+  const [basePrimary, ...baseSecondary] = card.description.split('\n');
   ctx.font = '600 34px Arial, sans-serif';
-  centeredText(ctx, primaryRule, 256, secondaryActions.length ? (showTargets ? 581 : 594) : (showTargets ? 611 : 626), 390, 42, 34, damageColor);
+  centeredText(ctx, primaryRule, 256, secondaryActions.length ? (showTargets ? 581 : 594) : (showTargets ? 611 : 626), 390, 42, 34, numberColor, basePrimary);
   if (secondaryActions.length > 0) {
     ctx.fillStyle = locked ? '#ffbf70' : '#9d352b';
     ctx.font = '800 28px Arial, sans-serif';
-    centeredText(ctx, secondaryActions.join('\n'), 256, showTargets ? 651 : 664, 390, 34, 28, damageColor);
+    centeredText(ctx, secondaryActions.join('\n'), 256, showTargets ? 651 : 664, 390, 34, 28, numberColor, baseSecondary.join('\n'));
   }
 
   if (showTargets && !locked && modifier === undefined) {
