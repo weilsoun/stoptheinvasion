@@ -13,8 +13,8 @@ import {
   Vec3,
 } from 'playcanvas';
 import type { ActorId, CombatEvent, CombatState } from '../game/types';
-import { drawActorArt, drawArenaArt, drawCardArt, drawCardBack } from './art';
-import { CARD_TARGET_GAP, CARD_TARGET_Y, type CardVisual, type ScenePort } from './types';
+import { drawActorArt, drawArenaArt, drawCardArt, drawCardBack, drawEnergyBadge } from './art';
+import { ACTOR_CENTERS, CARD_TARGET_GAP, CARD_TARGET_Y, type CardVisual, type ScenePort } from './types';
 
 const DESIGN_WIDTH = 1920;
 const DESIGN_HEIGHT = 1080;
@@ -25,6 +25,7 @@ type ActorRig = {
   root: Entity;
   material: StandardMaterial;
   baseX: number;
+  baseY: number;
   defeated: boolean;
   hit: number;
   heal: number;
@@ -41,6 +42,7 @@ type CardRig = {
   root: Entity;
   surface: Entity;
   backSurface: Entity;
+  energyBadge: Entity;
   material: StandardMaterial;
   dots: CardDotRig[];
   textureKey: string;
@@ -248,11 +250,13 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const material = texturedMaterial(texture, true, .055);
     const root = new Entity(actor === 'guard' ? 'Infected_Security_Guard' : 'Hardware_Worker_Bob', app);
     const surface = primitive(app, root, `${actor}_Illustrated_Surface`, 'box', [0, 0, 0], [3.2, 3.5, .09], material, true);
-    surface.setLocalPosition(0, 0, 0);
-    const baseX = actor === 'bob' ? worldX(410) : worldX(1500);
-    root.setPosition(baseX, worldY(400), .45);
+    surface.setLocalPosition(0, -1.65, 0);
+    const center = ACTOR_CENTERS[actor];
+    const baseX = worldX(center.x);
+    const baseY = worldY(center.y);
+    root.setPosition(baseX, baseY, .45);
     arenaRoot.addChild(root);
-    actors.set(actor, { root, material, baseX, defeated: false, hit: 0, heal: 0, exposed: 0, action: 0 });
+    actors.set(actor, { root, material, baseX, baseY, defeated: false, hit: 0, heal: 0, exposed: 0, action: 0 });
   }
 
   const targetWellMaterial = solidMaterial(new Color(.025, .075, .08), .3);
@@ -276,16 +280,25 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   );
   detailScrim.enabled = false;
 
-  const cardBackTexture = textureFromCanvas(app, drawCardBack(), 'Printed card back');
-  const cardBackMaterial = texturedMaterial(cardBackTexture, true, .025);
-  cardBackMaterial.opacity = 1;
-  cardBackMaterial.specular = new Color(.16, .14, .1);
-  cardBackMaterial.gloss = .38;
-  cardBackMaterial.clearCoat = .08;
-  cardBackMaterial.clearCoatGloss = .4;
-  cardBackMaterial.update();
+  const builderCardBackTexture = textureFromCanvas(app, drawCardBack(), 'Bob builder card back');
+  const builderCardBackMaterial = texturedMaterial(builderCardBackTexture, true, .025);
+  builderCardBackMaterial.opacity = 1;
+  builderCardBackMaterial.specular = new Color(.16, .14, .1);
+  builderCardBackMaterial.gloss = .38;
+  builderCardBackMaterial.clearCoat = .08;
+  builderCardBackMaterial.clearCoatGloss = .4;
+  builderCardBackMaterial.update();
+  const enemyCardBackTexture = textureFromCanvas(app, drawCardBack(true), 'Enemy intent card back');
+  const enemyCardBackMaterial = texturedMaterial(enemyCardBackTexture, true, .025);
+  enemyCardBackMaterial.opacity = 1;
+  enemyCardBackMaterial.specular = new Color(.16, .14, .1);
+  enemyCardBackMaterial.gloss = .38;
+  enemyCardBackMaterial.clearCoat = .08;
+  enemyCardBackMaterial.clearCoatGloss = .4;
+  enemyCardBackMaterial.update();
 
   const cardTextures = new Map<string, Texture>();
+  const energyBadgeMaterials = new Map<string, StandardMaterial>();
   const cards = new Map<string, CardRig>();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let pointerX = DESIGN_WIDTH / 2;
@@ -296,7 +309,9 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   let destroyed = false;
 
   function cardTextureKey(visual: CardVisual): string {
-    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}:dimmed:${visual.dimmed}`;
+    const characterColor = visual.definition.characterColor ?? '#e97a2d';
+    const rarity = visual.definition.rarity ?? 'common';
+    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:color:${characterColor}:rarity:${rarity}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}:dimmed:${visual.dimmed}`;
   }
 
   function getCardTexture(visual: CardVisual, key = cardTextureKey(visual)): Texture {
@@ -311,6 +326,21 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     }
     return texture;
   }
+  function energyBadgeMaterial(visual: CardVisual): StandardMaterial {
+    const key = `energy:${visual.definition.cost}:dimmed:${visual.dimmed}`;
+    let material = energyBadgeMaterials.get(key);
+    if (!material) {
+      const texture = textureFromCanvas(app, drawEnergyBadge(visual.definition.cost, visual.dimmed), key);
+      cardTextures.set(key, texture);
+      material = texturedMaterial(texture, true, .025);
+      energyBadgeMaterials.set(key, material);
+      material.specular = new Color(0, 0, 0);
+      material.clearCoat = 0;
+      material.update();
+    }
+    return material;
+  }
+
   function positionCardDots(rig: CardRig): void {
     const diameter = rig.visual.width * .12 / WORLD_SCALE;
     for (let index = 0; index < rig.dots.length; index++) {
@@ -358,6 +388,11 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     rig.material.emissive = new Color(glow, glow, glow);
     rig.material.opacity = 1;
     rig.material.update();
+    rig.energyBadge.enabled = !rig.visual.locked;
+    if (rig.energyBadge.render) rig.energyBadge.render.material = energyBadgeMaterial(rig.visual);
+    if (rig.backSurface.render) {
+      rig.backSurface.render.material = rig.visual.locked ? enemyCardBackMaterial : builderCardBackMaterial;
+    }
   }
 
   function scaleCardFaces(rig: CardRig): void {
@@ -370,6 +405,14 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       rig.displayedWidth / WORLD_SCALE,
       1,
       rig.displayedHeight / WORLD_SCALE,
+    );
+    const diameter = rig.displayedWidth * .18 / WORLD_SCALE;
+    // A square face keeps the badge round regardless of the card's aspect ratio.
+    rig.energyBadge.setLocalScale(diameter, 1, diameter);
+    rig.energyBadge.setLocalPosition(
+      -rig.displayedWidth / (2 * WORLD_SCALE) + diameter / 4,
+      rig.displayedHeight / (2 * WORLD_SCALE) - diameter / 4,
+      .0065,
     );
   }
 
@@ -385,8 +428,10 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     const root = new Entity(`Card_${visual.uid}`, app);
     const surface = primitive(app, root, 'Printed_Lit_Card_Front', 'plane', [0, 0, .006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], material, true);
     surface.setLocalEulerAngles(90, 0, 0);
-    const backSurface = primitive(app, root, 'Printed_Lit_Card_Back', 'plane', [0, 0, -.006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], cardBackMaterial, true);
-    backSurface.setLocalEulerAngles(-90, 0, 0);
+    const backSurface = primitive(app, root, 'Printed_Lit_Card_Back', 'plane', [0, 0, -.006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], visual.locked ? enemyCardBackMaterial : builderCardBackMaterial, true);
+    backSurface.setLocalEulerAngles(90, 180, 0);
+    const energyBadge = primitive(app, root, 'Corner_Energy_Badge', 'plane', [0, 0, .0065], [1, 1, 1], energyBadgeMaterial(visual));
+    energyBadge.setLocalEulerAngles(90, 0, 0);
     const x = worldX(visual.x + visual.width / 2);
     const y = worldY(visual.y + visual.height / 2);
     const initialRotation = -desiredCardRotation(visual);
@@ -398,6 +443,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       root,
       surface,
       backSurface,
+      energyBadge,
       material,
       dots: [],
       textureKey,
@@ -468,7 +514,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     rig.root.setPosition(
       rig.x.value,
       rig.y.value,
-      host.root.getPosition().z - Math.max(1, host.layer - rig.layer) * .002,
+      host.root.getPosition().z - .012 - Math.max(1, host.layer - rig.layer) * .0002,
     );
     rig.root.setEulerAngles(0, rig.flip.value, rig.roll.value);
     scaleCardFaces(rig);
@@ -523,7 +569,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       const healPhase = rig.heal > 0 ? Math.sin((rig.heal / .42) * Math.PI) : 0;
       const hitShake = rig.hit > 0 ? Math.sin(rig.hit * 92) * rig.hit * .32 : 0;
       const direction = actor === 'bob' ? 1 : -1;
-      rig.root.setLocalPosition(rig.baseX + actionPhase * direction * .28 + hitShake, worldY(400) + Math.abs(hitShake) * .15 + healPhase * .05, .45);
+      rig.root.setLocalPosition(rig.baseX + actionPhase * direction * .28 + hitShake, rig.baseY + Math.abs(hitShake) * .15 + healPhase * .05, .45);
       rig.root.setLocalEulerAngles(0, 0, rig.defeated ? direction * 9 : hitShake * 8);
       if (hadFeedback && rig.hit === 0 && rig.heal === 0 && rig.exposed === 0) applyActorAppearance(actor);
     }
@@ -676,8 +722,11 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       for (const rig of actors.values()) rig.material.destroy();
       for (const texture of cardTextures.values()) texture.destroy();
       for (const texture of actorTextures.values()) texture.destroy();
-      cardBackMaterial.destroy();
-      cardBackTexture.destroy();
+      for (const material of energyBadgeMaterials.values()) material.destroy();
+      builderCardBackMaterial.destroy();
+      builderCardBackTexture.destroy();
+      enemyCardBackMaterial.destroy();
+      enemyCardBackTexture.destroy();
       detailScrimMaterial.destroy();
       backdropTexture.destroy();
       backdropMaterial.destroy();

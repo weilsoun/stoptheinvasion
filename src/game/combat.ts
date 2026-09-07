@@ -94,6 +94,19 @@ function validateTarget(state: CombatState, card: CardInstance, target: ActorId 
 function validateAmount(amount: number, label: string): void {
   if (!Number.isFinite(amount) || amount < 0) throw new Error(`Invalid ${label}: ${amount}`);
 }
+function validateEffect(effect: Effect, label: string): void {
+  if (!effect || !['damage', 'block', 'exposed', 'heal', 'energy', 'draw', 'ringing'].includes(effect.kind)) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  if (effect.recipient !== 'self' && effect.recipient !== 'target') {
+    throw new Error(`Invalid ${label} recipient.`);
+  }
+  validateAmount(effect.amount, label);
+  if (effect.kind === 'ringing' && effect.amount !== 1) {
+    throw new Error(`Invalid ${label}: Ringing must last exactly one turn.`);
+  }
+}
+
 
 function validateAction(state: CombatState, action: QueueSlot): void {
   if (!action) return;
@@ -101,10 +114,13 @@ function validateAction(state: CombatState, action: QueueSlot): void {
     if (!action.card || (action.card.owner !== 'bob' && action.card.owner !== 'guard')) {
       throw new Error('Invalid queued player action.');
     }
-    if (definition(action.card).modifier) throw new Error('Modifier cards cannot occupy queue slots.');
+    const cardDefinition = definition(action.card);
+    if (cardDefinition.modifier) throw new Error('Modifier cards cannot occupy queue slots.');
     const targetFailure = validateTarget(state, action.card, action.target);
     if (targetFailure) throw new Error(targetFailure);
-    validateAmount(definition(action.card).cost, 'card cost');
+    validateAmount(cardDefinition.cost, 'card cost');
+    cardDefinition.effects.forEach((effect) => validateEffect(effect, `${cardDefinition.name} effect`));
+    cardDefinition.onCritical?.forEach((effect) => validateEffect(effect, `${cardDefinition.name} critical effect`));
     return;
   }
   if (!action.effects || !action.effects.length) throw new Error('Enemy action has no effects.');
@@ -115,16 +131,30 @@ function validateAction(state: CombatState, action: QueueSlot): void {
   if (!state.actors[action.target] || state.actors[action.target].hp <= 0) {
     throw new Error(`${state.actors[action.target]?.name ?? action.target} is not a living target.`);
   }
+  action.effects.forEach((effect) => validateEffect(effect, `${action.name} effect`));
 }
 
 function installIntent(state: CombatState, turn: number): void {
-  for (const intent of enemyIntent(turn)) {
+  const intents = enemyIntent(turn);
+  const occupied = new Set<number>();
+  const rightmost: Record<ActorId, number> = { bob: -1, guard: -1 };
+  for (const intent of intents) {
     if (!Number.isInteger(intent.slot) || intent.slot < 0 || intent.slot >= ENCOUNTER.slotCount) {
       throw new Error(`Enemy intent has invalid slot ${intent.slot}.`);
     }
-    if (state.queue[intent.slot]) throw new Error(`Enemy intents collide in slot ${intent.slot}.`);
+    if (state.queue[intent.slot] || occupied.has(intent.slot)) {
+      throw new Error(`Enemy intents collide in slot ${intent.slot}.`);
+    }
+    occupied.add(intent.slot);
     validateAction(state, intent.action);
-    state.queue[intent.slot] = cloneSlot(intent.action);
+    if (state.actors[intent.action.actor].ringing) {
+      rightmost[intent.action.actor] = Math.max(rightmost[intent.action.actor], intent.slot);
+    }
+  }
+  for (const intent of intents) {
+    if (!state.actors[intent.action.actor].ringing || rightmost[intent.action.actor] === intent.slot) {
+      state.queue[intent.slot] = cloneSlot(intent.action);
+    }
   }
 }
 
@@ -137,7 +167,10 @@ function makeActor(
   energyGain: number,
   drawCount: number,
 ): Actor {
-  return { id, name, hp, maxHp: hp, block: 0, exposed: 0, energy, energyMax, energyGain, drawCount };
+  return {
+    id, name, hp, maxHp: hp, block: 0, exposed: 0, ringing: false, ringingNextTurn: false,
+    energy, energyMax, energyGain, drawCount,
+  };
 }
 
 export function createCombat(seed = DEFAULT_SEED): CombatState {
@@ -392,6 +425,13 @@ function planPlacement(
   const card = queued?.kind === 'player' ? queued.card : state.hand[handIndex];
   const cardDefinition = definition(card);
   if (cardDefinition.modifier) return { ok: false, reason: 'Attachments do not occupy queue slots.' };
+  if (
+    queuedIndex < 0
+    && state.actors[card.owner].ringing
+    && state.queue.some((slot) => slot?.kind === 'player' && slot.card.owner === card.owner)
+  ) {
+    return { ok: false, reason: `${state.actors[card.owner].name} can only queue one action while Ringing.` };
+  }
   let action: PlayerAction;
   if (queued?.kind === 'player') {
     action = queued;
@@ -629,16 +669,18 @@ function applyEffect(
   events: CombatEvent[],
   protectedCards: Set<string>,
   damageBonus = 0,
-): void {
-  validateAmount(effect.amount, `${effect.kind} effect`);
+): boolean {
+  validateEffect(effect, `${effect.kind} effect`);
   const actorId = action.kind === 'player' ? action.card.owner : action.actor;
   const recipientId = effectRecipient(action, effect);
   const recipient = state.actors[recipientId];
   if (!recipient) throw new Error(`Effect recipient does not exist: ${recipientId}`);
+  if (recipient.hp <= 0) return false;
 
   if (effect.kind === 'damage') {
     const baseDamage = Math.max(0, effect.amount + damageBonus);
     const exposed = recipient.exposed;
+    const critical = recipientId !== actorId && exposed > 0;
     const incoming = baseDamage + exposed;
     if (exposed > 0) recipient.exposed = 0;
     const blocked = Math.min(recipient.block, incoming);
@@ -650,21 +692,21 @@ function applyEffect(
       actor: actorId,
       target: recipientId,
       amount: damage,
+      critical,
       message: `${recipient.name} took ${damage} damage${blocked ? ` (${blocked} blocked)` : ''}${exposed ? `, including ${exposed} Exposed` : ''}.`,
     });
     applyTerminal(state, events);
-    return;
+    return critical;
   }
   if (effect.kind === 'heal') {
-    const restored = recipient.hp <= 0 ? 0 : Math.min(effect.amount, Math.max(0, recipient.maxHp - recipient.hp));
+    const restored = Math.min(effect.amount, Math.max(0, recipient.maxHp - recipient.hp));
     recipient.hp += restored;
     record(state, events, {
       kind: 'heal', actor: actorId, target: recipientId, amount: restored,
       message: `${recipient.name} restored ${restored} health.`,
     });
-    return;
+    return false;
   }
-
 
   if (effect.kind === 'block') {
     recipient.block += effect.amount;
@@ -672,7 +714,7 @@ function applyEffect(
       kind: 'block', actor: recipientId, target: recipientId, amount: effect.amount,
       message: `${recipient.name} gained ${effect.amount} Block.`,
     });
-    return;
+    return false;
   }
 
   if (effect.kind === 'exposed') {
@@ -681,7 +723,7 @@ function applyEffect(
       kind: 'exposed', actor: actorId, target: recipientId, amount: effect.amount,
       message: `${recipient.name} gained ${effect.amount} Exposed.`,
     });
-    return;
+    return false;
   }
 
   if (effect.kind === 'energy') {
@@ -692,10 +734,23 @@ function applyEffect(
       kind: 'energy', actor: recipientId, target: recipientId, amount: gained,
       message: `${recipient.name} banked ${gained} energy.`,
     });
-    return;
+    return false;
   }
 
-  drawCards(state, recipientId, effect.amount, events, protectedCards);
+  if (effect.kind === 'ringing') {
+    recipient.ringingNextTurn = true;
+    record(state, events, {
+      kind: 'ringing', actor: actorId, target: recipientId, amount: effect.amount,
+      message: `${recipient.name} is Ringing and can take only one action next turn.`,
+    });
+    return false;
+  }
+
+  if (effect.kind === 'draw') {
+    drawCards(state, recipientId, effect.amount, events, protectedCards);
+    return false;
+  }
+  throw new Error(`Unsupported effect: ${effect.kind}`);
 }
 
 
@@ -717,6 +772,15 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
   if (state.queue.length !== ENCOUNTER.slotCount) throw new Error('Combat queue has the wrong number of slots.');
   state.queue.forEach((action) => validateAction(state, action));
   validateAttachments(state);
+  const queuedActions: Record<ActorId, number> = { bob: 0, guard: 0 };
+  for (const action of state.queue) {
+    if (action?.kind === 'player') queuedActions[action.card.owner] += 1;
+  }
+  for (const actorId of ['bob', 'guard'] as const) {
+    if (state.actors[actorId].ringing && queuedActions[actorId] > 1) {
+      throw new Error(`${state.actors[actorId].name} cannot queue more than one action while Ringing.`);
+    }
+  }
 
   const working = cloneState(state);
   const reservedByActor: Record<ActorId, number> = { bob: 0, guard: 0 };
@@ -737,6 +801,13 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
 
   const steps: ResolutionStep[] = [];
   const protectedCards = new Set<string>();
+  const rightmostRingingAction: Record<ActorId, number> = { bob: -1, guard: -1 };
+  for (let slot = 0; slot < working.queue.length; slot += 1) {
+    const action = working.queue[slot];
+    if (!action) continue;
+    const actorId = action.kind === 'player' ? action.card.owner : action.actor;
+    if (working.actors[actorId].ringing) rightmostRingingAction[actorId] = slot;
+  }
   for (let slot = ENCOUNTER.slotCount - 1; slot >= 0; slot -= 1) {
     working.activeSlot = slot;
     const events: CombatEvent[] = [];
@@ -749,7 +820,12 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       record(working, events, { kind: 'empty', slot, message: `Slot ${slot + 1} is empty.` });
     } else {
       const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-      if (working.actors[actorId].hp <= 0) {
+      if (working.actors[actorId].ringing && rightmostRingingAction[actorId] !== slot) {
+        record(working, events, {
+          kind: 'empty', actor: actorId, slot,
+          message: `${working.actors[actorId].name} is Ringing; slot ${slot + 1} is canceled.`,
+        });
+      } else if (working.actors[actorId].hp <= 0) {
         record(working, events, { kind: 'empty', actor: actorId, slot, message: `${working.actors[actorId].name} cannot act.` });
       } else {
         const actionTarget = action.target;
@@ -765,9 +841,16 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
         });
         const actionUid = action.kind === 'player' ? action.card.uid : action.uid;
         const damageBonus = damageModifier(working, actionUid, slot);
+        let critical = false;
         for (const effect of action.kind === 'player' ? definition(action.card).effects : action.effects) {
-          applyEffect(working, action, effect, events, protectedCards, damageBonus);
+          critical = applyEffect(working, action, effect, events, protectedCards, damageBonus) || critical;
           if (terminalPhase(working)) break;
+        }
+        if (critical && action.kind === 'player' && !terminalPhase(working)) {
+          for (const effect of definition(action.card).onCritical ?? []) {
+            applyEffect(working, action, effect, events, protectedCards);
+            if (terminalPhase(working)) break;
+          }
         }
       }
     }
@@ -781,6 +864,16 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
   working.attachments = [];
   working.actors.bob.block = 0;
   working.actors.guard.block = 0;
+  const terminal = terminalPhase(working);
+  for (const actor of Object.values(working.actors)) {
+    if (terminal) {
+      actor.ringing = false;
+      actor.ringingNextTurn = false;
+    } else {
+      actor.ringing = actor.ringingNextTurn;
+      actor.ringingNextTurn = false;
+    }
+  }
   const finalEvents: CombatEvent[] = [];
   const discarded = working.discardPile.slice(discardStart);
   if (discarded.length) {
@@ -789,7 +882,6 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       message: `Bob discarded ${discarded.length} cards.`,
     });
   }
-  const terminal = terminalPhase(working);
   if (terminal) {
     working.phase = terminal;
     record(working, finalEvents, {

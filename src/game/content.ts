@@ -1,7 +1,7 @@
 import type { CardDefinition, EnemyAction } from './types';
 
 export const CARDS: Record<string, CardDefinition> = {
-  hammer: { id: 'hammer', name: 'Percussive Maintenance', cost: 1, type: 'attack', target: 'enemy', description: 'Deal 6 damage.', flavor: 'If it moves and it shouldn’t, hit it.', icon: 'hammer', effects: [{ kind: 'damage', amount: 6, recipient: 'target' }] },
+  hammer: { id: 'hammer', name: 'Percussive Maintenance', cost: 1, type: 'attack', target: 'enemy', description: 'Deal 6 damage.\nOn critical hit: Ringing.', flavor: 'If it moves and it shouldn’t, hit it.', icon: 'hammer', effects: [{ kind: 'damage', amount: 6, recipient: 'target' }], onCritical: [{ kind: 'ringing', amount: 1, recipient: 'target' }] },
   vest: { id: 'vest', name: 'Safety-ish Vest', cost: 1, type: 'skill', target: 'self', description: 'Gain 7 Block this turn.', flavor: 'OSHA has left the chat.', icon: 'shield', effects: [{ kind: 'block', amount: 7, recipient: 'self' }] },
   tape: { id: 'tape', name: 'Measure Once', cost: 1, type: 'skill', target: 'enemy', description: 'Apply 8 Exposed. The next hit deals 8 extra damage.', flavor: 'We are absolutely cutting twice.', icon: 'tape', effects: [{ kind: 'exposed', amount: 8, recipient: 'target' }] },
   heavy: { id: 'heavy', name: 'Warranty Voided', cost: 2, type: 'attack', target: 'enemy', description: 'Deal 13 damage.', flavor: 'Normal wear and tear. Probably.', icon: 'hammer', effects: [{ kind: 'damage', amount: 13, recipient: 'target' }] },

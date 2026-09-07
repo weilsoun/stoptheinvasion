@@ -1,7 +1,17 @@
-import type { ActorId, CardDefinition } from '../game/types';
+import type { ActorId, CardDefinition, CardRarity } from '../game/types';
 
 const INK = '#07191c';
 const PAPER = '#f3dfb3';
+
+const DEFAULT_CHARACTER_COLOR = '#e97a2d';
+const RARITY_COLORS = {
+  basic: '#aeb4b2',
+  common: '#fffdf4',
+  uncommon: '#55b95f',
+  rare: '#f2c14e',
+  epic: '#9556d8',
+  legendary: '#f04f72',
+} satisfies Record<CardRarity, string>;
 
 function canvas(width: number, height: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const surface = document.createElement('canvas');
@@ -230,21 +240,69 @@ export function drawActorArt(actor: ActorId): HTMLCanvasElement {
   return surface;
 }
 
-function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines = 4): number {
-  const words = text.split(/\s+/);
-  let lineText = '';
-  let lineNumber = 0;
-  for (const word of words) {
-    const candidate = lineText ? `${lineText} ${word}` : word;
-    if (ctx.measureText(candidate).width > maxWidth && lineText) {
-      ctx.fillText(lineText, x, y + lineNumber * lineHeight);
-      lineNumber++;
-      lineText = word;
-      if (lineNumber >= maxLines - 1) break;
-    } else lineText = candidate;
+function centeredText(
+  ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
+  maxWidth: number, lineHeight: number, numberSize = 0,
+  damageColor?: string,
+): void {
+  const baseFont = ctx.font;
+  const baseColor = ctx.fillStyle;
+  const numberFont = `900 ${numberSize}px "Arial Black", Arial, sans-serif`;
+  const minusFont = `400 ${numberSize}px Arial, sans-serif`;
+  ctx.font = minusFont;
+  const minusWidth = numberSize > 0 ? ctx.measureText('−').width + numberSize * .12 : 0;
+  ctx.font = baseFont;
+  const gap = ctx.measureText(' ').width;
+  const paragraphs = text.split('\n').map((paragraph) => paragraph.split(/\s+/).filter(Boolean).map((word, index, words) => {
+    const numeric = numberSize > 0 && /^[+−-]?\d+[.,]?$/.test(word);
+    const negative = numeric && /^[−-]/.test(word);
+    if (negative) word = word.slice(1);
+    ctx.font = numeric ? numberFont : baseFont;
+    const metrics = ctx.measureText(word);
+    const damage = numeric && damageColor !== undefined && /^damage\b/.test(words[index + 1] ?? '');
+    return { word, numeric, negative, damage, metrics, width: metrics.width + (negative ? minusWidth : 0) };
+  }));
+  type TextWord = (typeof paragraphs)[number][number];
+  type TextLine = { words: TextWord[]; width: number; ascent: number; descent: number };
+  const lines: TextLine[] = [];
+  for (const words of paragraphs) {
+    let line: TextLine | undefined;
+    for (const word of words) {
+      if (!line || line.width + gap + word.width > maxWidth) {
+        line = { words: [], width: 0, ascent: 0, descent: 0 };
+        lines.push(line);
+      }
+      line.width += (line.words.length ? gap : 0) + word.width;
+      line.ascent = Math.max(line.ascent, word.metrics.actualBoundingBoxAscent);
+      line.descent = Math.max(line.descent, word.metrics.actualBoundingBoxDescent);
+      line.words.push(word);
+    }
   }
-  ctx.fillText(lineText, x, y + lineNumber * lineHeight);
-  return y + (lineNumber + 1) * lineHeight;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const firstBaseline = y - ((lines.length - 1) * lineHeight + lines[0].ascent + lines.at(-1)!.descent) / 2 + lines[0].ascent;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    let left = x - line.width / 2;
+    for (const word of line.words) {
+      ctx.fillStyle = word.damage ? damageColor! : baseColor;
+      if (word.negative) {
+        ctx.font = minusFont;
+        ctx.fillText('−', left, firstBaseline + index * lineHeight);
+        left += minusWidth;
+      }
+      ctx.font = word.numeric ? numberFont : baseFont;
+      if (word.numeric) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1.5;
+        ctx.strokeText(word.word, left, firstBaseline + index * lineHeight);
+      }
+      ctx.fillText(word.word, left, firstBaseline + index * lineHeight);
+      left += word.metrics.width + gap;
+    }
+  }
+  ctx.font = baseFont;
+  ctx.fillStyle = baseColor;
 }
 
 
@@ -261,6 +319,7 @@ const CARD_ART_URLS: Record<string, string> = {
   enemy: new URL('../assets/cards/enemy.png', import.meta.url).href,
   'enemy-heal': new URL('../assets/cards/enemy-heal.png', import.meta.url).href,
   'enemy-expose': new URL('../assets/cards/enemy-expose.png', import.meta.url).href,
+  'back-bob': new URL('../assets/cards/back-bob.png', import.meta.url).href,
 };
 const cardImages: Partial<Record<string, HTMLImageElement>> = {};
 let cardArtLoad: Promise<void> | undefined;
@@ -315,24 +374,6 @@ function drawCardIllustration(
   ctx.restore();
 }
 
-function outgoingDamage(card: CardDefinition, modifier = 0): number {
-  let damage = 0;
-  for (const effect of card.effects) {
-    if (effect.kind === 'damage') damage += Math.max(0, effect.amount + modifier);
-  }
-  return damage;
-}
-
-function secondaryRules(card: CardDefinition): string[] {
-  return card.effects.flatMap((effect) => {
-    if (effect.kind === 'damage') return [];
-    if (effect.kind === 'block') return [`Gain ${effect.amount} Block this turn.`];
-    if (effect.kind === 'exposed') return [`Apply ${effect.amount} Exposed.`];
-    if (effect.kind === 'heal') return [`Restore ${effect.amount} health.`];
-    if (effect.kind === 'energy') return [`Bank ${effect.amount} energy for next turn.`];
-    return [`Draw ${effect.amount} card${effect.amount === 1 ? '' : 's'}.`];
-  });
-}
 function grayscale(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   const image = ctx.getImageData(0, 0, width, height);
   for (let index = 0; index < image.data.length; index += 4) {
@@ -346,15 +387,58 @@ function grayscale(ctx: CanvasRenderingContext2D, width: number, height: number)
   ctx.putImageData(image, 0, 0);
 }
 
+function fillPlayerCardBody(
+  ctx: CanvasRenderingContext2D,
+  characterColor: string,
+  rarity: CardRarity,
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(14, 14, 484, 740, 28);
+  ctx.clip();
+  const gradient = ctx.createLinearGradient(0, 14, 0, 754);
+  gradient.addColorStop(0, characterColor);
+  gradient.addColorStop(.32, characterColor);
+  gradient.addColorStop(1, RARITY_COLORS[rarity]);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(14, 14, 484, 740);
 
-export function drawCardBack(): HTMLCanvasElement {
+  if (rarity === 'legendary') {
+    const dyes: [number, number, number, string][] = [
+      [118, 516, 205, 'rgba(255,224,67,.92)'],
+      [400, 493, 220, 'rgba(45,202,255,.9)'],
+      [172, 690, 230, 'rgba(115,232,91,.9)'],
+      [404, 704, 235, 'rgba(153,72,234,.9)'],
+      [286, 597, 155, 'rgba(255,75,101,.84)'],
+    ];
+    for (const [x, y, radius, color] of dyes) {
+      const dye = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      dye.addColorStop(0, color);
+      dye.addColorStop(.62, color.replace(/[\d.]+\)$/, '0.48)'));
+      dye.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = dye;
+      ctx.fillRect(14, 300, 484, 454);
+    }
+  }
+  ctx.restore();
+}
+
+
+export function drawCardBack(enemy = false): HTMLCanvasElement {
   const [surface, ctx] = canvas(512, 768);
   ctx.beginPath();
   ctx.roundRect(0, 0, 512, 768, 38);
   ctx.clip();
+
+  if (!enemy) {
+    const image = cardImages['back-bob'];
+    if (!image) throw new Error('Builder card back was not preloaded');
+    ctx.drawImage(image, 0, 0, 512, 768);
+    return surface;
+  }
+
   ctx.fillStyle = '#07191c';
   ctx.fillRect(0, 0, 512, 768);
-
   ctx.fillStyle = '#123d3c';
   ctx.beginPath();
   ctx.roundRect(22, 22, 468, 724, 24);
@@ -362,7 +446,6 @@ export function drawCardBack(): HTMLCanvasElement {
   ctx.strokeStyle = '#e56532';
   ctx.lineWidth = 10;
   ctx.stroke();
-
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(42, 42, 428, 684, 15);
@@ -378,7 +461,6 @@ export function drawCardBack(): HTMLCanvasElement {
     ctx.stroke();
   }
   ctx.restore();
-
   ctx.fillStyle = '#e56532';
   ctx.beginPath();
   ctx.roundRect(106, 247, 300, 274, 28);
@@ -390,7 +472,6 @@ export function drawCardBack(): HTMLCanvasElement {
   ctx.beginPath();
   ctx.roundRect(132, 273, 248, 222, 18);
   ctx.fill();
-
   ctx.strokeStyle = '#f0c875';
   ctx.lineWidth = 22;
   ctx.lineCap = 'round';
@@ -408,6 +489,22 @@ export function drawCardBack(): HTMLCanvasElement {
   return surface;
 }
 
+export function drawEnergyBadge(cost: number, dimmed: boolean): HTMLCanvasElement {
+  const [surface, ctx] = canvas(128, 128);
+  ctx.fillStyle = dimmed ? '#c6c6c6' : '#ffcf74';
+  ctx.strokeStyle = '#07191c';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(64, 64, 57, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#07191c';
+  ctx.font = '900 78px "Arial Black", Arial, sans-serif';
+  centeredText(ctx, String(cost), 64, 64, 110, 80);
+  if (dimmed) grayscale(ctx, 128, 128);
+  return surface;
+}
+
 export function drawCardArt(
   card: CardDefinition,
   locked: boolean,
@@ -417,14 +514,12 @@ export function drawCardArt(
 ): HTMLCanvasElement {
   const [surface, ctx] = canvas(512, 768);
   const palette = locked
-    ? { accent: '#c74736', dark: '#eddbb8', glow: '#ff9c68', paper: '#101e24' }
+    ? { dark: '#762d29', paper: '#000000' }
     : card.type === 'attack'
-      ? { accent: '#d95d2c', dark: '#331719', glow: '#ffad55', paper: '#f3dfb8' }
+      ? { dark: '#331719', paper: '#f3dfb8' }
       : card.type === 'skill'
-        ? { accent: '#278f83', dark: '#0b3031', glow: '#7de2bd', paper: '#e9dfb9' }
-        : { accent: '#a27a2e', dark: '#302515', glow: '#f3d56b', paper: '#eee0b7' };
-  const baseDamage = outgoingDamage(card);
-  const effectiveDamage = outgoingDamage(card, damageModifier);
+        ? { dark: '#0b3031', paper: '#e9dfb9' }
+        : { dark: '#302515', paper: '#eee0b7' };
   const modifier = card.modifier?.damage;
   const illustration = locked
     ? card.effects.some((effect) => effect.kind === 'heal')
@@ -433,110 +528,75 @@ export function drawCardArt(
         ? 'enemy-expose'
         : 'enemy'
     : card.id;
-  const border = locked ? '#eddbb8' : '#07191c';
+  const characterColor = card.characterColor ?? DEFAULT_CHARACTER_COLOR;
+  const rarity = card.rarity ?? 'common';
+  const outline = locked ? '#a3a18d' : INK;
 
   ctx.beginPath();
   ctx.roundRect(0, 0, 512, 768, 38);
   ctx.clip();
-  ctx.fillStyle = border;
+  ctx.fillStyle = locked ? '#000000' : characterColor;
   ctx.fillRect(0, 0, 512, 768);
-  ctx.fillStyle = palette.paper;
+  if (locked) {
+    ctx.fillStyle = palette.paper;
+    ctx.beginPath();
+    ctx.roundRect(14, 14, 484, 740, 28);
+    ctx.fill();
+  } else {
+    fillPlayerCardBody(ctx, characterColor, rarity);
+  }
+  ctx.strokeStyle = outline;
+  ctx.lineWidth = 10;
   ctx.beginPath();
   ctx.roundRect(14, 14, 484, 740, 28);
-  ctx.fill();
-  ctx.strokeStyle = border;
-  ctx.lineWidth = 10;
   ctx.stroke();
 
-  // Attachments expose only this top section while tucked under their host.
+  // Keep attachment titles legible while tucked behind their hosts.
   ctx.fillStyle = modifier === undefined ? palette.dark : modifier > 0 ? '#08715a' : '#a92238';
   ctx.beginPath();
   ctx.roundRect(28, 28, 456, 124, 16);
   ctx.fill();
+  ctx.strokeStyle = outline;
+  ctx.lineWidth = 7;
+  ctx.stroke();
 
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  if (modifier !== undefined) {
-    ctx.fillStyle = palette.paper;
-    ctx.beginPath();
-    ctx.arc(70, 60, 28, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#14282a';
-    ctx.font = '900 31px Impact, "Arial Black", sans-serif';
-    ctx.fillText(String(card.cost), 70, 62);
-    ctx.fillStyle = '#fff0c9';
-    ctx.font = '900 39px Impact, "Arial Black", sans-serif';
-    ctx.fillText(`${modifier > 0 ? '+' : '−'}${Math.abs(modifier)} DAMAGE`, 282, 60);
-    ctx.font = '900 31px Impact, "Arial Narrow", sans-serif';
-    wrapText(ctx, card.name.toUpperCase(), 256, 99, 408, 31, 2);
-  } else {
-    if (!locked) {
-      ctx.fillStyle = palette.glow;
-      ctx.beginPath();
-      ctx.arc(72, 90, 40, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#07191c';
-      ctx.lineWidth = 7;
-      ctx.stroke();
-      ctx.fillStyle = '#07191c';
-      ctx.font = '900 42px Impact, "Arial Black", sans-serif';
-      ctx.fillText(String(card.cost), 72, 92);
-    }
-    ctx.fillStyle = locked ? '#101e24' : '#fff0ce';
-    ctx.font = '900 35px Impact, "Arial Narrow", sans-serif';
-    wrapText(ctx, card.name.toUpperCase(), locked ? 256 : 283, 62, locked ? 400 : 344, 39, 2);
-  }
+  ctx.fillStyle = '#fff0ce';
+  ctx.font = '800 44px Arial, sans-serif';
+  centeredText(ctx, card.name.toUpperCase(), 256, 90, 408, 48);
 
   drawCardIllustration(ctx, illustration, 36, 168, 440, 350);
-  ctx.strokeStyle = border;
+  ctx.strokeStyle = outline;
   ctx.lineWidth = 8;
   ctx.beginPath();
   ctx.roundRect(36, 168, 440, 350, 15);
   ctx.stroke();
 
-  const panelFill = damageModifier > 0 && baseDamage > 0
-    ? locked ? '#12362d' : '#cce8cf'
-    : damageModifier < 0 && baseDamage > 0
-      ? locked ? '#45212c' : '#f2cbc0'
-      : locked ? '#18282d' : '#f7e9c7';
-  ctx.fillStyle = panelFill;
+  ctx.fillStyle = locked ? '#182125' : 'rgba(255,248,226,.86)';
   ctx.beginPath();
   ctx.roundRect(36, 536, 440, 180, 15);
   ctx.fill();
-  ctx.strokeStyle = border;
-  ctx.lineWidth = 7;
+  ctx.strokeStyle = outline;
   ctx.stroke();
 
   ctx.fillStyle = locked ? '#fff0ce' : '#14282a';
-  ctx.textBaseline = 'top';
-  if (modifier !== undefined) {
-    ctx.font = '700 28px "Avenir Next", Arial, sans-serif';
-    wrapText(ctx, card.description, 256, 566, 382, 36, 4);
-  } else if (damageModifier !== 0 && baseDamage > 0) {
-    const upgraded = damageModifier > 0;
-    ctx.fillStyle = locked
-      ? upgraded ? '#88e2aa' : '#ffa99b'
-      : upgraded ? '#08715a' : '#a92238';
-    ctx.font = '900 46px Impact, "Arial Black", sans-serif';
-    ctx.fillText(`${effectiveDamage} DAMAGE`, 256, 546);
-    ctx.font = '900 19px "Arial Narrow", Arial, sans-serif';
-    ctx.fillText(
-      `${baseDamage} BASE ${upgraded ? '+' : '−'} ${Math.abs(damageModifier)} ${upgraded ? 'UPGRADE' : 'DEBUFF'}`,
-      256,
-      600,
-    );
-    const rules = secondaryRules(card);
-    if (rules.length > 0) {
-      ctx.fillStyle = locked ? '#fff0ce' : '#23383a';
-      ctx.font = '750 20px "Avenir Next", Arial, sans-serif';
-      wrapText(ctx, rules.join(' '), 256, 641, 382, 27, 2);
-    }
-  } else {
-    ctx.font = '750 23px "Avenir Next", Arial, sans-serif';
-    wrapText(ctx, card.description, 256, 559, 382, 31, 4);
+  const modified = damageModifier !== 0 && card.effects.some((effect) => effect.kind === 'damage');
+  const description = modified
+    ? card.description.replace(/\b(\d+)(?= damage\b)/g, (_, amount: string) => String(Math.max(0, Number(amount) + damageModifier)))
+    : card.description;
+  const damageColor = !modified ? undefined : locked
+    ? damageModifier > 0 ? '#88e2aa' : '#ffa99b'
+    : damageModifier > 0 ? '#08715a' : '#a92238';
+  const [primaryRule, ...secondaryActions] = description.split('\n');
+  ctx.font = '600 34px Arial, sans-serif';
+  centeredText(ctx, primaryRule, 256, secondaryActions.length ? (showTargets ? 581 : 594) : (showTargets ? 611 : 626), 390, 42, 34, damageColor);
+  if (secondaryActions.length > 0) {
+    ctx.fillStyle = locked ? '#ffbf70' : '#9d352b';
+    ctx.font = '800 28px Arial, sans-serif';
+    centeredText(ctx, secondaryActions.join('\n'), 256, showTargets ? 651 : 664, 390, 34, 28, damageColor);
   }
 
   if (showTargets && !locked && modifier === undefined) {
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = palette.dark;
     ctx.font = '900 17px "Arial Narrow", Arial, sans-serif';

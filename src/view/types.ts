@@ -4,6 +4,12 @@ import type { ActorId, CardDefinition, CombatEvent, CombatState } from '../game/
 export const CARD_TARGET_Y = 0.89;
 export const CARD_TARGET_GAP = 0.18;
 
+/** Logical design-space actor anchors; artwork offsets do not move the HUD or impacts. */
+export const ACTOR_CENTERS: Record<ActorId, { x: number; y: number }> = {
+  bob: { x: 410, y: 400 },
+  guard: { x: 1500, y: 400 },
+};
+
 /** Coordinates are in the fixed 1920 x 1080 design surface. */
 export interface CardVisual {
   uid: string;

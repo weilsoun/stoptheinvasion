@@ -1,7 +1,7 @@
 import { attachModifier, availableEnergy, canAttachModifier, createCombat, damageModifier, moveCard, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn } from './game/combat';
 import { CARDS } from './game/content';
 import type { ActorId, CardDefinition, CardInstance, EnemyAction, ModifierTarget, PlayerAction, QueueSlot } from './game/types';
-import type { CardVisual, ScenePort } from './view/types';
+import { ACTOR_CENTERS, type CardVisual, type ScenePort } from './view/types';
 
 type Selection = { kind: 'hand'; uid: string } | { kind: 'queue'; slot: number } | null;
 type PendingPlacement = { uid: string; target: ActorId };
@@ -43,22 +43,50 @@ const SLOT_COUNT = 6;
 const QUEUE_CARD_WIDTH = 172;
 const QUEUE_CARD_HEIGHT = 241;
 const QUEUE_CARD_Y = 350;
-const QUEUE_CARD_STRIDE = 132;
-const QUEUE_FIRST_X = 960 - QUEUE_CARD_STRIDE * (SLOT_COUNT - 1) / 2 - QUEUE_CARD_WIDTH / 2;
+const QUEUE_CARD_STRIDE = 86;
+const ENEMY_QUEUE_STRIDE = QUEUE_CARD_WIDTH + 16;
 const QUEUE_HIT_TOP = QUEUE_CARD_Y - 40;
 const QUEUE_HIT_BOTTOM = QUEUE_CARD_Y + 290;
 const HAND_BOTTOM = 1008;
 const HOVER_WIDTH = 280;
 const HOVER_HEIGHT = 392;
 const HOVER_Y = HAND_BOTTOM - HOVER_HEIGHT;
+const ATTACHMENT_SCALE = .9;
+const ATTACHMENT_GAP = 8;
+const CARD_ATTACHMENT_PEEK = 28;
 const DETAIL = { x: 720, y: 180, width: 480, height: 672 };
 const DRAW_PILE = { x: 300, y: 840, width: 96, height: 134, rotation: 0, flip: 180 };
 const DISCARD_PILE = { x: 1524, y: 840, width: 96, height: 134, rotation: 0, flip: 0 };
 const escapeHtml = (value: string | number) => String(value).replace(/[&<>'"]/g, (character) => HTML_ESCAPES[character]);
+const STATUS_ICONS = {
+  block: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 20 5v6c0 5-3.4 8.7-8 11-4.6-2.3-8-6-8-11V5z"/></svg>',
+  exposed: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 1v5m0 12v5M1 12h5m12 0h5"/><circle cx="12" cy="12" r="2"/></svg>',
+  ringing: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.5-2v-5a4.5 4.5 0 0 0-9 0v5z"/><path d="M10 20h4"/></svg>',
+};
 
 function effectText(effects: { kind: string; amount: number }[]): string {
   return effects.map(({ kind, amount }) => `${amount} ${kind}`).join(' / ');
 }
+const attachmentCardPose = (
+  host: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>,
+  index: number,
+  count: number,
+  behindHost = false,
+) => {
+  const width = host.width * ATTACHMENT_SCALE;
+  const height = host.height * ATTACHMENT_SCALE;
+  const peek = CARD_ATTACHMENT_PEEK * host.height / QUEUE_CARD_HEIGHT;
+  return {
+    x: behindHost
+      ? host.x + (host.width - width) / 2
+      : host.x + host.width / 2 + (index - (count - 1) / 2) * (width + ATTACHMENT_GAP) - width / 2,
+    y: behindHost ? host.y - peek * (index + 1) : host.y + host.height + ATTACHMENT_GAP,
+    width,
+    height,
+    rotation: host.rotation,
+  };
+};
+
 
 function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
   const count = hand.length;
@@ -107,7 +135,6 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   let destroyed = false;
   let sequence = 0;
   let firingCard: CardVisual | null = null;
-  let firingSlot: number | null = null;
   const completedCards = new Set<string>();
   let detailSerial = 0;
   const discardedCards = new Set<string>();
@@ -118,6 +145,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const timers = new Map<number, () => void>();
   const listeners = new AbortController();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const healthFeedback = new Map<ActorId, { value: number; from: number; changedAt: number; hitAt: number }>();
 
   root.className = 'game-hud';
   root.setAttribute('aria-label', 'MOREMART combat controls');
@@ -144,7 +172,22 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const handCard = (uid: string) => state.hand.find((card) => card.uid === uid) ?? null;
   const canAfford = (card: CardInstance) => CARDS[card.definitionId].cost <= availableEnergy(state, card.owner);
   const queuedCard = (uid: string) => state.queue.find((slot): slot is PlayerAction => slot?.kind === 'player' && slot.card.uid === uid)?.card ?? null;
-  const queueCardX = (slot: number) => QUEUE_FIRST_X + slot * QUEUE_CARD_STRIDE;
+  const queueGap = (leftSlot: number) =>
+    state.queue[leftSlot]?.kind === 'enemy' || state.queue[leftSlot + 1]?.kind === 'enemy'
+      ? ENEMY_QUEUE_STRIDE
+      : QUEUE_CARD_STRIDE;
+  const queueCenterX = (slot: number) => {
+    let totalWidth = 0;
+    let precedingWidth = 0;
+    for (let leftSlot = 0; leftSlot < SLOT_COUNT - 1; leftSlot++) {
+      const gap = queueGap(leftSlot);
+      totalWidth += gap;
+      if (leftSlot < slot) precedingWidth += gap;
+    }
+    return DESIGN_WIDTH / 2 - totalWidth / 2 + precedingWidth;
+  };
+  const queueCardX = (slot: number) => queueCenterX(slot) - QUEUE_CARD_WIDTH / 2;
+  const queueSlotX = (slot: number) => queueCenterX(slot) - QUEUE_CARD_STRIDE / 2;
   const presentedQueue = () => {
     const queue = drag?.preview ?? state.queue;
     if (!firingCard && completedCards.size === 0) return queue;
@@ -203,20 +246,25 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const attachmentClass = (target: ModifierTarget): string =>
     modifierSource() ? (attachmentAllowed(target) ? ' attachment-valid' : ' attachment-invalid') : '';
   const cardAttachments = (uid: string) => state.attachments.filter(({ target }) => target.kind === 'card' && target.uid === uid);
+  const positionAttachments = (slot: number) => state.attachments.filter(({ target }) => target.kind === 'slot' && target.slot === slot);
   const attachedCard = (uid: string) => state.attachments.find(({ card }) => card.uid === uid)?.card ?? null;
-  const attachmentMarkup = (attachments: typeof state.attachments) => attachments.map(({ card, target }, index) => {
-    const amount = CARDS[card.definitionId].modifier!.damage;
-    const binding = target.kind === 'card' ? 'card' : 'position';
-    return `<button class="attachment-chip ${binding}" style="--chip:${index}" data-action="remove-attachment" data-card="${escapeHtml(card.uid)}"
-      aria-disabled="${mode !== 'planning'}" ${mode !== 'planning' ? 'disabled' : ''} aria-label="Remove ${escapeHtml(CARDS[card.definitionId].name)}, ${amount >= 0 ? 'plus' : 'minus'} ${Math.abs(amount)} damage, bound to ${binding}, expires this turn">${amount >= 0 ? '+' : ''}${amount} ${binding} · this turn ×</button>`;
-  }).join('');
-  const attachmentTabsMarkup = (hostUid: string, hostName: string, pose: Pick<CardVisual, 'x' | 'y' | 'width' | 'height'>, slotX: number) => cardAttachments(hostUid).map(({ card }, index) => {
+  const attachmentTabsMarkup = (attachments: typeof state.attachments, hostName: string, pose: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>, slotX: number, behindHost = false) => attachments.map(({ card, target }, index, all) => {
     const definition = CARDS[card.definitionId];
     const amount = definition.modifier!.damage;
-    const header = 52 * pose.width / QUEUE_CARD_WIDTH;
-    return `<button class="attachment-tab" style="--tab-x:${pose.x - slotX}px;--tab-y:${pose.y - (QUEUE_CARD_Y - 6) - header * (index + 1)}px;--tab-w:${pose.width}px;--tab-h:${header}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}"
-      aria-label="Inspect ${escapeHtml(definition.name)}, ${amount >= 0 ? 'plus' : 'minus'} ${Math.abs(amount)} damage, attached to ${escapeHtml(hostName)}. Drag to return it to hand and refund its energy."></button>`;
+    const mini = attachmentCardPose(pose, index, all.length, behindHost);
+    const binding = target.kind === 'card' ? `card ${hostName}` : `timing position ${target.slot + 1}`;
+    const hitHeight = behindHost ? CARD_ATTACHMENT_PEEK * pose.height / QUEUE_CARD_HEIGHT : mini.height;
+    return `<button class="attachment-tab ${target.kind}" style="--tab-x:${mini.x - slotX}px;--tab-y:${mini.y - (QUEUE_CARD_Y - 6)}px;--tab-w:${mini.width}px;--tab-h:${hitHeight}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}"
+      aria-label="Inspect ${escapeHtml(definition.name)}, ${amount >= 0 ? 'plus' : 'minus'} ${Math.abs(amount)} damage, bound to ${escapeHtml(binding)}. Drag to return it to hand and refund its energy." title="${escapeHtml(definition.name)}, bound to ${escapeHtml(binding)}"></button>`;
   }).join('');
+  const handAttachmentTabsMarkup = (hostUid: string, hostName: string) => cardAttachments(hostUid).map(({ card }, index) => {
+    const definition = CARDS[card.definitionId];
+    const amount = definition.modifier!.damage;
+    const top = -CARD_ATTACHMENT_PEEK / QUEUE_CARD_HEIGHT * 100 * (index + 1);
+    return `<button class="attachment-tab card hand-attachment" style="--mini-top:${top}%" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}"
+      aria-label="Inspect ${escapeHtml(definition.name)}, ${amount >= 0 ? 'plus' : 'minus'} ${Math.abs(amount)} damage, bound to card ${escapeHtml(hostName)}. Drag to return it to hand and refund its energy." title="${escapeHtml(definition.name)}, bound to card ${escapeHtml(hostName)}"></button>`;
+  }).join('');
+
 
   const draggedPosition = (held: Drag) => ({
     x: held.x - held.pose.width / 2,
@@ -245,42 +293,50 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         visual.height = HOVER_HEIGHT;
         visual.x = Math.round(center - visual.width / 2);
         visual.y = HOVER_Y;
-        visual.rotation = 0;
       }
     }
 
     const queued: CardVisual[] = [];
-    const pushHost = (host: CardVisual) => {
-      const attachments = cardAttachments(host.uid)
-        .filter(({ card }) => (drag?.kind !== 'attachment' || card.uid !== drag.uid) && !lingeringAttachments.has(card.uid))
-        .map(({ card }, index) => ({
-          uid: card.uid,
-          definition: CARDS[card.definitionId],
-          x: host.x,
-          y: host.y - 52 * host.width / QUEUE_CARD_WIDTH * (index + 1),
-          width: host.width,
-          height: host.height,
-          rotation: host.rotation,
-          hovered: host.hovered,
-          dimmed: false,
-          damageModifier: 0,
-          queued: true,
-          dragged: false,
-          locked: false,
-          target: null,
-          targets: [],
-          underCard: host.uid,
-          flip: host.flip ?? 0,
-        } satisfies CardVisual));
-      queued.push(...attachments.reverse(), host);
+    const attachmentVisuals = (
+      host: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>,
+      attachments: typeof state.attachments,
+      hostUid?: string,
+      behindHost = false,
+    ) => attachments
+      .filter(({ card }) => (drag?.kind !== 'attachment' || card.uid !== drag.uid) && !lingeringAttachments.has(card.uid))
+      .map(({ card, target }, index, all) => ({
+        uid: card.uid,
+        definition: CARDS[card.definitionId],
+        ...attachmentCardPose(host, index, all.length, behindHost),
+        hovered: false,
+        dimmed: false,
+        damageModifier: 0,
+        queued: true,
+        dragged: false,
+        locked: false,
+        target: null,
+        targets: [],
+        underCard: target.kind === 'card' ? hostUid : undefined,
+        flip: 0,
+      } satisfies CardVisual));
+    const pushHost = (host: CardVisual, slot?: number) => {
+      const bound = cardAttachments(host.uid);
+      const fixed = slot === undefined ? [] : positionAttachments(slot);
+      queued.push(...attachmentVisuals(host, bound, host.uid, true).reverse(), ...attachmentVisuals(host, fixed).reverse(), host);
     };
     const plan = presentedQueue();
     plan.forEach((slot, index) => {
-      if (!slot) return;
+      if (!slot) {
+        queued.push(...attachmentVisuals(queueCardPose(index, plan), positionAttachments(index)));
+        return;
+      }
       const isEnemy = slot.kind === 'enemy';
       const uid = isEnemy ? slot.uid : slot.card.uid;
-      if (uid === heldUid || inFlight.has(uid)) return;
       const pose = queueCardPose(index, plan);
+      if (uid === heldUid || inFlight.has(uid)) {
+        queued.push(...attachmentVisuals(pose, positionAttachments(index)));
+        return;
+      }
       pushHost({
         uid,
         definition: isEnemy ? enemyDefinition(slot) : CARDS[slot.card.definitionId],
@@ -294,9 +350,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         target: slot.target,
         targets: isEnemy ? [] : targetChoices(slot.card),
         flip: 0,
-      });
+      }, index);
     });
     if (firingCard) pushHost(firingCard);
+    const hands: CardVisual[] = [];
+    for (const visual of hand.values()) {
+      hands.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true).reverse(), visual);
+    }
+
 
     if (drag) {
       const card = handCard(drag.uid) ?? queuedCard(drag.uid) ?? attachedCard(drag.uid);
@@ -321,6 +382,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           flip: 0,
         };
         if (drag.kind === 'queue') pushHost(visual);
+        else if (drag.kind === 'hand') queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true).reverse(), visual);
         else queued.push(visual);
       }
     }
@@ -348,7 +410,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       ...pileCards(state.drawPile, DRAW_PILE, true),
       ...pileCards(state.discardPile, DISCARD_PILE, true),
       ...queued,
-      ...hand.values(),
+      ...hands,
       ...lingeringAttachments.values(),
       ...inFlight.values(),
     ];
@@ -378,11 +440,36 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
 
   const actorMarkup = (actorId: ActorId) => {
     const actor = state.actors[actorId];
+    const now = performance.now();
+    const value = Math.max(0, Math.min(1, actor.hp / actor.maxHp));
+    const health = healthFeedback.get(actorId) ?? { value, from: value, changedAt: now - 1000, hitAt: now - 1000 };
+    if (health.value !== value) {
+      health.from = health.value;
+      health.value = value;
+      health.changedAt = now;
+    }
+    healthFeedback.set(actorId, health);
+    // Resume the same impact across HUD replacements instead of restarting its animations.
+    const age = now - health.changedAt;
+    const changing = !reduceMotion && health.from !== value && age < 700;
+    const hit = !reduceMotion && now - health.hitAt < 280;
+    const healthClass = `${changing ? ' hp-changing' : ''}${changing && health.from > value ? ' hp-damaged' : ''}${hit ? ' hp-hit' : ''}`;
+    const healthStyle = `--hp:${value};--hp-from:${health.from};--health-age:-${age}ms;--hit-age:-${now - health.hitAt}ms`;
+    const ringingStatus = actor.ringing && actor.ringingNextTurn
+      ? 'Ringing: limited to one action this turn and next turn.'
+      : actor.ringing
+        ? 'Ringing: limited to one action this turn.'
+        : actor.ringingNextTurn
+          ? 'Ringing pending: will be limited to one action next turn.'
+          : '';
+    const ringing = ringingStatus
+      ? `<span class="actor-stat ringing-stat${actor.ringing ? '' : ' pending'}" role="img" aria-label="${ringingStatus}" title="${ringingStatus}">${STATUS_ICONS.ringing}</span>`
+      : '';
     return `<section class="actor-target ${actorId === 'bob' ? 'actor-bob' : 'actor-guard'}"
-      aria-label="${escapeHtml(actor.name)}. ${actor.hp} of ${actor.maxHp} health, ${actor.block} block, ${actor.exposed} exposed">
+      aria-label="${escapeHtml(actor.name)}. ${actor.hp} of ${actor.maxHp} health, ${actor.block} block, ${actor.exposed} exposed${ringingStatus ? `, ${ringingStatus}` : ''}">
       <span class="actor-name">${escapeHtml(actor.name)}</span>
-      <span class="hp-line"><span class="hp-fill" style="--hp:${Math.max(0, actor.hp / actor.maxHp)}"></span><b>${actor.hp}</b> / ${actor.maxHp} HP</span>
-      <span class="actor-status"><span>BLOCK <b>${actor.block}</b></span><span>EXPOSED <b>${actor.exposed}</b></span></span>
+      <span class="hp-line${healthClass}" style="${healthStyle}"><span class="hp-trail" aria-hidden="true"></span><span class="hp-fill" aria-hidden="true"></span><b>${actor.hp}</b> / ${actor.maxHp} HP</span>
+      <span class="actor-status"><span class="actor-stat block-stat" role="img" aria-label="Block: ${actor.block}" title="Block: ${actor.block}">${STATUS_ICONS.block}<b>${actor.block}</b></span><span class="actor-stat exposed-stat" role="img" aria-label="Exposed: ${actor.exposed}" title="Exposed: ${actor.exposed}">${STATUS_ICONS.exposed}<b>${actor.exposed}</b></span>${ringing}</span>
     </section>`;
   };
 
@@ -403,33 +490,34 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const active = state.activeSlot === index ? ' active' : '';
     const selected = '';
     const pose = queueCardPose(index, queue);
-    const position = `style="--slot-x:${queueCardX(index)}px;--slot-y:${QUEUE_CARD_Y - 6}px;--slot-z:${index};--card-x:${pose.x - queueCardX(index)}px;--card-y:${pose.y - (QUEUE_CARD_Y - 6)}px;--card-w:${pose.width}px;--card-h:${pose.height}px"`;
-    const marker = `<span class="empty-position-marker" aria-hidden="true"${slot ? ' hidden' : ''}></span>`;
+    const slotX = queueSlotX(index);
+    const position = `style="--slot-x:${slotX}px;--slot-y:${QUEUE_CARD_Y - 6}px;--slot-z:${index};--card-x:${pose.x - slotX}px;--card-y:${pose.y - (QUEUE_CARD_Y - 6)}px;--card-w:${pose.width}px;--card-h:${pose.height}px"`;
     const slotTarget = { kind: 'slot', slot: index } as const;
-    const frame = `<button class="slot-outline${attachmentClass(slotTarget)}" data-attachment-slot="${index}" aria-label="Bind to timing position ${index + 1}${slot ? ', independently of its current card' : ', currently empty'}" ${mode !== 'planning' || !selection && !pending && !drag || modifierSource() && !attachmentAllowed(slotTarget) ? 'disabled' : ''}></button>`;
-    const fixedChips = attachmentMarkup(state.attachments.filter(({ target }) => target.kind === 'slot' && target.slot === index));
+    const fixedAttachments = positionAttachments(index);
     if (!slot) {
+      const fixedCards = attachmentTabsMarkup(fixedAttachments, '', pose, slotX);
       return `<div class="queue-slot empty${active}${selected}${pending ? ' pending-destination' : ''}${attachmentClass(slotTarget)}" data-slot="${index}" ${position}>
-        ${marker}${frame}${fixedChips}</div>`;
+        ${fixedCards}</div>`;
     }
     const uid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
     const cardTarget = { kind: 'card', uid } as const;
-    const cardTabs = attachmentTabsMarkup(uid, slot.kind === 'enemy' ? slot.name : CARDS[slot.card.definitionId].name, pose, queueCardX(index));
+    const cardTabs = attachmentTabsMarkup(cardAttachments(uid), slot.kind === 'enemy' ? slot.name : CARDS[slot.card.definitionId].name, pose, slotX, true)
+      + attachmentTabsMarkup(fixedAttachments, '', pose, slotX);
     if (slot.kind === 'enemy') {
       const delta = damageModifier(state, uid, index);
       const baseDamage = slot.effects.filter(({ kind, recipient }) => kind === 'damage' && recipient === 'target').reduce((total, { amount }) => total + amount, 0);
       const modifiedDamage = Math.max(0, baseDamage + delta);
       return `<div class="queue-slot enemy locked${active}" data-slot="${index}" ${position}>
-        ${marker}${frame}${cardTabs}<div class="queue-card-body${attachmentClass(cardTarget)}" data-card-uid="${escapeHtml(uid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || attachmentAllowed(cardTarget)) ? 0 : -1}"
-          aria-label="Timing position ${index + 1}, locked enemy action ${escapeHtml(slot.name)}. ${escapeHtml(slot.description)} ${escapeHtml(effectText(slot.effects))} to ${escapeHtml(state.actors[slot.target].name)}${delta ? `. Modified damage ${baseDamage} to ${modifiedDamage}` : ''}"></div>${fixedChips}</div>`;
+        ${cardTabs}<div class="queue-card-body${attachmentClass(cardTarget)}" data-card-uid="${escapeHtml(uid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || attachmentAllowed(cardTarget)) ? 0 : -1}"
+          aria-label="Timing position ${index + 1}, locked enemy action ${escapeHtml(slot.name)}. ${escapeHtml(slot.description)} ${escapeHtml(effectText(slot.effects))} to ${escapeHtml(state.actors[slot.target].name)}${delta ? `. Modified damage ${baseDamage} to ${modifiedDamage}` : ''}"></div></div>`;
     }
     const definition = CARDS[slot.card.definitionId];
     const targetName = slot.target === null ? 'missing' : state.actors[slot.target].name;
     const delta = damageModifier(state, uid, index);
     return `<div class="queue-slot player queue-card${active}${selected}${slot.target === null ? ' missing' : ''}" data-slot="${index}" ${position}>
-      ${marker}${frame}${cardTabs}<div class="queue-card-body${attachmentClass(cardTarget)}" data-card-uid="${escapeHtml(uid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || attachmentAllowed(cardTarget)) ? 0 : -1}"
+      ${cardTabs}<div class="queue-card-body${attachmentClass(cardTarget)}" data-card-uid="${escapeHtml(uid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || attachmentAllowed(cardTarget)) ? 0 : -1}"
         aria-label="Inspect timing position ${index + 1}, Bob card ${escapeHtml(definition.name)}, cost ${definition.cost}, target ${escapeHtml(targetName)}${delta ? `, damage modifier ${delta}` : ''}">
-      </div>${fixedChips}</div>`;
+      </div></div>`;
   }).join('');
 
   const handMarkup = () => {
@@ -443,7 +531,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const classes = `hand-hit${selected ? ' selected' : ''}${modifier?.uid === card.uid ? ' modifier-source' : attachmentClass(cardTarget)}`;
       return `<div class="${classes}" data-hand-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" role="button" aria-disabled="${mode !== 'planning' || Boolean(modifier && modifier.uid !== card.uid && !attachmentAllowed(cardTarget))}" tabindex="${mode === 'planning' && (!modifier || modifier.uid === card.uid || attachmentAllowed(cardTarget)) ? 0 : -1}"
         style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(visual.x + visual.width / 2 - HOVER_WIDTH / 2)}px" aria-label="Inspect ${escapeHtml(definition.name)}, ${definition.cost} energy, ${escapeHtml(definition.description)}">
-        ${attachmentMarkup(cardAttachments(card.uid))}
+        ${handAttachmentTabsMarkup(card.uid, definition.name)}
       </div>`;
     }).join('');
   };
@@ -506,24 +594,18 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const blocked = resolveReason();
     const modifier = modifierSource();
     const showGuides = Boolean(selection || pending || drag);
-    const hasCardTabs = presentedQueue().some((slot) => {
-      const uid = slot?.kind === 'enemy' ? slot.uid : slot?.kind === 'player' ? slot.card.uid : null;
-      return Boolean(uid && cardAttachments(uid).length);
-    });
-    const activeSlot = firingSlot ?? state.activeSlot;
     root.classList.toggle('resolving', mode === 'resolving');
     root.classList.toggle('detail-open', Boolean(detail));
     root.innerHTML = `<div class="hud-controls" aria-label="Turn and menu"><div class="turn-badge"><small>TURN</small><b>${state.turn}</b></div><button class="menu-trigger" data-action="open-menu" aria-haspopup="dialog">Menu</button></div>
       <main>${actorMarkup('bob')}${actorMarkup('guard')}
-        <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}${hasCardTabs ? ' has-card-tabs' : ''}" aria-label="Six timing positions, resolving right to left"><div class="timeline-title"><b>ACTION TIMELINE</b><span>${activeSlot === null ? (modifier ? 'CARD BODY = CARD · BELOW CARD = POSITION' : pending ? 'CHOOSE A TIMING POSITION' : 'RIGHTMOST FIRES FIRST · DROP NEAR A POINT') : `RESOLVING POSITION ${activeSlot + 1} · RIGHT TO LEFT`}</span></div>${queueMarkup()}</section>
+        <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}" aria-label="Six timing positions, resolving right to left">${queueMarkup()}</section>
         <section class="piles" aria-label="Card piles">${pileMarkup('draw', state.drawPile)}${pileMarkup('discard', state.discardPile)}</section>
         <section class="combat-log ink-panel" aria-label="Combat log"><h2>FIELD NOTES</h2><ol>${log.length ? log.map((line) => `<li>${escapeHtml(line)}</li>`).join('') : '<li>The aisle is quiet. For now.</li>'}</ol></section>
-        <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn <span>${mode === 'dealing' ? 'Dealing cards' : blocked || 'Execute right to left'}</span></button>
+        <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn${mode === 'dealing' ? '<span>Dealing cards</span>' : blocked ? `<span>${escapeHtml(blocked)}</span>` : ''}</button>
         <div id="resolve-reason" class="notice ${blocked || /cannot|need|invalid|occupied|locked/i.test(notice) ? 'warning' : ''}" role="status" aria-live="polite">${escapeHtml(notice)}</div>
         <div class="hand-zone${modifier ? ' attachment-targeting' : ''}" aria-label="Bob's hand">${handMarkup()}</div>
-        <section class="energy-bar ink-panel" role="meter" aria-label="Bob's energy" aria-valuemin="0" aria-valuemax="${bob.energyMax}" aria-valuenow="${energy}" aria-valuetext="${energy} available, ${bob.energy - energy} reserved, capacity ${bob.energyMax}">
-          <b>ENERGY</b><span class="energy-bubbles" aria-hidden="true">${Array.from({ length: bob.energyMax }, (_, index) => `<span class="energy-bubble ${index < energy ? 'available' : index < bob.energy ? 'reserved' : 'empty'}"></span>`).join('')}</span>
-          <span class="energy-summary"><strong>${energy}</strong> available <small>${bob.energy - energy} reserved</small></span>
+        <section class="energy-bar ink-panel" role="meter" aria-label="Bob's energy" aria-valuemin="0" aria-valuemax="${bob.energyMax}" aria-valuenow="${energy}" aria-valuetext="${energy} energy">
+          <span class="energy-bubbles" aria-hidden="true">${Array.from({ length: 8 }, (_, index) => `<span class="energy-bubble ${index < energy ? 'available' : 'empty'}"></span>`).join('')}</span>
         </section>
       </main>${detailMarkup()}${inspectorMarkup()}${outcomeMarkup()}${menuMarkup()}`;
     scene.setState(state);
@@ -593,12 +675,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     }
     timers.clear();
     firingCard = null;
-    firingSlot = null;
     completedCards.clear();
     discardedCards.clear();
     inFlight.clear();
     attachmentExitOrigins.clear();
     lingeringAttachments.clear();
+    healthFeedback.clear();
   };
 
   const animateDraws = async (cards: CardInstance[], run: number) => {
@@ -679,7 +761,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     mode = 'resolving';
     clearInteraction();
     detail = null;
-    notice = 'Hands off — the rightmost card fires first.';
+    notice = 'Resolving turn…';
     render();
     for (const step of steps) {
       if (destroyed || run !== sequence) return;
@@ -694,7 +776,6 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         firedPlayer = slot.kind === 'player';
         firedAttachments = state.attachments.filter(({ target }) => target.kind === 'card' && target.uid === firedUid).map(({ card }) => card);
         const card = visualCards().find((visual) => visual.uid === firedUid)!;
-        firingSlot = action.slot;
         firingCard = {
           ...card,
           x: card.x - card.width * .175,
@@ -712,10 +793,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         render();
         await wait(reduceMotion ? 0 : 150);
         if (destroyed || run !== sequence) return;
+        const targetCenter = ACTOR_CENTERS[action.target];
         firingCard = {
           ...firingCard,
-          x: (action.target === 'bob' ? 410 : 1500) - firingCard.width / 2,
-          y: 400 - firingCard.height / 2,
+          x: targetCenter.x - firingCard.width / 2,
+          y: targetCenter.y - firingCard.height / 2,
         };
         scene.setCards(visualCards());
         await wait(reduceMotion ? 0 : 360);
@@ -760,6 +842,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         });
       }
       state = step.state;
+      for (const event of step.events) {
+        if (event.target && (event.kind === 'damage' || event.kind === 'ringing' || event.kind === 'exposed' && (event.amount ?? 0) > 0)) {
+          const health = healthFeedback.get(event.target);
+          if (health) health.hitAt = performance.now();
+        }
+      }
       notice = step.events.length ? step.events.map((event) => event.message).join(' ') : 'Advancing the timeline.';
       render();
       for (const event of step.events) scene.playEvent(event);
@@ -789,7 +877,6 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           for (const card of firedAttachments) discardedCards.add(card.uid);
         }
         firingCard = null;
-        firingSlot = null;
         render();
       }
       if (newlyDiscarded.length) {
@@ -829,12 +916,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
   const hitAt = (event: PointerEvent) => document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
   const queueSlotAt = ({ x, y }: { x: number; y: number }): number | null => {
-    if (y < QUEUE_HIT_TOP || y > QUEUE_HIT_BOTTOM || x < QUEUE_FIRST_X || x > queueCardX(SLOT_COUNT - 1) + QUEUE_CARD_WIDTH) return null;
+    if (y < QUEUE_HIT_TOP || y > QUEUE_HIT_BOTTOM || x < queueSlotX(0) || x > queueSlotX(SLOT_COUNT - 1) + QUEUE_CARD_STRIDE) return null;
     let nearest: number | null = null;
     let distance = Infinity;
     for (let slot = 0; slot < SLOT_COUNT; slot++) {
       if (state.queue[slot]?.kind === 'enemy') continue;
-      const nextDistance = Math.abs(x - (queueCardX(slot) + QUEUE_CARD_WIDTH / 2));
+      const nextDistance = Math.abs(x - (queueSlotX(slot) + QUEUE_CARD_STRIDE / 2));
       if (nextDistance <= distance) {
         nearest = slot;
         distance = nextDistance;
@@ -843,8 +930,6 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     return nearest;
   };
   const attachmentTargetAt = (element: HTMLElement | null): ModifierTarget | null => {
-    const outline = element?.closest<HTMLElement>('[data-attachment-slot]');
-    if (outline) return { kind: 'slot', slot: Number(outline.dataset.attachmentSlot) };
     const card = element?.closest<HTMLElement>('[data-card-uid]');
     if (card) return { kind: 'card', uid: card.dataset.cardUid! };
     const empty = element?.closest<HTMLElement>('.queue-slot.empty[data-slot]');
@@ -876,20 +961,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     } else if (draggingModifier) {
       drag.destination = null;
       drag.preview = null;
-      drag.attachmentTarget = attachmentTargetAt(hit);
+      const target = attachmentTargetAt(hit);
+      const slot = queueSlotAt(point);
+      drag.attachmentTarget = target ?? (slot === null ? null : { kind: 'slot', slot });
     } else {
       drag.attachmentTarget = null;
       setDragDestination(queueSlotAt(point));
     }
     root.querySelectorAll<HTMLElement>('.queue-slot').forEach((element) => {
       const slot = Number(element.dataset.slot);
-      const marker = element.querySelector<HTMLElement>('.empty-position-marker');
-      if (marker) marker.hidden = Boolean((drag?.preview ?? state.queue)[slot]) && !(drag?.preview && slot === drag.destination);
       const over = drag?.kind !== 'attachment' && !draggingModifier && slot === drag?.destination;
       element.classList.toggle('drop-valid', over && drag?.preview !== null);
       element.classList.toggle('drop-invalid', over && drag?.preview === null);
     });
-    root.querySelectorAll<HTMLElement>('[data-card-uid],[data-attachment-slot]').forEach((element) => {
+    root.querySelectorAll<HTMLElement>('[data-card-uid]').forEach((element) => {
       const candidate = attachmentTargetAt(element);
       const activeTarget = drag?.attachmentTarget;
       const hovered = Boolean(draggingModifier && candidate && activeTarget && candidate.kind === activeTarget.kind &&
@@ -900,9 +985,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     scene.setCards(visualCards());
   };
 
-  const closeDetail = () => {
+  const closeDetail = (restoreFocus = true) => {
     if (!detail) return;
-    focusAfterRender = detail.returnFocus;
+    if (restoreFocus) focusAfterRender = detail.returnFocus;
+    selection = null;
+    pending = null;
     detail = null;
     render();
   };
@@ -998,22 +1085,19 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         notice = CARDS[card.definitionId].modifier
           ? 'Attachment selected. Choose a compatible card body or timing position.'
           : 'Choose a timing point for this card.';
-        focusAfterRender = '[data-attachment-slot="0"]';
+        focusAfterRender = null;
         render();
       } else if (action === 'detail-move' && detail?.source === 'queue' && detail.slot !== null && mode === 'planning') {
         selection = { kind: 'queue', slot: detail.slot };
         detail = null;
         notice = 'Choose a timing point to move this card.';
-        focusAfterRender = '[data-attachment-slot="0"]';
+        focusAfterRender = null;
         render();
       } else if (action === 'detail-refund' && detail && mode === 'planning') {
         const result = detail.source === 'queue' && detail.slot !== null
           ? removeCard(state, detail.slot)
           : removeModifier(state, detail.cardUid);
         feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
-      } else if (action === 'remove-attachment' && mode === 'planning') {
-        const result = removeModifier(state, actionElement.dataset.card!);
-        feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
       }
       return;
     }
@@ -1021,7 +1105,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const point = designPoint(event);
       const pose = scene.getCardPose(detail.uid) ?? DETAIL;
       if (point.x < pose.x || point.x > pose.x + pose.width
-        || point.y < pose.y || point.y > pose.y + pose.height) closeDetail();
+        || point.y < pose.y || point.y > pose.y + pose.height) closeDetail(false);
       return;
     }
     if (mode !== 'planning' || inspector || menuOpen) return;
@@ -1117,7 +1201,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     if (mode !== 'planning' || event.button > 0 || detail || inspector || menuOpen) return;
     const target = event.target as HTMLElement;
     const attachmentTab = target.closest<HTMLElement>('.attachment-tab[data-card]');
-    if (!attachmentTab && target.closest('[data-action], [data-attachment-slot]')) return;
+    if (!attachmentTab && target.closest('[data-action]')) return;
+    const attachmentHand = attachmentTab?.closest<HTMLElement>('[data-hand-card]') ?? null;
     const hand = attachmentTab ? null : target.closest<HTMLElement>('[data-hand-card]');
     const queue = attachmentTab
       ? attachmentTab.closest<HTMLElement>('.queue-slot[data-slot]')
@@ -1125,7 +1210,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     if (pending && !attachmentTab) return;
     const activeModifier = modifierSource();
     if (!attachmentTab && activeModifier && (queue || hand?.dataset.handCard !== activeModifier.uid)) return;
-    if (!hand && !queue) return;
+    if (!hand && !queue && !attachmentHand) return;
     const slot = queue ? Number(queue.dataset.slot) : undefined;
     const action = slot === undefined ? null : playerAction(slot);
     const uid = attachmentTab?.dataset.card ?? hand?.dataset.handCard ?? action?.card.uid;
@@ -1139,20 +1224,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const capture = attachmentTab ?? hand ?? queue!;
     let fallback = hand
       ? cardLayout(state.hand).get(uid)!
-      : queueCardPose(slot!);
-    if (attachmentTab) {
+      : queue ? queueCardPose(slot!) : cardLayout(state.hand).get(attachmentHand!.dataset.handCard!)!;
+    if (attachmentTab && slot !== undefined) {
       const attachment = state.attachments.find(({ card }) => card.uid === uid);
-      if (attachment?.target.kind === 'card') {
-        const hostUid = attachment.target.uid;
-        const hostSlot = state.queue.findIndex((candidate) => candidate?.kind === 'enemy'
-          ? candidate.uid === hostUid
-          : candidate?.kind === 'player' && candidate.card.uid === hostUid);
-        if (hostSlot >= 0) {
-          const hostPose = queueCardPose(hostSlot);
-          const attachmentIndex = cardAttachments(hostUid).findIndex(({ card }) => card.uid === uid);
-          fallback = { ...hostPose, y: hostPose.y - 52 * hostPose.width / QUEUE_CARD_WIDTH * (attachmentIndex + 1) };
-        }
-      }
+      const attachments = attachment?.target.kind === 'card'
+        ? cardAttachments(attachment.target.uid)
+        : positionAttachments(slot);
+      const attachmentIndex = attachments.findIndex(({ card }) => card.uid === uid);
+      if (attachmentIndex >= 0) fallback = attachmentCardPose(queueCardPose(slot), attachmentIndex, attachments.length, attachment?.target.kind === 'card');
+    }
+    if (attachmentTab && attachmentHand) {
+      const hostUid = attachmentHand.dataset.handCard!;
+      const attachments = cardAttachments(hostUid);
+      const attachmentIndex = attachments.findIndex(({ card }) => card.uid === uid);
+      if (attachmentIndex >= 0) fallback = attachmentCardPose(cardLayout(state.hand).get(hostUid)!, attachmentIndex, attachments.length, true);
     }
     const pose = scene.getCardPose(uid) ?? fallback;
     drag = {
@@ -1180,7 +1265,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       root.querySelector('.timeline')?.classList.add('attachment-targeting');
       root.querySelector('.hand-zone')?.classList.add('attachment-targeting');
     }
-    root.querySelectorAll<HTMLElement>('[data-card-uid],[data-attachment-slot]').forEach((element) => {
+    root.querySelectorAll<HTMLElement>('[data-card-uid]').forEach((element) => {
       const candidate = attachmentTargetAt(element);
       if (!candidate) return;
       const valid = draggingModifier && canAttachModifier(state, uid, candidate);

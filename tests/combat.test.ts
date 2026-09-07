@@ -13,6 +13,7 @@ import {
   resolveTurn,
   retargetCard,
 } from '../src/game/combat';
+import { CARDS } from '../src/game/content';
 import type { CardInstance, CombatState } from '../src/game/types';
 
 function card(state: CombatState, definitionId: string): CardInstance {
@@ -229,6 +230,40 @@ describe('battle planning boundaries', () => {
     const first = resolveTurn(state)[0].state;
     expect(availableEnergy(first)).toBe(0);
   });
+
+  test('Ringing Bob rejects a second commitment and corrupt multi-action plans before spending', () => {
+    const state = createCombat(12);
+    state.actors.bob.ringing = true;
+    state.actors.bob.energy = 10;
+    const hammer = card(state, 'hammer');
+    const vest = card(state, 'vest');
+    expect(queueCard(state, hammer.uid, 'guard', 0).ok).toBe(true);
+
+    const beforeRejectedCommitment = structuredClone(state);
+    expect(previewPlacement(state, vest.uid, 'bob', 1)).toBeNull();
+    expect(queueCard(state, vest.uid, 'bob', 1).ok).toBe(false);
+    expect(state).toEqual(beforeRejectedCommitment);
+
+    state.hand.splice(state.hand.findIndex(candidate => candidate.uid === vest.uid), 1);
+    state.queue[1] = { kind: 'player', card: vest, target: 'bob' };
+    const beforePreflight = structuredClone(state);
+    expect(() => resolveTurn(state)).toThrow(/Ringing/);
+    expect(state).toEqual(beforePreflight);
+  });
+
+  test('invalid conditional Ringing duration fails preflight without mutating or spending', () => {
+    const state = createCombat(12);
+    expect(queueCard(state, card(state, 'hammer').uid, 'guard', 0).ok).toBe(true);
+    const before = structuredClone(state);
+    const original = CARDS.hammer.onCritical;
+    try {
+      CARDS.hammer.onCritical = [{ kind: 'ringing', amount: 2, recipient: 'target' }];
+      expect(() => resolveTurn(state)).toThrow(/Ringing must last exactly one turn/);
+      expect(state).toEqual(before);
+    } finally {
+      CARDS.hammer.onCritical = original;
+    }
+  });
 });
 
 describe('attachments', () => {
@@ -397,6 +432,128 @@ describe('ordered resolution', () => {
     expect(result.actors.guard.hp).toBe(0);
     expect(result.actors.bob.hp).toBe(42);
     expect(result.actors.guard.exposed).toBe(0);
+  });
+
+  test('only an Exposed hit is critical, applying Ringing after damage without mutating snapshots or input', () => {
+    const ordinary = createCombat(12);
+    expect(ordinary.actors.bob).toMatchObject({ ringing: false, ringingNextTurn: false });
+    expect(ordinary.actors.guard).toMatchObject({ ringing: false, ringingNextTurn: false });
+    expect(queueCard(ordinary, card(ordinary, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const ordinaryEvents = resolveTurn(ordinary).flatMap(step => step.events);
+    expect(ordinaryEvents.find(event => event.kind === 'damage')).toMatchObject({
+      target: 'guard', amount: 6, critical: false,
+    });
+    expect(ordinaryEvents.some(event => event.kind === 'ringing')).toBe(false);
+
+    const critical = createCombat(12);
+    expect(queueCard(critical, card(critical, 'tape').uid, 'guard', 5).ok).toBe(true);
+    expect(queueCard(critical, card(critical, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const before = structuredClone(critical);
+    const steps = resolveTurn(critical);
+    expect(critical).toEqual(before);
+    const hit = steps.find(step => step.events.some(event => event.kind === 'ringing'));
+    if (!hit) throw new Error('Expected critical Ringing');
+    expect(hit.events.find(event => event.kind === 'damage')).toMatchObject({
+      target: 'guard', amount: 14, critical: true,
+    });
+    expect(hit.events.filter(event => event.kind === 'ringing')).toHaveLength(1);
+    expect(hit.state.actors.guard).toMatchObject({ hp: 34, ringing: false, ringingNextTurn: true });
+
+    const final = steps[steps.length - 1].state;
+    hit.state.actors.guard.ringingNextTurn = false;
+    expect(final.actors.guard).toMatchObject({ ringing: true, ringingNextTurn: false });
+    expect(final.queue.filter(action => action?.kind === 'enemy')).toHaveLength(1);
+  });
+
+  test('a Ringing enemy fires only its rightmost action across six slots, then the status expires', () => {
+    const state = createCombat(12);
+
+    state.actors.guard.ringing = true;
+    state.queue = Array(6).fill(null);
+    state.queue[5] = {
+      kind: 'enemy', uid: 'guard:right', actor: 'guard', target: 'bob',
+      name: 'Right action', description: 'Deal 3 damage.', effects: [{ kind: 'damage', amount: 3, recipient: 'target' }],
+    };
+    state.queue[1] = {
+      kind: 'enemy', uid: 'guard:left', actor: 'guard', target: 'bob',
+      name: 'Left action', description: 'Deal 7 damage.', effects: [{ kind: 'damage', amount: 7, recipient: 'target' }],
+    };
+
+    const steps = resolveTurn(state);
+    expect(steps).toHaveLength(7);
+    expect(steps.map(step => step.state.activeSlot)).toEqual([5, 4, 3, 2, 1, 0, null]);
+    const events = steps.flatMap(step => step.events);
+    expect(events.filter(event => event.kind === 'action').map(event => event.slot)).toEqual([5]);
+    expect(events.filter(event => event.kind === 'damage').map(event => event.amount)).toEqual([3]);
+    expect(steps.find(step => step.state.activeSlot === 1)?.events).toEqual([
+      expect.objectContaining({ kind: 'empty', actor: 'guard', slot: 1 }),
+    ]);
+    expect(steps[steps.length - 1].state.actors.guard).toMatchObject({
+      ringing: false, ringingNextTurn: false,
+    });
+  });
+
+  test('multiple critical damage effects apply conditional effects only once per action', () => {
+    const state = createCombat(12);
+    state.actors.guard.exposed = 2;
+    expect(queueCard(state, card(state, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const originalEffects = CARDS.hammer.effects;
+    const originalCritical = CARDS.hammer.onCritical;
+    try {
+      CARDS.hammer.effects = [
+        { kind: 'damage', amount: 1, recipient: 'target' },
+        { kind: 'exposed', amount: 2, recipient: 'target' },
+        { kind: 'damage', amount: 1, recipient: 'target' },
+      ];
+      CARDS.hammer.onCritical = [{ kind: 'ringing', amount: 1, recipient: 'target' }];
+      const events = resolveTurn(state).flatMap(step => step.events);
+      expect(events.filter(event => event.kind === 'damage' && event.actor === 'bob').map(event => event.critical)).toEqual([true, true]);
+      expect(events.filter(event => event.kind === 'ringing')).toHaveLength(1);
+    } finally {
+      CARDS.hammer.effects = originalEffects;
+      CARDS.hammer.onCritical = originalCritical;
+    }
+  });
+
+  test('a fully blocked critical Rings, and another critical refreshes an active restriction', () => {
+    const blocked = createCombat(12);
+    blocked.actors.guard.exposed = 8;
+    blocked.actors.guard.block = 14;
+    expect(queueCard(blocked, card(blocked, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const blockedSteps = resolveTurn(blocked);
+    expect(blockedSteps.flatMap(step => step.events).find(event => event.kind === 'damage')).toMatchObject({
+      target: 'guard', amount: 0, critical: true,
+    });
+    expect(blockedSteps.flatMap(step => step.events).filter(event => event.kind === 'ringing')).toHaveLength(1);
+
+    const refreshed = createCombat(12);
+    refreshed.actors.guard.ringing = true;
+    refreshed.actors.guard.exposed = 8;
+    expect(queueCard(refreshed, card(refreshed, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const refreshSteps = resolveTurn(refreshed);
+    const refreshHit = refreshSteps.find(step => step.events.some(event => event.kind === 'ringing'));
+    if (!refreshHit) throw new Error('Expected refreshed Ringing');
+    expect(refreshHit.state.actors.guard).toMatchObject({ ringing: true, ringingNextTurn: true });
+    expect(refreshSteps[refreshSteps.length - 1].state.actors.guard).toMatchObject({
+      ringing: true, ringingNextTurn: false,
+    });
+  });
+
+  test('a lethal critical does not apply a postmortem Ringing status', () => {
+    const state = createCombat(12);
+    state.actors.guard.hp = 10;
+    state.actors.guard.exposed = 8;
+    expect(queueCard(state, card(state, 'hammer').uid, 'guard', 4).ok).toBe(true);
+    const steps = resolveTurn(state);
+    const events = steps.flatMap(step => step.events);
+    expect(events.find(event => event.kind === 'damage')).toMatchObject({
+      target: 'guard', amount: 10, critical: true,
+    });
+    expect(events.some(event => event.kind === 'ringing')).toBe(false);
+    expect(steps[steps.length - 1].state).toMatchObject({
+      phase: 'victory',
+      actors: { guard: { hp: 0, ringing: false, ringingNextTurn: false } },
+    });
   });
 
   test('enemy healing caps at max health without disturbing Block or Exposed', () => {
