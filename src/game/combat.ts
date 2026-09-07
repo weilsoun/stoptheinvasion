@@ -3,6 +3,7 @@ import type {
   Actor,
   ActorId,
   Attachment,
+  CardDefinition,
   CardInstance,
   CombatEvent,
   CombatState,
@@ -13,6 +14,7 @@ import type {
   PlayerAction,
   QueueSlot,
   ResolutionStep,
+  TimelineEntry,
 } from './types';
 
 const LOG_LIMIT = 80;
@@ -37,14 +39,29 @@ function cloneAttachment(attachment: Attachment): Attachment {
 function cloneEvent(event: CombatEvent): CombatEvent {
   return { ...event, cards: event.cards?.map(cloneCard) };
 }
-
-
+function cloneDefinition(value: CardDefinition | null): CardDefinition | null {
+  return value && {
+    ...value,
+    effects: value.effects.map((effect) => ({ ...effect })),
+    onCritical: value.onCritical?.map((effect) => ({ ...effect })),
+    modifier: value.modifier && { ...value.modifier },
+    bracket: value.bracket && { ...value.bracket },
+  };
+}
 function cloneSlot(slot: QueueSlot): QueueSlot {
   if (!slot) return null;
   if (slot.kind === 'player') return { ...slot, card: cloneCard(slot.card) };
   return { ...slot, effects: slot.effects.map((effect) => ({ ...effect })) };
 }
-
+function cloneHistory(entry: TimelineEntry): TimelineEntry {
+  return {
+    ...entry,
+    action: cloneSlot(entry.action),
+    definition: cloneDefinition(entry.definition),
+    attachments: entry.attachments.map(cloneAttachment),
+    events: entry.events.map(cloneEvent),
+  };
+}
 function cloneState(state: CombatState): CombatState {
   return {
     ...state,
@@ -55,6 +72,7 @@ function cloneState(state: CombatState): CombatState {
     hand: state.hand.map(cloneCard),
     drawPile: state.drawPile.map(cloneCard),
     discardPile: state.discardPile.map(cloneCard),
+    history: state.history.map(cloneHistory),
     queue: state.queue.map(cloneSlot),
     attachments: state.attachments.map(cloneAttachment),
     log: [...state.log],
@@ -73,12 +91,12 @@ function record(state: CombatState, events: CombatEvent[], event: CombatEvent): 
 }
 
 function validIndex(state: CombatState, slot: number): boolean {
-  return Number.isInteger(slot) && slot >= 0 && slot < state.queue.length;
+  return Number.isSafeInteger(slot) && slot >= state.position && slot < turnEnd(state);
 }
 
 function planningFailure(state: CombatState): CommandResult | undefined {
   if (state.phase !== 'planning') return failure('Actions can only be changed during planning.');
-  if (state.queue.length !== ENCOUNTER.slotCount) return failure('Combat queue is corrupt.');
+  if (!Number.isSafeInteger(state.position) || state.position < 0) return failure('Combat position is corrupt.');
   return undefined;
 }
 
@@ -115,7 +133,7 @@ function validateAction(state: CombatState, action: QueueSlot): void {
       throw new Error('Invalid queued player action.');
     }
     const cardDefinition = definition(action.card);
-    if (cardDefinition.modifier) throw new Error('Modifier cards cannot occupy queue slots.');
+    if (cardDefinition.modifier || cardDefinition.bracket) throw new Error('Attachment cards cannot occupy queue slots.');
     const targetFailure = validateTarget(state, action.card, action.target);
     if (targetFailure) throw new Error(targetFailure);
     validateAmount(cardDefinition.cost, 'card cost');
@@ -134,27 +152,51 @@ function validateAction(state: CombatState, action: QueueSlot): void {
   action.effects.forEach((effect) => validateEffect(effect, `${action.name} effect`));
 }
 
-function installIntent(state: CombatState, turn: number): void {
-  const intents = enemyIntent(turn);
-  const occupied = new Set<number>();
-  const rightmost: Record<ActorId, number> = { bob: -1, guard: -1 };
-  for (const intent of intents) {
-    if (!Number.isInteger(intent.slot) || intent.slot < 0 || intent.slot >= ENCOUNTER.slotCount) {
-      throw new Error(`Enemy intent has invalid slot ${intent.slot}.`);
-    }
-    if (state.queue[intent.slot] || occupied.has(intent.slot)) {
-      throw new Error(`Enemy intents collide in slot ${intent.slot}.`);
-    }
-    occupied.add(intent.slot);
-    validateAction(state, intent.action);
-    if (state.actors[intent.action.actor].ringing) {
-      rightmost[intent.action.actor] = Math.max(rightmost[intent.action.actor], intent.slot);
-    }
+function bracketValue(card: CardInstance, key: 'positions' | 'scouting'): number {
+  const cardDefinition = definition(card);
+  if (cardDefinition.modifier && cardDefinition.bracket) {
+    throw new Error(`${cardDefinition.name} cannot be both damage and bracket modifier.`);
   }
-  for (const intent of intents) {
-    if (!state.actors[intent.action.actor].ringing || rightmost[intent.action.actor] === intent.slot) {
-      state.queue[intent.slot] = cloneSlot(intent.action);
-    }
+  if (!cardDefinition.bracket) return 0;
+  const positions = cardDefinition.bracket.positions ?? 0;
+  const scouting = cardDefinition.bracket.scouting ?? 0;
+  if (!Number.isFinite(positions) || !Number.isInteger(positions)) {
+    throw new Error(`${cardDefinition.name} has invalid bracket positions.`);
+  }
+  if (!Number.isFinite(scouting) || !Number.isInteger(scouting) || scouting < 0) {
+    throw new Error(`${cardDefinition.name} has invalid bracket scouting.`);
+  }
+  return key === 'positions' ? positions : scouting;
+}
+
+
+export function turnLength(state: CombatState): number {
+  let length = state.actors.bob.turnLength;
+  for (const attachment of state.attachments) {
+    if (attachment.target.kind === 'bracket') length += bracketValue(attachment.card, 'positions');
+  }
+  return Math.max(1, length);
+}
+
+export function turnEnd(state: CombatState): number {
+  return state.position + turnLength(state);
+}
+
+export function visibleEnd(state: CombatState): number {
+  let scouting = state.actors.bob.scouting;
+  for (const attachment of state.attachments) {
+    if (attachment.target.kind === 'bracket') scouting += bracketValue(attachment.card, 'scouting');
+  }
+  return turnEnd(state) + Math.max(0, scouting);
+}
+
+function fillVisibleTimeline(state: CombatState): void {
+  const end = visibleEnd(state);
+  while (state.queue.length < end) {
+    const position = state.queue.length;
+    const intent = enemyIntent(position);
+    if (intent) validateAction(state, intent);
+    state.queue.push(cloneSlot(intent));
   }
 }
 
@@ -166,17 +208,19 @@ function makeActor(
   energyMax: number,
   energyGain: number,
   drawCount: number,
+  turnLength: number,
+  scouting: number,
 ): Actor {
   return {
     id, name, hp, maxHp: hp, block: 0, exposed: 0, ringing: false, ringingNextTurn: false,
-    energy, energyMax, energyGain, drawCount,
+    energy, energyMax, energyGain, drawCount, turnLength, scouting,
   };
 }
 
 export function createCombat(seed = DEFAULT_SEED): CombatState {
   if (!Number.isSafeInteger(seed)) throw new TypeError('Combat seed must be a safe integer.');
-  if (!Number.isInteger(ENCOUNTER.slotCount) || ENCOUNTER.slotCount <= 0) {
-    throw new Error('Encounter slot count must be a positive integer.');
+  if (!Number.isSafeInteger(ENCOUNTER.turnLength) || ENCOUNTER.turnLength <= 0) {
+    throw new Error('Encounter turn length must be a positive safe integer.');
   }
 
   const deck = STARTER_DECK.map((definitionId, index): CardInstance => {
@@ -191,8 +235,10 @@ export function createCombat(seed = DEFAULT_SEED): CombatState {
     ENCOUNTER.energyMax,
     ENCOUNTER.energyGain,
     ENCOUNTER.drawCount,
+    ENCOUNTER.turnLength,
+    0,
   );
-  const guard = makeActor('guard', 'Infected Security', ENCOUNTER.enemyHp, 0, 0, 0, 0);
+  const guard = makeActor('guard', 'Infected Security', ENCOUNTER.enemyHp, 0, 0, 0, 0, ENCOUNTER.turnLength, 0);
   validateAmount(bob.hp, 'player health');
   validateAmount(guard.hp, 'enemy health');
   validateAmount(bob.energy, 'starting energy');
@@ -211,12 +257,14 @@ export function createCombat(seed = DEFAULT_SEED): CombatState {
     hand: deck.slice(0, bob.drawCount),
     drawPile: deck.slice(bob.drawCount).reverse(),
     discardPile: [],
-    queue: Array<QueueSlot>(ENCOUNTER.slotCount).fill(null),
+    position: 0,
+    history: [],
+    queue: [],
     attachments: [],
     activeSlot: null,
     log: ['Turn 1: plan Bob’s actions.'],
   };
-  installIntent(state, state.turn);
+  fillVisibleTimeline(state);
   return state;
 }
 
@@ -259,7 +307,8 @@ function slotCandidate(action: Exclude<QueueSlot, null>): DamageCandidate {
 function damageCandidate(state: CombatState, uid: string): DamageCandidate | undefined {
   const handCard = state.hand.find((card) => card.uid === uid);
   if (handCard) return cardCandidate(handCard);
-  for (const action of state.queue) {
+  for (let position = state.position; position < turnEnd(state); position += 1) {
+    const action = state.queue[position];
     if (action && (action.kind === 'player' ? action.card.uid : action.uid) === uid) {
       return slotCandidate(action);
     }
@@ -295,9 +344,22 @@ function modifierAttachmentFailure(
   const modifierCard = state.hand.find((card) => card.uid === uid);
   if (!modifierCard) return 'That modifier card is not in hand.';
   const modifierDefinition = definition(modifierCard);
-  if (!modifierDefinition.modifier) return 'That card is not an attachment.';
+  if (modifierDefinition.modifier && modifierDefinition.bracket) {
+    return 'An attachment cannot modify both damage and the turn bracket.';
+  }
+  if (!modifierDefinition.modifier && !modifierDefinition.bracket) return 'That card is not an attachment.';
+  validateAmount(modifierDefinition.cost, 'attachment cost');
   if (availableEnergy(state, modifierCard.owner) < modifierDefinition.cost) {
     return 'Not enough available energy.';
+  }
+  if (target?.kind === 'bracket') {
+    if (!modifierDefinition.bracket || modifierCard.owner !== 'bob') return 'That card cannot modify this turn bracket.';
+    bracketValue(modifierCard, 'positions');
+    return;
+  }
+  if (!modifierDefinition.modifier) return 'Bracket attachments can only target the turn bracket.';
+  if (!Number.isFinite(modifierDefinition.modifier.damage)) {
+    return 'Attachment has invalid damage.';
   }
   if (target?.kind === 'card') {
     const candidate = damageCandidate(state, target.uid);
@@ -307,7 +369,7 @@ function modifierAttachmentFailure(
     return;
   }
   if (target?.kind === 'slot') {
-    if (!validIndex(state, target.slot)) return 'Attachment slot must be a valid integer index.';
+    if (!validIndex(state, target.slot)) return 'Attachment slot must be in the current turn bracket.';
     const action = state.queue[target.slot];
     if (action && !compatibleModifierTarget(state, modifierCard, slotCandidate(action))) {
       return 'That slot cannot receive this attachment.';
@@ -321,13 +383,60 @@ export function canAttachModifier(state: CombatState, uid: string, target: Modif
   return modifierAttachmentFailure(state, uid, target) === undefined;
 }
 
+function reconcileBracket(state: CombatState): void {
+  const end = turnEnd(state);
+  for (let position = end; position < state.queue.length; position += 1) {
+    const action = state.queue[position];
+    const enemyUid = action?.kind === 'enemy' ? action.uid : null;
+    if (action?.kind === 'player') {
+      state.hand.push(action.card);
+      state.queue[position] = null;
+      appendLog(state, `Returned ${definition(action.card).name} from position ${position}.`);
+    }
+    for (let index = 0; index < state.attachments.length;) {
+      const attachment = state.attachments[index];
+      const leavesBracket = attachment.target.kind === 'slot'
+        ? attachment.target.slot === position
+        : attachment.target.kind === 'card' && attachment.target.uid === enemyUid;
+      if (!leavesBracket) {
+        index += 1;
+        continue;
+      }
+      state.attachments.splice(index, 1);
+      state.hand.push(attachment.card);
+      appendLog(state, `Returned ${definition(attachment.card).name} from position ${position}.`);
+    }
+  }
+  fillVisibleTimeline(state);
+}
+
+function clonePlanningState(state: CombatState): CombatState {
+  return {
+    ...state,
+    hand: [...state.hand],
+    queue: [...state.queue],
+    attachments: [...state.attachments],
+    log: [...state.log],
+  };
+}
+
+function commitPlanningMutation(state: CombatState, next: CombatState): void {
+  state.hand = next.hand;
+  state.queue = next.queue;
+  state.attachments = next.attachments;
+  state.log = next.log;
+}
+
 export function attachModifier(state: CombatState, uid: string, target: ModifierTarget): CommandResult {
   const reason = modifierAttachmentFailure(state, uid, target);
   if (reason) return failure(reason);
-  const handIndex = state.hand.findIndex((card) => card.uid === uid);
-  const [card] = state.hand.splice(handIndex, 1);
-  state.attachments.push({ card, target: { ...target } });
-  appendLog(state, `Attached ${definition(card).name}.`);
+  const next = clonePlanningState(state);
+  const handIndex = next.hand.findIndex((card) => card.uid === uid);
+  const [card] = next.hand.splice(handIndex, 1);
+  next.attachments.push({ card, target: { ...target } });
+  appendLog(next, `Attached ${definition(card).name}.`);
+  if (target.kind === 'bracket') reconcileBracket(next);
+  commitPlanningMutation(state, next);
   return { ok: true };
 }
 
@@ -336,9 +445,12 @@ export function removeModifier(state: CombatState, uid: string): CommandResult {
   if (phaseFailure) return phaseFailure;
   const attachmentIndex = state.attachments.findIndex((attachment) => attachment.card.uid === uid);
   if (attachmentIndex < 0) return failure('That attachment is not active.');
-  const [attachment] = state.attachments.splice(attachmentIndex, 1);
-  state.hand.push(attachment.card);
-  appendLog(state, `Returned ${definition(attachment.card).name} to hand.`);
+  const next = clonePlanningState(state);
+  const [attachment] = next.attachments.splice(attachmentIndex, 1);
+  next.hand.push(attachment.card);
+  appendLog(next, `Returned ${definition(attachment.card).name} to hand.`);
+  if (attachment.target.kind === 'bracket') reconcileBracket(next);
+  commitPlanningMutation(state, next);
   return { ok: true };
 }
 
@@ -349,12 +461,29 @@ export function damageModifier(state: CombatState, uid: string, slot: number | n
   for (const attachment of state.attachments) {
     const applies = attachment.target.kind === 'card'
       ? attachment.target.uid === uid
-      : slot !== null && attachment.target.slot === slot;
+      : attachment.target.kind === 'slot' && slot !== null && attachment.target.slot === slot;
     if (applies && compatibleModifierTarget(state, attachment.card, candidate)) {
       damage += definition(attachment.card).modifier!.damage;
     }
   }
   return damage;
+}
+
+function validateInventory(state: CombatState): void {
+  const seen = new Set<string>();
+  const visit = (card: CardInstance): void => {
+    if (card.owner !== 'bob' && card.owner !== 'guard') throw new Error('Card has an invalid owner.');
+    if (seen.has(card.uid)) throw new Error(`Card ${card.uid} exists in more than one combat zone.`);
+    seen.add(card.uid);
+    definition(card);
+  };
+  state.hand.forEach(visit);
+  state.drawPile.forEach(visit);
+  state.discardPile.forEach(visit);
+  for (const action of state.queue) {
+    if (action?.kind === 'player') visit(action.card);
+  }
+  for (const attachment of state.attachments) visit(attachment.card);
 }
 
 function validateAttachments(state: CombatState): void {
@@ -369,20 +498,29 @@ function validateAttachments(state: CombatState): void {
       || state.discardPile.some((card) => card.uid === attachment.card.uid)
       || state.queue.some((action) => action?.kind === 'player' && action.card.uid === attachment.card.uid);
     if (sourceIsElsewhere) throw new Error('Attachment card exists in another combat zone.');
-    if (!cardDefinition.modifier) throw new Error('Active attachment is not a modifier card.');
+    if ((!cardDefinition.modifier && !cardDefinition.bracket) || (cardDefinition.modifier && cardDefinition.bracket)) {
+      throw new Error('Active attachment must have exactly one modifier kind.');
+    }
     if (seen.has(attachment.card.uid)) throw new Error('Attachment card is active more than once.');
     seen.add(attachment.card.uid);
     validateAmount(cardDefinition.cost, 'attachment cost');
-    if (!Number.isFinite(cardDefinition.modifier.damage)) throw new Error('Attachment has invalid damage.');
-    if (attachment.target.kind === 'card') {
-      const candidate = damageCandidate(state, attachment.target.uid);
-      if (!candidate || !compatibleModifierTarget(state, attachment.card, candidate)) {
-        throw new Error('Attachment has an invalid card target.');
+    if (attachment.target.kind === 'bracket') {
+      if (!cardDefinition.bracket || attachment.card.owner !== 'bob') {
+        throw new Error('Bracket attachment has an invalid target.');
       }
-    } else if (attachment.target.kind === 'slot') {
-      if (!validIndex(state, attachment.target.slot)) throw new Error('Attachment has an invalid slot target.');
+      bracketValue(attachment.card, 'positions');
+    } else if (cardDefinition.bracket) {
+      throw new Error('Bracket attachment has an invalid target.');
     } else {
-      throw new Error('Attachment target does not exist.');
+      if (!Number.isFinite(cardDefinition.modifier!.damage)) throw new Error('Attachment has invalid damage.');
+      if (attachment.target.kind === 'card') {
+        const candidate = damageCandidate(state, attachment.target.uid);
+        if (!candidate || !compatibleModifierTarget(state, attachment.card, candidate)) {
+          throw new Error('Attachment has an invalid card target.');
+        }
+      } else if (!validIndex(state, attachment.target.slot)) {
+        throw new Error('Attachment has an invalid slot target.');
+      }
     }
   }
 }
@@ -404,8 +542,8 @@ function planPlacement(
 ): PlacementResult {
   const phaseFailure = planningFailure(state);
   if (phaseFailure) return { ok: false, reason: phaseFailure.reason ?? 'Planning is unavailable.' };
-  if (!validIndex(state, to)) return { ok: false, reason: 'Queue slot must be a valid integer index.' };
-  if (state.queue[to]?.kind === 'enemy') return { ok: false, reason: 'Enemy action slots are locked.' };
+  if (!validIndex(state, to)) return { ok: false, reason: 'Position must be in the current turn bracket.' };
+  if (state.queue[to]?.kind === 'enemy') return { ok: false, reason: 'Enemy action positions are locked.' };
 
   const queuedIndex = expectedFrom === null
     ? -1
@@ -424,11 +562,14 @@ function planPlacement(
 
   const card = queued?.kind === 'player' ? queued.card : state.hand[handIndex];
   const cardDefinition = definition(card);
-  if (cardDefinition.modifier) return { ok: false, reason: 'Attachments do not occupy queue slots.' };
+  if (cardDefinition.modifier || cardDefinition.bracket) {
+    return { ok: false, reason: 'Attachments do not occupy timeline positions.' };
+  }
+  const activeQueue = state.queue.slice(state.position, turnEnd(state));
   if (
     queuedIndex < 0
     && state.actors[card.owner].ringing
-    && state.queue.some((slot) => slot?.kind === 'player' && slot.card.owner === card.owner)
+    && activeQueue.some((slot) => slot?.kind === 'player' && slot.card.owner === card.owner)
   ) {
     return { ok: false, reason: `${state.actors[card.owner].name} can only queue one action while Ringing.` };
   }
@@ -486,16 +627,17 @@ function planPlacement(
 
   if (queue[to]) {
     const playerPositions: number[] = [];
-    for (let index = 0; index < queue.length; index += 1) {
+    for (let index = state.position; index < turnEnd(state); index += 1) {
       if (queue[index]?.kind !== 'enemy') playerPositions.push(index);
     }
     const destination = playerPositions.indexOf(to);
     let hole = -1;
     let distance = Number.POSITIVE_INFINITY;
     for (let rank = 0; rank < playerPositions.length; rank += 1) {
-      if (queue[playerPositions[rank]] !== null) continue;
-      const candidateDistance = Math.abs(rank - destination);
-      if (candidateDistance <= distance) {
+      const position = playerPositions[rank];
+      if (queue[position] !== null) continue;
+      const candidateDistance = Math.abs(position - to);
+      if (candidateDistance < distance) {
         hole = rank;
         distance = candidateDistance;
       }
@@ -531,16 +673,16 @@ export function queueCard(state: CombatState, uid: string, target: ActorId | nul
   const cardDefinition = definition(result.plan.card);
   state.hand.splice(result.plan.handIndex!, 1);
   state.queue = result.plan.queue;
-  appendLog(state, `Queued ${cardDefinition.name} in slot ${slot + 1}.`);
+  appendLog(state, `Queued ${cardDefinition.name} at position ${slot}.`);
   return { ok: true };
 }
 
 export function removeCard(state: CombatState, slot: number): CommandResult {
   const phaseFailure = planningFailure(state);
   if (phaseFailure) return phaseFailure;
-  if (!validIndex(state, slot)) return failure('Queue slot must be a valid integer index.');
+  if (!validIndex(state, slot)) return failure('Position must be in the current turn bracket.');
   const action = state.queue[slot];
-  if (!action) return failure('That queue slot is empty.');
+  if (!action) return failure('That timeline position is empty.');
   if (action.kind !== 'player') return failure('Enemy actions cannot be removed.');
   const cardName = definition(action.card).name;
   state.queue[slot] = null;
@@ -550,23 +692,23 @@ export function removeCard(state: CombatState, slot: number): CommandResult {
 }
 
 export function moveCard(state: CombatState, from: number, to: number): CommandResult {
-  if (!validIndex(state, from)) return failure('The source queue slot must be a valid integer index.');
+  if (!validIndex(state, from)) return failure('The source must be in the current turn bracket.');
   const source = state.queue[from];
-  if (!source) return failure('The source queue slot is empty.');
+  if (!source) return failure('The source timeline position is empty.');
   if (source.kind !== 'player') return failure('Enemy actions cannot be moved.');
   const result = planPlacement(state, source.card.uid, source.target, to, from);
   if (!result.ok) return failure(result.reason);
   state.queue = result.plan.queue;
-  appendLog(state, `Moved ${definition(source.card).name} to slot ${to + 1}.`);
+  appendLog(state, `Moved ${definition(source.card).name} to position ${to}.`);
   return { ok: true };
 }
 
 export function retargetCard(state: CombatState, slot: number, target: ActorId): CommandResult {
   const phaseFailure = planningFailure(state);
   if (phaseFailure) return phaseFailure;
-  if (!validIndex(state, slot)) return failure('Queue slot must be a valid integer index.');
+  if (!validIndex(state, slot)) return failure('Position must be in the current turn bracket.');
   const action = state.queue[slot];
-  if (!action) return failure('That queue slot is empty.');
+  if (!action) return failure('That timeline position is empty.');
   if (action.kind !== 'player') return failure('Enemy actions cannot be retargeted.');
   const targetFailure = validateTarget(state, action.card, target);
   if (targetFailure) return failure(targetFailure);
@@ -754,10 +896,10 @@ function applyEffect(
 }
 
 
-function cleanupHand(state: CombatState, protectedCards: Set<string>): void {
+function cleanupHand(state: CombatState, protectedCards: Set<string>, terminal: boolean): void {
   const kept: CardInstance[] = [];
   for (const card of state.hand) {
-    if (protectedCards.has(card.uid) || definition(card).retain) kept.push(card);
+    if (!terminal && (protectedCards.has(card.uid) || definition(card).retain)) kept.push(card);
     else state.discardPile.push(card);
   }
   state.hand = kept;
@@ -767,14 +909,34 @@ function cleanupHand(state: CombatState, protectedCards: Set<string>): void {
   for (const attachment of state.attachments) state.discardPile.push(attachment.card);
 }
 
+function historyAttachments(state: CombatState, position: number, action: QueueSlot): Attachment[] {
+  const uid = action?.kind === 'player' ? action.card.uid : action?.uid;
+  return state.attachments
+    .filter((attachment) => attachment.target.kind === 'slot'
+      ? attachment.target.slot === position
+      : attachment.target.kind === 'card' && attachment.target.uid === uid)
+    .map(cloneAttachment);
+}
+
 export function resolveTurn(state: CombatState): ResolutionStep[] {
   if (state.phase !== 'planning') throw new Error('Only a planning state can be resolved.');
-  if (state.queue.length !== ENCOUNTER.slotCount) throw new Error('Combat queue has the wrong number of slots.');
-  state.queue.forEach((action) => validateAction(state, action));
+  if (!Number.isSafeInteger(state.position) || state.position < 0) throw new Error('Combat position is invalid.');
+  const start = state.position;
+  const end = turnEnd(state);
+  if (state.queue.length < end) throw new Error('Combat timeline does not cover the current turn.');
+  validateInventory(state);
   validateAttachments(state);
+
   const queuedActions: Record<ActorId, number> = { bob: 0, guard: 0 };
-  for (const action of state.queue) {
-    if (action?.kind === 'player') queuedActions[action.card.owner] += 1;
+  for (let position = 0; position < state.queue.length; position += 1) {
+    const action = state.queue[position];
+    if (action?.kind === 'player' && (position < start || position >= end)) {
+      throw new Error(`Player action at position ${position} is outside the current turn bracket.`);
+    }
+    if (position >= start && position < end) {
+      validateAction(state, action);
+      if (action?.kind === 'player') queuedActions[action.card.owner] += 1;
+    }
   }
   for (const actorId of ['bob', 'guard'] as const) {
     if (state.actors[actorId].ringing && queuedActions[actorId] > 1) {
@@ -784,7 +946,8 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
 
   const working = cloneState(state);
   const reservedByActor: Record<ActorId, number> = { bob: 0, guard: 0 };
-  for (const action of working.queue) {
+  for (let position = start; position < end; position += 1) {
+    const action = working.queue[position];
     if (action?.kind === 'player') reservedByActor[action.card.owner] += definition(action.card).cost;
   }
   for (const attachment of working.attachments) {
@@ -801,32 +964,38 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
 
   const steps: ResolutionStep[] = [];
   const protectedCards = new Set<string>();
-  const rightmostRingingAction: Record<ActorId, number> = { bob: -1, guard: -1 };
-  for (let slot = 0; slot < working.queue.length; slot += 1) {
-    const action = working.queue[slot];
+  const firstRingingAction: Record<ActorId, number | null> = { bob: null, guard: null };
+  for (let position = start; position < end; position += 1) {
+    const action = working.queue[position];
     if (!action) continue;
     const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-    if (working.actors[actorId].ringing) rightmostRingingAction[actorId] = slot;
+    if (working.actors[actorId].ringing && firstRingingAction[actorId] === null) {
+      firstRingingAction[actorId] = position;
+    }
   }
-  for (let slot = ENCOUNTER.slotCount - 1; slot >= 0; slot -= 1) {
-    working.activeSlot = slot;
-    const events: CombatEvent[] = [];
-    const action = working.queue[slot];
-    const terminal = terminalPhase(working);
 
-    if (terminal) {
-      record(working, events, { kind: 'empty', slot, message: `Slot ${slot + 1} canceled: combat is over.` });
-    } else if (!action) {
-      record(working, events, { kind: 'empty', slot, message: `Slot ${slot + 1} is empty.` });
+  let cursor = start;
+  for (let position = start; position < end; position += 1) {
+    working.activeSlot = position;
+    const events: CombatEvent[] = [];
+    const action = working.queue[position];
+    const actionUid = action?.kind === 'player' ? action.card.uid : action?.uid;
+    const appliedDamageModifier = actionUid ? damageModifier(working, actionUid, position) : 0;
+
+    if (!action) {
+      record(working, events, { kind: 'empty', slot: position, message: `Position ${position} is empty.` });
     } else {
       const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-      if (working.actors[actorId].ringing && rightmostRingingAction[actorId] !== slot) {
+      if (working.actors[actorId].ringing && firstRingingAction[actorId] !== position) {
         record(working, events, {
-          kind: 'empty', actor: actorId, slot,
-          message: `${working.actors[actorId].name} is Ringing; slot ${slot + 1} is canceled.`,
+          kind: 'empty', actor: actorId, slot: position,
+          message: `${working.actors[actorId].name} is Ringing; position ${position} is canceled.`,
         });
       } else if (working.actors[actorId].hp <= 0) {
-        record(working, events, { kind: 'empty', actor: actorId, slot, message: `${working.actors[actorId].name} cannot act.` });
+        record(working, events, {
+          kind: 'empty', actor: actorId, slot: position,
+          message: `${working.actors[actorId].name} cannot act.`,
+        });
       } else {
         const actionTarget = action.target;
         if (actionTarget === null) throw new Error('Queued action has no target.');
@@ -834,16 +1003,21 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
           kind: 'action',
           actor: actorId,
           target: actionTarget,
-          slot,
+          slot: position,
           message: `${working.actors[actorId].name} used ${
             action.kind === 'player' ? definition(action.card).name : action.name
           }.`,
         });
-        const actionUid = action.kind === 'player' ? action.card.uid : action.uid;
-        const damageBonus = damageModifier(working, actionUid, slot);
         let critical = false;
         for (const effect of action.kind === 'player' ? definition(action.card).effects : action.effects) {
-          critical = applyEffect(working, action, effect, events, protectedCards, damageBonus) || critical;
+          critical = applyEffect(
+            working,
+            action,
+            effect,
+            events,
+            protectedCards,
+            appliedDamageModifier,
+          ) || critical;
           if (terminalPhase(working)) break;
         }
         if (critical && action.kind === 'player' && !terminalPhase(working)) {
@@ -854,17 +1028,33 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
         }
       }
     }
+
+    working.history.push({
+      position,
+      turn: working.turn,
+      action: cloneSlot(action),
+      definition: action?.kind === 'player' ? cloneDefinition(definition(action.card)) : null,
+      damageModifier: appliedDamageModifier,
+      attachments: historyAttachments(working, position, action),
+      events: events.map(cloneEvent),
+    });
     steps.push({ state: cloneState(working), events: events.map(cloneEvent) });
+    cursor = position + 1;
+    if (terminalPhase(working)) break;
   }
 
+  working.position = cursor;
+  const terminal = terminalPhase(working);
   const discardStart = working.discardPile.length;
-  cleanupHand(working, protectedCards);
-  working.queue = Array<QueueSlot>(ENCOUNTER.slotCount).fill(null);
+  cleanupHand(working, protectedCards, terminal !== undefined);
   working.activeSlot = null;
   working.attachments = [];
   working.actors.bob.block = 0;
   working.actors.guard.block = 0;
-  const terminal = terminalPhase(working);
+  const clearEnd = terminal ? working.queue.length : end;
+  for (let position = start; position < clearEnd; position += 1) {
+    working.queue[position] = null;
+  }
   for (const actor of Object.values(working.actors)) {
     if (terminal) {
       actor.ringing = false;
@@ -889,13 +1079,14 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       message: terminal === 'victory' ? 'Combat ended in victory.' : 'Combat ended in defeat.',
     });
   } else {
+    working.position = end;
     working.turn += 1;
     for (const actor of Object.values(working.actors)) {
       actor.energy = Math.min(actor.energyMax, actor.energy + actor.energyGain);
     }
     drawCards(working, 'bob', working.actors.bob.drawCount, finalEvents);
-    installIntent(working, working.turn);
     working.phase = 'planning';
+    fillVisibleTimeline(working);
     record(working, finalEvents, { kind: 'turn', actor: 'bob', message: `Turn ${working.turn}: plan Bob’s actions.` });
   }
   steps.push({ state: cloneState(working), events: finalEvents.map(cloneEvent) });

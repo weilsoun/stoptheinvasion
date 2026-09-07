@@ -47,7 +47,18 @@ function outcome(run: Run) {
 }
 
 function sumUsage(run: Run, cardId: string): Usage {
-  const total: Usage = { drawn: 0, handOpportunities: 0, affordableOpportunities: 0, legalOpportunities: 0, played: 0, attached: 0, energySpent: 0 };
+  const total: Usage = {
+    drawn: 0,
+    handOpportunities: 0,
+    affordableOpportunities: 0,
+    legalOpportunities: 0,
+    playablePositionOpportunities: 0,
+    visiblePositionOpportunities: 0,
+    played: 0,
+    attached: 0,
+    scoutedPositions: 0,
+    energySpent: 0,
+  };
   for (const policy of POLICIES) {
     const usage = run.policies[policy].usage[cardId];
     if (!usage) continue;
@@ -59,9 +70,17 @@ function sumUsage(run: Run, cardId: string): Usage {
 function cardUsageLine(report: BalanceReport, run: Run, cardId: string): string {
   const card = report.cards[cardId];
   const usage = sumUsage(run, cardId);
+  const uses = usage.played + usage.attached;
+  const timingRate = usage.playablePositionOpportunities > 0
+    ? (uses * 100 / usage.playablePositionOpportunities).toFixed(2)
+    : 'n/a';
+  const exposure = usage.handOpportunities > 0
+    ? `; mean window ${((usage.playablePositionOpportunities / usage.handOpportunities)).toFixed(1)} playable/${((usage.visiblePositionOpportunities / usage.handOpportunities)).toFixed(1)} visible positions`
+    : '';
   const attachment = usage.attached > 0 ? `; attached ${ratio(usage.attached, usage.legalOpportunities)}` : '';
+  const scouting = usage.scoutedPositions > 0 ? `; actually revealed ${usage.scoutedPositions} scouted positions` : '';
   const free = card.cost === 0 ? ' Free-card use is availability evidence, not overpower evidence.' : '';
-  return `${card.name}: drawn ${usage.drawn}; played/hand ${ratio(usage.played, usage.handOpportunities)}, played/affordable ${ratio(usage.played, usage.affordableOpportunities)}, played/legal ${ratio(usage.played, usage.legalOpportunities)}${attachment}; energy spent ${usage.energySpent}.${free}`;
+  return `${card.name}: drawn ${usage.drawn}; played/hand ${ratio(usage.played, usage.handOpportunities)}, played/affordable ${ratio(usage.played, usage.affordableOpportunities)}, played/legal ${ratio(usage.played, usage.legalOpportunities)}${attachment}${scouting}; ${timingRate} uses per 100 playable-position opportunities${exposure}; energy spent ${usage.energySpent}.${free}`;
 }
 
 function policyDelta(baseline: Run, candidate: Run): string {
@@ -82,6 +101,7 @@ function changeText(change: BalanceChange): string {
     case 'baseline': return 'baseline';
     case 'card-cost': return `${change.cardId} cost ${change.delta >= 0 ? '+' : ''}${change.delta}`;
     case 'card-effect': return `${change.cardId} ${change.effectKind} ${change.delta >= 0 ? '+' : ''}${change.delta}`;
+    case 'card-bracket': return `${change.cardId} bracket ${change.field} ${change.delta >= 0 ? '+' : ''}${change.delta}`;
     case 'encounter': return `enemy HP ×${change.hpScale}, enemy damage ×${change.damageScale}`;
   }
 }
@@ -100,9 +120,10 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
   const recommendations: BalanceFeedback['recommendations'] = [];
   const limitations = Array.from(new Set([
     ...report.limitations,
-    `Rules measured: ${report.rulesModel}. Shaped-card time, area, sockets, holes, and completion-edge concepts were not measured. Planning has no realtime countdown.`,
+    `Rules measured: ${report.rulesModel}. Planning has no realtime countdown.`,
+    'Policies inspect only the current bracket plus positions revealed by active scouting. Scouting is exercised and reported, but receives no invented combat-power or information-value score.',
     'Policies are deterministic heuristics, not human or optimal play; differences can reflect policy assumptions rather than card power.',
-    'Aggregate card use is normalized by opportunities but is not a causal estimate of card strength. High use alone—especially for zero-cost cards—is not evidence that a card is overpowered.',
+    'Aggregate card use is normalized by legal and changing playable-position opportunities but is not a causal estimate of card strength. High use alone—especially for zero-cost cards—is not evidence that a card is overpowered.',
     'Candidate comparisons use reported 95% win-rate intervals and aggregate outcomes. Overlapping intervals or policy disagreement are uncertainty, not permission to choose a preferred result.',
     'Recommendations only select tested candidates; they do not auto-apply changes or extrapolate untested numeric tuning.',
   ]));
@@ -129,13 +150,15 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
   );
 
   for (const cardId of Object.keys(report.cards)) diagnostics.push(cardUsageLine(report, baseline, cardId));
+  diagnostics.push('Scouting attachments and revealed-position counts are exercised coverage, not a combat-power estimate. Scouting-number candidates remain in the report but are ineligible for automatic recommendation by these one-turn heuristics.');
   if (report.coverage.uncoveredCards.length > 0) diagnostics.push(`Coverage failure: no exercised usage for ${report.coverage.uncoveredCards.map((id) => report.cards[id]?.name ?? id).join(', ')}. These cards need exercised scenarios before balance conclusions.`);
   for (const [cardId, card] of Object.entries(report.cards)) {
     const usage = sumUsage(baseline, cardId);
     const useRate = (usage.played + usage.attached) / Math.max(1, usage.legalOpportunities);
     if (usage.legalOpportunities < 20 || useRate >= 0.1) continue;
     const alternatives = report.runs.filter(run =>
-      (run.change.kind === 'card-cost' || run.change.kind === 'card-effect') && run.change.cardId === cardId)
+      (run.change.kind === 'card-cost' || run.change.kind === 'card-effect' || run.change.kind === 'card-bracket')
+      && run.change.cardId === cardId)
       .map(run => {
         const used = sumUsage(run, cardId);
         return { run, rate: (used.played + used.attached) / Math.max(1, used.legalOpportunities) };
@@ -187,6 +210,11 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
       rank = skillGap - baseSkillGap + significantPolicies;
     }
 
+    if (candidate.change.kind === 'card-bracket' && candidate.change.field === 'scouting') {
+      reason = '';
+      rank = 0;
+    }
+
     return { candidate, result, direction, significantPolicies, hpDelta, turnDelta, reason, rank };
   });
 
@@ -203,11 +231,11 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
       `Mean-HP delta by policy: ${POLICIES.map((policy) => `${policy} ${signed(candidate.policies[policy].meanHp - baseline.policies[policy].meanHp)}`).join(', ')}; aggregate ${signed(hpDelta)}.`,
       `Median-turn delta by policy: ${POLICIES.map((policy) => `${policy} ${signed(candidate.policies[policy].medianTurns - baseline.policies[policy].medianTurns)}`).join(', ')}; weighted median-turn measure ${signed(turnDelta)}; stall rate ${signedPercent(result.stallRate - base.stallRate)} (${base.stalls}/${base.fights}→${result.stalls}/${result.fights}).`,
     ];
-    if (candidate.change.kind === 'card-cost' || candidate.change.kind === 'card-effect') {
+    if (candidate.change.kind === 'card-cost' || candidate.change.kind === 'card-effect' || candidate.change.kind === 'card-bracket') {
       const cardId = candidate.change.cardId;
       const before = sumUsage(baseline, cardId);
       const after = sumUsage(candidate, cardId);
-      tradeoffs.push(`${report.cards[cardId]?.name ?? cardId} played/legal ${ratio(before.played, before.legalOpportunities)}→${ratio(after.played, after.legalOpportunities)}; attached/legal ${ratio(before.attached, before.legalOpportunities)}→${ratio(after.attached, after.legalOpportunities)}; played/affordable ${ratio(before.played, before.affordableOpportunities)}→${ratio(after.played, after.affordableOpportunities)}.`);
+      tradeoffs.push(`${report.cards[cardId]?.name ?? cardId} played/legal ${ratio(before.played, before.legalOpportunities)}→${ratio(after.played, after.legalOpportunities)}; attached/legal ${ratio(before.attached, before.legalOpportunities)}→${ratio(after.attached, after.legalOpportunities)}; played/affordable ${ratio(before.played, before.affordableOpportunities)}→${ratio(after.played, after.affordableOpportunities)}; scouted positions ${before.scoutedPositions}→${after.scoutedPositions}.`);
     }
     recommendations.push({
       target: candidate.change.kind === 'encounter' ? 'encounter pressure' : report.cards[candidate.change.cardId]?.name ?? candidate.change.cardId,
@@ -238,8 +266,11 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
     roleFinding(report, 'Energy', ['effect:energy'], 'a large played/hand versus played/affordable gap would justify testing resource access'),
     roleFinding(report, 'Draw', ['effect:draw'], 'low hand opportunities or stalls would justify testing access consistency'),
     roleFinding(report, 'Heal', ['effect:heal'], survivabilityConcern ? 'losses or stalls make sustain worth testing against block or encounter-pressure candidates' : 'the current outcomes do not establish a sustain need'),
-    roleFinding(report, 'Positive modifiers', ['modifier:damage:positive'], separatedBaseline ? 'policy separation makes attachment sequencing a testable source of skill gap' : 'no measured weakness requires another positive modifier'),
-    roleFinding(report, 'Negative modifiers', ['modifier:damage:negative'], survivabilityConcern ? 'losses or stalls make enemy-pressure reduction worth testing against block candidates' : 'no measured survivability weakness requires another negative modifier'),
+    roleFinding(report, 'Positive damage modifiers', ['modifier:damage:positive'], separatedBaseline ? 'policy separation makes attachment sequencing a testable source of skill gap' : 'no measured weakness requires another positive modifier'),
+    roleFinding(report, 'Negative damage modifiers', ['modifier:damage:negative'], survivabilityConcern ? 'losses or stalls make enemy-pressure reduction worth testing against block candidates' : 'no measured survivability weakness requires another negative modifier'),
+    roleFinding(report, 'Bracket extension', ['bracket:positions:extend'], 'window expansion should be tested against energy cost and added enemy exposure, not assumed beneficial'),
+    roleFinding(report, 'Bracket shortening', ['bracket:positions:shorten'], 'window shortening should be tested against lost action space and avoided enemy exposure, not assumed defensive power'),
+    roleFinding(report, 'Scouting', ['bracket:scouting'], 'future information has no fabricated power estimate; human playtesting must establish its decision value'),
   ];
 
   return { diagnostics, recommendations, roleFindings, limitations };

@@ -11,6 +11,8 @@ export interface CardDefinition {
   description: string;
   flavor: string;
   icon: 'hammer' | 'shield' | 'tape' | 'coffee' | 'toolbox' | 'boot';
+  /** Reuse a named, preloaded comic illustration when identity differs from artwork. */
+  art?: string;
   effects: Effect[];
   /** Applied once after this action critically hits an Exposed enemy. */
   onCritical?: Effect[];
@@ -20,6 +22,8 @@ export interface CardDefinition {
   characterColor?: string;
   retain?: boolean;
   modifier?: { damage: number };
+  /** Planning-only modifier attached to the current turn bracket. Expires at cleanup. */
+  bracket?: { positions?: number; scouting?: number };
 }
 export interface CardInstance { uid: string; definitionId: string; owner: ActorId }
 export interface Actor {
@@ -37,12 +41,25 @@ export interface Actor {
   energyMax: number;
   energyGain: number;
   drawCount: number;
+  /** Persistent actor stats; temporary bracket attachments add to these values. */
+  turnLength: number;
+  scouting: number;
 }
 export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId | null }
 export interface EnemyAction { kind: 'enemy'; uid: string; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[] }
 export type QueueSlot = PlayerAction | EnemyAction | null;
-export type ModifierTarget = { kind: 'card'; uid: string } | { kind: 'slot'; slot: number };
+export type ModifierTarget = { kind: 'card'; uid: string } | { kind: 'slot'; slot: number } | { kind: 'bracket' };
 export interface Attachment { card: CardInstance; target: ModifierTarget }
+export interface TimelineEntry {
+  position: number;
+  turn: number;
+  action: QueueSlot;
+  /** Player definition frozen at resolution; enemy actions already contain their rules. */
+  definition: CardDefinition | null;
+  damageModifier: number;
+  attachments: Attachment[];
+  events: CombatEvent[];
+}
 export interface CombatState {
   seed: number;
   turn: number;
@@ -51,6 +68,11 @@ export interface CombatState {
   hand: CardInstance[];
   drawPile: CardInstance[];
   discardPile: CardInstance[];
+  /** Absolute position at the start of the current turn. Higher indices are later/LEFT. */
+  position: number;
+  /** Independent records of consumed positions, including empty and canceled positions. */
+  history: TimelineEntry[];
+  /** Queue indices are absolute encounter positions; consumed positions contain null. */
   queue: QueueSlot[];
   attachments: Attachment[];
   activeSlot: number | null;

@@ -527,7 +527,7 @@ export function drawCardArt(
       : card.effects.some((effect) => effect.kind === 'exposed')
         ? 'enemy-expose'
         : 'enemy'
-    : card.id;
+    : card.art ?? card.id;
   const characterColor = card.characterColor ?? DEFAULT_CHARACTER_COLOR;
   const rarity = card.rarity ?? 'common';
   const outline = locked ? '#a3a18d' : INK;
