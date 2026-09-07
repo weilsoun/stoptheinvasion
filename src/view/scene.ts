@@ -351,7 +351,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   function cardTextureKey(visual: CardVisual): string {
     const characterColor = visual.definition.characterColor ?? '#e97a2d';
     const rarity = visual.definition.rarity ?? 'common';
-    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:color:${characterColor}:rarity:${rarity}:damage:${visual.damageModifier}:targets:${visual.targets.length > 0}:dimmed:${visual.dimmed}`;
+    return `${visual.locked ? 'locked' : 'player'}:${visual.definition.id}:color:${characterColor}:rarity:${rarity}:level:${visual.upgradeLevel}:targets:${visual.targets.length > 0}:dimmed:${visual.dimmed}`;
   }
 
   function getCardTexture(visual: CardVisual, key = cardTextureKey(visual)): Texture {
@@ -359,7 +359,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     if (!texture) {
       texture = textureFromCanvas(
         app,
-        drawCardArt(visual.definition, visual.locked, visual.damageModifier, visual.targets.length > 0, visual.dimmed),
+        drawCardArt(visual.definition, visual.locked, visual.upgradeLevel, visual.targets.length > 0, visual.dimmed),
         `${visual.locked ? 'Locked intent' : 'Card'} ${visual.definition.name}`,
       );
       cardTextures.set(key, texture);

@@ -4,7 +4,7 @@ import {
   availableEnergy,
   canAttachModifier,
   createCombat,
-  damageModifier,
+  upgradeLevel,
   moveCard,
   previewPlacement,
   queueCard,
@@ -17,6 +17,7 @@ import {
   visibleEnd,
 } from '../src/game/combat';
 import { CARDS } from '../src/game/content';
+import { applyUpgrade, scaledBracket } from '../src/game/upgrades';
 import type { CardInstance, CombatState } from '../src/game/types';
 
 function card(state: CombatState, definitionId: string): CardInstance {
@@ -122,7 +123,7 @@ describe('persistent timeline planning', () => {
     expect(state.queue[7]).toBeNull();
     expect(state.hand.slice(-2).map((entry) => entry.uid)).toEqual([hammer.uid, positionReinforce.uid]);
     expect(state.attachments.some((entry) => entry.card.uid === reinforce.uid)).toBe(true);
-    expect(damageModifier(state, hammer.uid, null)).toBe(4);
+    expect(upgradeLevel(state, hammer.uid, null)).toBe(1);
     expect(availableEnergy(state)).toBe(17);
 
     expect(removeModifier(state, overtime.uid)).toEqual({ ok: true });
@@ -228,9 +229,11 @@ describe('persistent resolution and history', () => {
     steps[2].state.history[2].events[0].message = 'mutated';
     if (steps[2].state.history[2].action?.kind === 'enemy') {
       steps[2].state.history[2].action.effects[0].amount = 999;
+      steps[2].state.history[2].action.scaling!.effects![0] = 999;
     }
     expect(final.history[2].events[0].message).toBe(originalMessage);
     expect(final.history[2].action?.kind === 'enemy' && final.history[2].action.effects[0].amount).toBe(8);
+    expect(final.history[2].action?.kind === 'enemy' && final.history[2].action.scaling?.effects?.[0]).toBe(4);
   });
 
   test('history freezes player definitions, modifiers, attachments and event card arrays independently', () => {
@@ -243,13 +246,15 @@ describe('persistent resolution and history', () => {
     const impact = steps[3].state;
     const entry = impact.history.at(-1)!;
     expect(entry.definition?.id).toBe('hammer');
-    expect(entry.damageModifier).toBe(4);
+    expect(entry.upgradeLevel).toBe(1);
     expect(entry.attachments.map((item) => item.card.uid)).toEqual([reinforce.uid]);
     expect(entry.events.some((event) => event.kind === 'damage' && event.amount === 10)).toBe(true);
 
     entry.definition!.effects[0].amount = 100;
     entry.attachments[0].card.definitionId = 'vest';
+    entry.definition!.scaling!.effects![0] = 999;
     expect(steps.at(-1)!.state.history[3].definition?.effects[0].amount).toBe(6);
+    expect(steps.at(-1)!.state.history[3].definition?.scaling?.effects?.[0]).toBe(4);
     expect(steps.at(-1)!.state.history[3].attachments[0].card.definitionId).toBe('reinforce');
   });
 
@@ -336,7 +341,7 @@ describe('persistent resolution and history', () => {
     expect(cleanup.state.discardPile.some((entry) => entry.uid === 'mutated')).toBe(false);
     expect(cleanup.state.hand.map((entry) => entry.uid)).toEqual(finalCards);
   });
-  test('signed damage floors before Block and Exposed while attachments spend once', () => {
+  test('signed upgrade levels floor each damage effect before Block and Exposed while attachments spend once', () => {
     const state = rich(createCombat(31));
     state.actors.bob.block = 3;
     state.actors.bob.exposed = 4;
@@ -419,4 +424,123 @@ describe('persistent resolution and history', () => {
     }
   });
 
+});
+
+describe('authored upgrade scaling', () => {
+  test('pure scaling uses authored increments, floors, and bracket polarity without mutating bases', () => {
+    const hammerBefore = structuredClone(CARDS.hammer);
+    const brace = applyUpgrade(CARDS.brace, 2);
+    expect(brace.effects.map((effect) => effect.amount)).toEqual([8, 7]);
+    expect(applyUpgrade(CARDS.hammer, -100).effects[0].amount).toBe(0);
+    expect(applyUpgrade(CARDS.hammer, 100).effects[0].amount).toBe(406);
+    expect(applyUpgrade(CARDS.hammer, 0).description).toBe(CARDS.hammer.description);
+    expect(scaledBracket(CARDS.clockout, 2)?.positions).toBe(-5);
+    expect(scaledBracket(CARDS.clockout, -4)?.positions).toBe(0);
+    expect(scaledBracket(CARDS.overtime, -3)?.positions).toBe(0);
+    expect(() => applyUpgrade(CARDS.hammer, Number.MAX_SAFE_INTEGER)).toThrow();
+    expect(CARDS.hammer).toEqual(hammerBefore);
+  });
+
+  test('upgrades apply to defense, Exposed, resources, draws, and every effect of a mixed card', () => {
+    const state = rich(createCombat(41));
+    const plans = [
+      { card: card(state, 'vest'), slot: 0 },
+      { card: card(state, 'tape'), slot: 1 },
+      { card: card(state, 'coffee'), slot: 3 },
+      { card: card(state, 'toolbox'), slot: 4 },
+      { card: card(state, 'brace'), slot: 5 },
+    ];
+    for (const plan of plans) expect(queueCard(state, plan.card.uid, null, plan.slot).ok).toBe(true);
+    plans.forEach((plan, index) => {
+      const source = { uid: `test-upgrade-${index}`, definitionId: 'reinforce', owner: 'bob' as const };
+      state.hand.push(source);
+      expect(attachModifier(state, source.uid, { kind: 'card', uid: plan.card.uid }).ok).toBe(true);
+    });
+
+    const steps = resolveTurn(state);
+    const events = steps.flatMap((step) => step.events);
+    expect(events.filter((event) => event.kind === 'block').map((event) => event.amount)).toEqual([10, 5]);
+    expect(events.find((event) => event.kind === 'exposed')).toMatchObject({ amount: 10, target: 'guard' });
+    expect(events.find((event) => event.kind === 'energy')).toMatchObject({ amount: 2, target: 'bob' });
+    expect(events.find((event) => event.kind === 'draw')).toMatchObject({ amount: 3, actor: 'bob' });
+    expect(steps.find((step) => step.state.activeSlot === 5)!.events.find((event) => event.kind === 'damage'))
+      .toMatchObject({ amount: 16, target: 'guard' });
+    expect(steps.at(-1)!.state.attachments).toEqual([]);
+  });
+
+  test('downgrades reduce enemy damage, Exposed, and healing while history retains base metadata', () => {
+    const state = rich(createCombat(42));
+    state.actors.bob.turnLength = 21;
+    state.actors.guard.hp = 30;
+    const lookout = card(state, 'lookout');
+    expect(attachModifier(state, lookout.uid, { kind: 'bracket' }).ok).toBe(true);
+    for (const position of [2, 8, 14, 20]) {
+      const source = { uid: `test-downgrade-${position}`, definitionId: 'weaken', owner: 'bob' as const };
+      state.hand.push(source);
+      expect(attachModifier(state, source.uid, {
+        kind: 'card',
+        uid: `guard:intent:${position}`,
+      }).ok).toBe(true);
+    }
+
+    const final = resolveTurn(state).at(-1)!.state;
+    const history = new Map(final.history.map((entry) => [entry.position, entry] as const));
+    expect(history.get(2)?.events.find((event) => event.kind === 'damage')).toMatchObject({ amount: 4 });
+    expect(history.get(8)?.events.find((event) => event.kind === 'exposed')).toMatchObject({ amount: 3 });
+    expect(history.get(14)?.events.find((event) => event.kind === 'damage')).toMatchObject({ amount: 11, critical: true });
+    expect(history.get(20)?.events.find((event) => event.kind === 'heal')).toMatchObject({ amount: 4 });
+    expect([2, 8, 14, 20].map((position) => history.get(position)?.upgradeLevel)).toEqual([-1, -1, -1, -1]);
+    expect([2, 8, 14, 20].map((position) => {
+      const action = history.get(position)?.action;
+      return action?.kind === 'enemy' && action.effects[0].amount;
+    })).toEqual([8, 4, 12, 6]);
+  });
+
+  test('upgrading active scouting reveals immediately and retracting preserves hidden cached intent', () => {
+    const state = rich(createCombat(421));
+    state.actors.bob.turnLength = 11;
+    const lookout = card(state, 'lookout');
+    expect(attachModifier(state, lookout.uid, { kind: 'bracket' })).toEqual({ ok: true });
+    const reinforce = card(state, 'reinforce');
+    expect(attachModifier(state, reinforce.uid, { kind: 'card', uid: lookout.uid })).toEqual({ ok: true });
+    expect(visibleEnd(state)).toBe(15);
+    const revealed = structuredClone(state.queue[14]);
+    expect(revealed?.kind).toBe('enemy');
+    expect(removeModifier(state, reinforce.uid)).toEqual({ ok: true });
+    expect(visibleEnd(state)).toBe(14);
+    expect(state.queue[14]).toEqual(revealed);
+  });
+
+  test('an upgraded active bracket reconciles immediately and its exact binding follows the refunded host', () => {
+
+    const state = rich(createCombat(43));
+    const overtime = card(state, 'overtime');
+    expect(attachModifier(state, overtime.uid, { kind: 'bracket' }).ok).toBe(true);
+    const firstUpgrade = card(state, 'reinforce');
+    expect(attachModifier(state, firstUpgrade.uid, { kind: 'card', uid: overtime.uid }).ok).toBe(true);
+    expect(turnLength(state)).toBe(10);
+
+    const secondUpgrade = card(state, 'reinforce');
+    expect(canAttachModifier(state, secondUpgrade.uid, { kind: 'card', uid: firstUpgrade.uid })).toBe(false);
+    expect(canAttachModifier(state, secondUpgrade.uid, { kind: 'card', uid: secondUpgrade.uid })).toBe(false);
+    expect(attachModifier(state, secondUpgrade.uid, { kind: 'card', uid: overtime.uid })).toEqual({ ok: true });
+    expect(turnLength(state)).toBe(11);
+    expect(removeModifier(state, overtime.uid)).toEqual({ ok: true });
+    expect(turnLength(state)).toBe(7);
+    expect(upgradeLevel(state, overtime.uid, null)).toBe(2);
+    expect(availableEnergy(state)).toBe(18);
+
+    expect(attachModifier(state, overtime.uid, { kind: 'bracket' })).toEqual({ ok: true });
+    expect(turnLength(state)).toBe(11);
+    const hammer = card(state, 'hammer');
+    expect(queueCard(state, hammer.uid, null, 10)).toEqual({ ok: true });
+    expect(removeModifier(state, firstUpgrade.uid)).toEqual({ ok: true });
+    expect(turnLength(state)).toBe(10);
+    expect(state.queue[10]).toBeNull();
+    expect(state.hand.some((entry) => entry.uid === hammer.uid)).toBe(true);
+    expect(upgradeLevel(state, overtime.uid, null)).toBe(1);
+    const final = finish(state);
+    expect(final.attachments).toEqual([]);
+    expect(turnLength(final)).toBe(7);
+  });
 });

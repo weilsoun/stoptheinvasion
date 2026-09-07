@@ -31,7 +31,7 @@ export interface CardVisual {
   queued: boolean;
   dragged: boolean;
   locked: boolean;
-  damageModifier: number;
+  upgradeLevel: number;
   target: ActorId | null;
   targets: ActorId[];
   /** Attachment drawn behind this host UID, following its displayed pose. */

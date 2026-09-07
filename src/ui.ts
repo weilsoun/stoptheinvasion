@@ -1,5 +1,6 @@
-import { attachModifier, availableEnergy, canAttachModifier, createCombat, damageModifier, moveCard, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, visibleEnd } from './game/combat';
+import { attachModifier, availableEnergy, canAttachModifier, createCombat, moveCard, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, upgradeLevel, visibleEnd } from './game/combat';
 import { CARDS } from './game/content';
+import { applyUpgrade } from './game/upgrades';
 import type { ActorId, Attachment, CardDefinition, CardInstance, EnemyAction, ModifierTarget, PlayerAction, QueueSlot } from './game/types';
 import { ACTOR_CENTERS, ACTOR_HUD, CARD_WORKSPACE, HAND_TOP, type CardVisual, type ScenePort } from './view/types';
 
@@ -12,7 +13,7 @@ type CardDetail = {
   source: 'hand' | 'queue' | 'enemy' | 'attachment' | 'history' | 'future';
   slot: number | null;
   target: ActorId | null;
-  damageModifier?: number;
+  upgradeLevel?: number;
   returnFocus: string;
 };
 type Drag = {
@@ -66,9 +67,6 @@ const STATUS_ICONS = {
   ringing: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.5-2v-5a4.5 4.5 0 0 0-9 0v5z"/><path d="M10 20h4"/></svg>',
 };
 
-function effectText(effects: { kind: string; amount: number }[]): string {
-  return effects.map(({ kind, amount }) => `${amount} ${kind}`).join(' / ');
-}
 const attachmentCardPose = (
   host: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>,
   index: number,
@@ -110,7 +108,7 @@ function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
       rotation: offset * 2.3,
       hovered: false,
       dimmed: false,
-      damageModifier: 0,
+      upgradeLevel: 0,
       queued: false,
       target: null,
       dragged: false,
@@ -225,6 +223,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       flavor: `${kind === 'heal' ? 'Restores' : 'Targets'} ${state.actors[action.target].name}.`,
       icon: kind === 'heal' ? 'shield' : kind === 'exposed' ? 'tape' : 'boot',
       effects: action.effects,
+      scaling: action.scaling,
     };
   };
 
@@ -249,9 +248,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const positionAttachments = (slot: number) => state.attachments.filter(({ target }) => target.kind === 'slot' && target.slot === slot);
   const bracketAttachments = () => state.attachments.filter(({ target }) => target.kind === 'bracket');
   const attachedCard = (uid: string) => state.attachments.find(({ card }) => card.uid === uid)?.card ?? null;
-  const attachmentDescription = (definition: CardDefinition) => definition.modifier
-    ? `${definition.modifier.damage >= 0 ? 'plus' : 'minus'} ${Math.abs(definition.modifier.damage)} damage`
-    : `${definition.bracket?.positions ?? 0} positions, ${definition.bracket?.scouting ?? 0} scouting`;
+  const attachmentDescription = (definition: CardDefinition) => {
+    if (!definition.modifier) return `${definition.bracket?.positions ?? 0} positions, ${definition.bracket?.scouting ?? 0} scouting`;
+    const levels = definition.modifier.levels;
+    return `${levels > 0 ? 'Upgrade' : 'Downgrade'} by ${Math.abs(levels)} level${Math.abs(levels) === 1 ? '' : 's'}`;
+  };
   const attachmentTabsMarkup = (attachments: Attachment[], hostName: string, pose: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>, slotX: number, behindHost = false) => attachments.map(({ card, target }, index, all) => {
     const definition = CARDS[card.definitionId];
     const mini = attachmentCardPose(pose, index, all.length, behindHost);
@@ -286,7 +287,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const isSource = modifier?.uid === uid;
       visual.targets = targetChoices(card);
       visual.target = pending?.uid === uid ? pending.target : null;
-      visual.damageModifier = damageModifier(state, uid, null);
+      visual.upgradeLevel = upgradeLevel(state, uid, null);
       visual.hovered = uid === hoveredUid && (!modifier || !isSource && attachmentAllowed({ kind: 'card', uid }));
       visual.dimmed = handDisabled(card) || Boolean(pending && !modifier && pending.uid !== uid);
       if (visual.hovered) {
@@ -314,7 +315,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         ...attachmentCardPose(host, index, all.length, behindHost),
         hovered: false,
         dimmed: Boolean(uidPrefix),
-        damageModifier: 0,
+        upgradeLevel: 0,
         queued: true,
         dragged: false,
         locked: false,
@@ -343,11 +344,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           definition,
           ...pose,
           hovered: mode === 'planning' && !modifier && hoveredQueueSlot === entry.position,
-          dimmed: false,
-          damageModifier: entry.damageModifier,
+          dimmed: true,
+          upgradeLevel: entry.upgradeLevel,
           queued: true,
           dragged: false,
-          locked: true,
+          locked: action.kind === 'enemy',
           target: action.target,
           targets: [],
           flip: 0,
@@ -375,7 +376,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         ...pose,
         hovered: mode === 'planning' && !modifier && hoveredQueueSlot === position,
         dimmed: mode !== 'planning' || position >= turnEnd(state) || Boolean(modifier && !attachmentAllowed({ kind: 'card', uid })),
-        damageModifier: damageModifier(state, uid, position),
+        upgradeLevel: upgradeLevel(state, uid, position),
         queued: true,
         dragged: false,
         locked: isEnemy || position >= turnEnd(state),
@@ -386,7 +387,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       }, position);
     }
     const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
-    queued.push(...attachmentVisuals(bracketPose, bracketAttachments(), undefined, false));
+    for (const host of attachmentVisuals(bracketPose, bracketAttachments(), undefined, false)) {
+      host.upgradeLevel = upgradeLevel(state, host.uid, null);
+      queued.push(...attachmentVisuals(host, cardAttachments(host.uid), host.uid, true).reverse(), host);
+    }
     if (firingCard) pushHost(firingCard, undefined, false);
     const hands: CardVisual[] = [];
     for (const visual of hand.values()) {
@@ -408,7 +412,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           rotation: 0,
           hovered: true,
           dimmed: false,
-          damageModifier: damageModifier(state, drag.uid, proposedSlot),
+          upgradeLevel: upgradeLevel(state, drag.uid, proposedSlot),
           queued: drag.kind === 'queue',
           dragged: true,
           locked: false,
@@ -418,8 +422,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           clip: undefined,
         };
         if (drag.kind === 'queue') pushHost(visual, undefined, false);
-        else if (drag.kind === 'hand') queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true, '', false).reverse(), visual);
-        else queued.push(visual);
+        else queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true, '', false).reverse(), visual);
       }
     }
 
@@ -434,7 +437,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         rotation: index - (visible.length - 1) / 2,
         hovered: false,
         dimmed: false,
-        damageModifier: 0,
+        upgradeLevel: 0,
         queued: false,
         dragged: false,
         locked: false,
@@ -458,7 +461,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       rotation: 0,
       hovered: true,
       dimmed: false,
-      damageModifier: detail.damageModifier ?? (detail.slot === null ? damageModifier(state, detail.cardUid, null) : damageModifier(state, detail.cardUid, detail.slot)),
+      upgradeLevel: detail.upgradeLevel ?? (detail.slot === null ? upgradeLevel(state, detail.cardUid, null) : upgradeLevel(state, detail.cardUid, detail.slot)),
       queued: false,
       dragged: false,
       locked: detail.source === 'enemy' || detail.source === 'future'
@@ -554,14 +557,15 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const cardTabs = editable
       ? attachmentTabsMarkup(cardAttachments(sourceUid), definition.name, pose, slotX, true) + attachmentTabsMarkup(fixedAttachments, '', pose, slotX)
       : '';
-    const delta = history?.damageModifier ?? damageModifier(state, sourceUid, position);
+    const level = history?.upgradeLevel ?? upgradeLevel(state, sourceUid, position);
+    const effective = applyUpgrade(definition, level);
     const targetName = slot.target === null ? 'missing target' : state.actors[slot.target].name;
     const cardLabel = slot.kind === 'enemy'
-      ? `${definition.name}. ${slot.description} ${effectText(slot.effects)} to ${targetName}`
-      : `Bob card ${definition.name}, cost ${definition.cost}, target ${targetName}`;
+      ? `${effective.name}. ${effective.description} Target ${targetName}`
+      : `Bob card ${effective.name}, cost ${effective.cost}, target ${targetName}. ${effective.description}`;
     return `<div class="queue-slot ${slot.kind}${editable && slot.kind === 'player' ? ' queue-card' : slot.kind === 'enemy' ? ' locked' : ''}${region}${active}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" ${style}>
       ${cardTabs}<div class="queue-card-body${editable ? attachmentClass(cardTarget) : ''}" data-card-uid="${escapeHtml(renderUid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || canTarget) ? 0 : -1}"
-        aria-label="Inspect position ${position}, ${regionLabel}, ${escapeHtml(cardLabel)}${delta ? `, damage modifier ${delta}` : ''}"></div>
+        aria-label="Inspect position ${position}, ${regionLabel}, ${escapeHtml(cardLabel)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}"></div>
       </div>`;
   };
   const bracketMarkup = () => {
@@ -570,10 +574,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const left = Math.min(startX, endX);
     const width = Math.abs(startX - endX) + stride();
     const attachments = bracketAttachments();
+    const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
     const chips = attachments.map(({ card }, index) => {
       const definition = CARDS[card.definitionId];
-      const mini = attachmentCardPose({ x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 }, index, attachments.length);
-      return `<button class="bracket-attachment attachment-tab bracket" style="--tab-x:${mini.x}px;--tab-y:${mini.y}px;--tab-w:${mini.width}px;--tab-h:${mini.height}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" aria-label="Inspect ${escapeHtml(definition.name)}, ${escapeHtml(attachmentDescription(definition))}, attached to current turn bracket. Drag to refund."></button>`;
+      const mini = attachmentCardPose(bracketPose, index, attachments.length);
+      const level = upgradeLevel(state, card.uid, null);
+      const effective = applyUpgrade(definition, level);
+      const nested = cardAttachments(card.uid).map(({ card: child }, childIndex, children) => {
+        const childDefinition = CARDS[child.definitionId];
+        const childPose = attachmentCardPose(mini, childIndex, children.length, true);
+        const hitHeight = CARD_ATTACHMENT_PEEK * mini.height / QUEUE_CARD_HEIGHT;
+        return `<button class="bracket-upgrade attachment-tab card${attachmentClass({ kind: 'card', uid: child.uid })}" style="--tab-x:${childPose.x}px;--tab-y:${childPose.y}px;--tab-w:${childPose.width}px;--tab-h:${hitHeight}px" data-card="${escapeHtml(child.uid)}" data-card-uid="${escapeHtml(child.uid)}" aria-label="Inspect ${escapeHtml(childDefinition.name)}, ${escapeHtml(attachmentDescription(childDefinition))}, bound to card ${escapeHtml(definition.name)}. Drag to return it to hand and refund its energy."></button>`;
+      }).join('');
+      const target = { kind: 'card', uid: card.uid } as const;
+      return `${nested}<button class="bracket-attachment attachment-tab bracket${attachmentClass(target)}" style="--tab-x:${mini.x}px;--tab-y:${mini.y}px;--tab-w:${mini.width}px;--tab-h:${mini.height}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" aria-label="Inspect ${escapeHtml(effective.name)}, ${escapeHtml(effective.description)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}, attached to current turn bracket. Drag to refund."></button>`;
     }).join('');
     return `<div class="turn-bracket${attachmentClass({ kind: 'bracket' })}" data-bracket-target role="button" tabindex="${modifierSource() && attachmentAllowed({ kind: 'bracket' }) ? 0 : -1}" aria-label="Current turn bracket, positions ${state.position} through ${turnEnd(state) - 1}. Attach selected bracket card." style="--bracket-left:${left}px;--bracket-width:${width}px">
       <span>TURN ${state.turn} · ${turnLength(state)} POSITIONS</span></div>${chips}`;
@@ -596,8 +610,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const selected = selection?.kind === 'hand' && selection.uid === card.uid || pending?.uid === card.uid;
       const cardTarget = { kind: 'card', uid: card.uid } as const;
       const classes = `hand-hit${selected ? ' selected' : ''}${modifier?.uid === card.uid ? ' modifier-source' : attachmentClass(cardTarget)}`;
+      const level = upgradeLevel(state, card.uid, null);
+      const effective = applyUpgrade(definition, level);
       return `<div class="${classes}" data-hand-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" role="button" aria-disabled="${mode !== 'planning' || Boolean(modifier && modifier.uid !== card.uid && !attachmentAllowed(cardTarget))}" tabindex="${mode === 'planning' && (!modifier || modifier.uid === card.uid || attachmentAllowed(cardTarget)) ? 0 : -1}"
-        style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - HOVER_WIDTH, visual.x + visual.width / 2 - HOVER_WIDTH / 2)))}px" aria-label="Inspect ${escapeHtml(definition.name)}, ${definition.cost} energy, ${escapeHtml(definition.description)}">
+        style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - HOVER_WIDTH, visual.x + visual.width / 2 - HOVER_WIDTH / 2)))}px" aria-label="Inspect ${escapeHtml(effective.name)}, ${effective.cost} energy, ${escapeHtml(effective.description)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}">
         ${handAttachmentTabsMarkup(card.uid, definition.name)}
       </div>`;
     }).join('');
@@ -616,7 +632,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const detailMarkup = () => {
     if (!detail) return '';
     const sourceCard = detail.source === 'hand' ? handCard(detail.cardUid) : null;
-    const delta = detail.damageModifier ?? damageModifier(state, detail.cardUid, detail.slot);
+    const level = detail.upgradeLevel ?? upgradeLevel(state, detail.cardUid, detail.slot);
     let actions = '';
     if (sourceCard) {
       actions = `<button data-action="detail-play" ${canAfford(sourceCard) ? '' : 'disabled'}>${isAttachment(detail.definition) ? 'Attach' : 'Queue card'}</button>`;
@@ -625,10 +641,19 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     } else if (detail.source === 'attachment') {
       actions = '<button class="detail-refund" data-action="detail-refund">Refund attachment</button>';
     }
+    const bound = mode === 'planning' && detail.source !== 'history' && detail.source !== 'future'
+      ? cardAttachments(detail.cardUid)
+      : [];
+    const boundControls = bound.length ? `<section class="detail-bound-controls" aria-label="Cards attached to ${escapeHtml(detail.definition.name)}">
+      <b>Attached modifiers</b>${bound.map(({ card }) => {
+        const definition = CARDS[card.definitionId];
+        return `<div><button data-action="detail-bound-inspect" data-card="${escapeHtml(card.uid)}">Inspect ${escapeHtml(definition.name)}</button><button class="detail-refund" data-action="detail-bound-refund" data-card="${escapeHtml(card.uid)}" aria-label="Refund ${escapeHtml(definition.name)}">Refund</button></div>`;
+      }).join('')}</section>` : '';
+    const effective = applyUpgrade(detail.definition, level);
     return `<div class="card-detail-shade"><section class="card-detail-controls" role="dialog" aria-modal="true" aria-labelledby="card-detail-title" aria-describedby="card-detail-description">
-      <h2 id="card-detail-title" class="sr-only">${escapeHtml(detail.definition.name)}</h2>
-      <p id="card-detail-description" class="sr-only">${detail.definition.cost} energy. ${escapeHtml(detail.definition.description)}${delta ? ` Damage changes by ${delta > 0 ? '+' : ''}${delta} this turn.` : ''}${detail.source === 'queue' ? ' Press Delete to return this card to hand.' : ''}</p>
-      ${actions}<button class="detail-close" data-action="close-card-detail">Close</button>
+      <h2 id="card-detail-title" class="sr-only">${escapeHtml(effective.name)}</h2>
+      <p id="card-detail-description" class="sr-only">${effective.cost} energy. ${escapeHtml(effective.description)}${level ? ` ${detail.source === 'history' ? 'Recorded upgrade level' : 'Upgrade level'} ${level > 0 ? '+' : ''}${level}${detail.source === 'history' ? '.' : ' this turn.'}` : ''}${detail.source === 'queue' ? ' Press Delete to return this card to hand.' : ''}</p>
+      ${boundControls}${actions}<button class="detail-close" data-action="close-card-detail">Close</button>
     </section></div>`;
   };
 
@@ -782,7 +807,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     for (const card of cards) {
       inFlight.set(card.uid, {
         uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
-        hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
+        hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
         locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
       });
     }
@@ -813,7 +838,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const origin = origins.get(card.uid) ?? DRAW_PILE;
       inFlight.set(card.uid, {
         uid: card.uid, definition: CARDS[card.definitionId], ...origin,
-        hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
+        hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
         locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
       });
     }
@@ -938,7 +963,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       for (const card of drawn) {
         inFlight.set(card.uid, {
           uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
-          hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
+          hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
           locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
         });
       }
@@ -947,7 +972,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         lingeringAttachments.delete(card.uid);
         inFlight.set(card.uid, {
           uid: card.uid, definition: CARDS[card.definitionId], ...origin,
-          hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
+          hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
           locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
         });
       }
@@ -971,7 +996,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
             if (!pose) continue;
             lingeringAttachments.set(card.uid, {
               uid: card.uid, definition: CARDS[card.definitionId], ...pose,
-              hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
+              hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
               locked: false, target: null, targets: [], flip: pose.flip ?? 0, clip: undefined,
             });
           }
@@ -1050,7 +1075,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
   const attachmentTargetAt = (element: HTMLElement | null): ModifierTarget | null => {
     if (element?.closest('[data-bracket-target]')) return { kind: 'bracket' };
-    const card = element?.closest<HTMLElement>('.queue-slot.current [data-card-uid], .hand-hit[data-card-uid]');
+    const card = element?.closest<HTMLElement>('.queue-slot.current [data-card-uid], .hand-hit[data-card-uid], .bracket-attachment[data-card-uid], .bracket-upgrade[data-card-uid]');
     if (card) return { kind: 'card', uid: card.dataset.cardUid! };
     const empty = element?.closest<HTMLElement>('.queue-slot.current.empty[data-slot]');
     return empty ? { kind: 'slot', slot: Number(empty.dataset.slot) } : null;
@@ -1156,8 +1181,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         source: history ? 'history' : position >= turnEnd(state) ? 'future' : action.kind === 'enemy' ? 'enemy' : 'queue',
         slot: position,
         target: action.target,
-        damageModifier: history?.damageModifier,
         returnFocus: returnFocusSelector(element),
+        upgradeLevel: history?.upgradeLevel,
       };
     } else return;
     clearCapture();
@@ -1224,10 +1249,28 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         notice = 'Choose a timing point to move this card.';
         focusAfterRender = null;
         render();
+      } else if (action === 'detail-bound-inspect' && detail && mode === 'planning') {
+        const card = attachedCard(actionElement.dataset.card ?? '');
+        if (!card) return;
+        detail = {
+          uid: `${card.uid}:detail:${++detailSerial}`,
+          cardUid: card.uid,
+          definition: CARDS[card.definitionId],
+          source: 'attachment',
+          slot: null,
+          target: null,
+          returnFocus: `[data-card-uid="${CSS.escape(card.uid)}"]`,
+        };
+        render();
+      } else if (action === 'detail-bound-refund' && detail && mode === 'planning') {
+        const result = removeModifier(state, actionElement.dataset.card ?? '');
+        focusAfterRender = `[data-card-uid="${CSS.escape(detail.cardUid)}"]`;
+        feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
       } else if (action === 'detail-refund' && detail && mode === 'planning') {
         const result = detail.source === 'queue' && detail.slot !== null
           ? removeCard(state, detail.slot)
           : removeModifier(state, detail.cardUid);
+        focusAfterRender = `[data-card-uid="${CSS.escape(detail.cardUid)}"]`;
         feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
       }
       return;
@@ -1378,7 +1421,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       : target.closest<HTMLElement>('.queue-card[data-slot]');
     if (pending && !attachmentTab) return;
     const activeModifier = modifierSource();
-    if (!attachmentTab && activeModifier && (queue || hand?.dataset.handCard !== activeModifier.uid)) return;
+    if (activeModifier && (attachmentTab?.dataset.card ?? hand?.dataset.handCard) !== activeModifier.uid) return;
     if (!hand && !queue && !attachmentHand && !attachmentTab) return;
     const slot = queue ? Number(queue.dataset.slot) : undefined;
     const action = slot === undefined ? null : playerAction(slot);
@@ -1391,10 +1434,11 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     selection = null;
     const point = designPoint(event);
     const capture = attachmentTab ?? hand ?? queue!;
+    const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
     let fallback = hand
       ? cardLayout(state.hand).get(uid)!
       : queue ? queueCardPose(slot!) : attachmentHand ? cardLayout(state.hand).get(attachmentHand.dataset.handCard!)!
-        : attachmentCardPose({ x: bracketCenterX() - 52, y: 155, width: 105, height: 147, rotation: 0 }, bracketAttachments().findIndex(({ card }) => card.uid === uid), bracketAttachments().length);
+        : attachmentCardPose(bracketPose, bracketAttachments().findIndex(({ card }) => card.uid === uid), bracketAttachments().length);
     if (attachmentTab && slot !== undefined) {
       const attachment = state.attachments.find(({ card }) => card.uid === uid);
       const attachments = attachment?.target.kind === 'card'
@@ -1408,6 +1452,20 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const attachments = cardAttachments(hostUid);
       const attachmentIndex = attachments.findIndex(({ card }) => card.uid === uid);
       if (attachmentIndex >= 0) fallback = attachmentCardPose(cardLayout(state.hand).get(hostUid)!, attachmentIndex, attachments.length, true);
+    }
+    if (attachmentTab && slot === undefined && !attachmentHand) {
+      const attachment = state.attachments.find(({ card }) => card.uid === uid);
+      if (attachment?.target.kind === 'card') {
+        const hosts = bracketAttachments();
+        const hostUid = attachment.target.uid;
+        const hostIndex = hosts.findIndex(({ card }) => card.uid === hostUid);
+        if (hostIndex >= 0) {
+          const hostPose = attachmentCardPose(bracketPose, hostIndex, hosts.length);
+          const children = cardAttachments(hostUid);
+          const childIndex = children.findIndex(({ card }) => card.uid === uid);
+          if (childIndex >= 0) fallback = attachmentCardPose(hostPose, childIndex, children.length, true);
+        }
+      }
     }
     const pose = scene.getCardPose(uid) ?? fallback;
     drag = {
