@@ -4,10 +4,17 @@ import type { ActorId, CardDefinition, CombatEvent, CombatState } from '../game/
 export const CARD_TARGET_Y = 0.89;
 export const CARD_TARGET_GAP = 0.18;
 
-/** Logical design-space actor anchors; artwork offsets do not move the HUD or impacts. */
+/** Shared 1920x1080 workspace/stage partition; all values are design coordinates. */
+export const CARD_WORKSPACE = { x: 0, y: 0, width: 1152, height: 1080 };
+export const HAND_TOP = 720;
+/** Actor artwork centers and action-impact anchors in the right-hand combat stage. */
 export const ACTOR_CENTERS: Record<ActorId, { x: number; y: number }> = {
-  bob: { x: 410, y: 400 },
-  guard: { x: 1500, y: 400 },
+  bob: { x: 1370, y: 730 },
+  guard: { x: 1720, y: 350 },
+};
+export const ACTOR_HUD: Record<ActorId, { x: number; y: number; width: number }> = {
+  bob: { x: 1195, y: 930, width: 350 },
+  guard: { x: 1545, y: 100, width: 350 },
 };
 
 /** Coordinates are in the fixed 1920 x 1080 design surface. */
@@ -35,6 +42,8 @@ export interface CardVisual {
   flip?: number;
   /** Initialize a pile transition at its source pose before animating its destination. */
   snap?: boolean;
+  /** Optional design-space clipping rectangle for resting workspace cards and their badges. */
+  clip?: { x: number; y: number; width: number; height: number };
 }
 export interface ScenePort {
   setCards(cards: CardVisual[]): void;

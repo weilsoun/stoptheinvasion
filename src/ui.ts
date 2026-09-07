@@ -1,7 +1,7 @@
 import { attachModifier, availableEnergy, canAttachModifier, createCombat, damageModifier, moveCard, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, visibleEnd } from './game/combat';
 import { CARDS } from './game/content';
 import type { ActorId, Attachment, CardDefinition, CardInstance, EnemyAction, ModifierTarget, PlayerAction, QueueSlot } from './game/types';
-import { ACTOR_CENTERS, type CardVisual, type ScenePort } from './view/types';
+import { ACTOR_CENTERS, ACTOR_HUD, CARD_WORKSPACE, HAND_TOP, type CardVisual, type ScenePort } from './view/types';
 
 type Selection = { kind: 'hand'; uid: string } | { kind: 'queue'; slot: number } | null;
 type PendingPlacement = { uid: string; target: ActorId };
@@ -46,7 +46,7 @@ const QUEUE_CARD_Y = 356;
 const QUEUE_CARD_GAP = 16;
 const QUEUE_HIT_TOP = QUEUE_CARD_Y - 76;
 const QUEUE_HIT_BOTTOM = QUEUE_CARD_Y + QUEUE_CARD_HEIGHT + 42;
-const TRACK_CENTER_X = DESIGN_WIDTH / 2;
+const TRACK_CENTER_X = CARD_WORKSPACE.x + CARD_WORKSPACE.width / 2;
 const ZOOM_LEVELS = [.65, 1, 1.25];
 const ZOOM_STEP = .35;
 const HAND_BOTTOM = 1008;
@@ -57,8 +57,8 @@ const ATTACHMENT_SCALE = .9;
 const ATTACHMENT_GAP = 8;
 const CARD_ATTACHMENT_PEEK = 28;
 const DETAIL = { x: 720, y: 180, width: 480, height: 672 };
-const DRAW_PILE = { x: 300, y: 840, width: 96, height: 134, rotation: 0, flip: 180 };
-const DISCARD_PILE = { x: 1524, y: 840, width: 96, height: 134, rotation: 0, flip: 0 };
+const DRAW_PILE = { x: 26, y: 844, width: 96, height: 134, rotation: 0, flip: 180 };
+const DISCARD_PILE = { x: 1027, y: 844, width: 96, height: 134, rotation: 0, flip: 0 };
 const escapeHtml = (value: string | number) => String(value).replace(/[&<>'"]/g, (character) => HTML_ESCAPES[character]);
 const STATUS_ICONS = {
   block: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 20 5v6c0 5-3.4 8.7-8 11-4.6-2.3-8-6-8-11V5z"/></svg>',
@@ -94,9 +94,9 @@ function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
   const count = hand.length;
   const width = count > 6 ? 148 : 172;
   const height = Math.round(width * 1.4);
-  const gap = count < 2 ? 0 : Math.min(width - 18, 800 / (count - 1));
+  const gap = count < 2 ? 0 : Math.min(width - 18, 720 / (count - 1));
   const span = gap * Math.max(0, count - 1);
-  const left = 960 - span / 2 - width / 2;
+  const left = TRACK_CENTER_X - span / 2 - width / 2;
   const middle = (count - 1) / 2;
   return new Map(hand.map((card, index) => {
     const offset = index - middle;
@@ -116,6 +116,7 @@ function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
       dragged: false,
       locked: false,
       targets: [],
+      clip: CARD_WORKSPACE,
     }];
   }));
 }
@@ -192,7 +193,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const bracketCenterX = () => (queueCardX(state.position) + queueCardX(turnEnd(state) - 1) + QUEUE_CARD_WIDTH * zoom) / 2;
   const onscreen = (position: number) => {
     const x = queueCardX(position);
-    return x + QUEUE_CARD_WIDTH * zoom > -40 && x < DESIGN_WIDTH + 40;
+    return x + QUEUE_CARD_WIDTH * zoom > CARD_WORKSPACE.x - 40
+      && x < CARD_WORKSPACE.x + CARD_WORKSPACE.width + 40;
   };
   const currentQueue = () => drag?.preview ?? state.queue;
   const presentedSlot = (position: number): QueueSlot => {
@@ -291,7 +293,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         const center = visual.x + visual.width / 2;
         visual.width = HOVER_WIDTH;
         visual.height = HOVER_HEIGHT;
-        visual.x = Math.round(center - visual.width / 2);
+        visual.x = Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - visual.width, center - visual.width / 2)));
         visual.y = HOVER_Y;
       }
     }
@@ -303,6 +305,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       hostUid?: string,
       behindHost = false,
       uidPrefix = '',
+      clipped = true,
     ) => attachments
       .filter(({ card }) => (drag?.kind !== 'attachment' || card.uid !== drag.uid) && !lingeringAttachments.has(card.uid))
       .map(({ card, target }, index, all) => ({
@@ -319,11 +322,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         targets: [],
         underCard: target.kind === 'card' ? hostUid : undefined,
         flip: 0,
+        clip: clipped ? CARD_WORKSPACE : undefined,
       } satisfies CardVisual));
-    const pushHost = (host: CardVisual, slot?: number) => {
+    const pushHost = (host: CardVisual, slot?: number, clipped = true) => {
       const bound = cardAttachments(host.uid);
       const fixed = slot === undefined ? [] : positionAttachments(slot);
-      queued.push(...attachmentVisuals(host, bound, host.uid, true).reverse(), ...attachmentVisuals(host, fixed).reverse(), host);
+      queued.push(...attachmentVisuals(host, bound, host.uid, true, '', clipped).reverse(), ...attachmentVisuals(host, fixed, undefined, false, '', clipped).reverse(), host);
     };
     for (const entry of state.history) {
       if (!entry.action || entry.position === hiddenHistoryPosition || !onscreen(entry.position)) continue;
@@ -347,6 +351,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           target: action.target,
           targets: [],
           flip: 0,
+          clip: CARD_WORKSPACE,
         },
       );
     }
@@ -377,11 +382,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         target: slot.target,
         targets: isEnemy ? [] : targetChoices(slot.card),
         flip: 0,
+        clip: CARD_WORKSPACE,
       }, position);
     }
     const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
     queued.push(...attachmentVisuals(bracketPose, bracketAttachments(), undefined, false));
-    if (firingCard) pushHost(firingCard);
+    if (firingCard) pushHost(firingCard, undefined, false);
     const hands: CardVisual[] = [];
     for (const visual of hand.values()) {
       hands.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true).reverse(), visual);
@@ -409,9 +415,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           target: action?.target ?? null,
           targets: drag.kind === 'attachment' ? [] : targetChoices(card),
           flip: 0,
+          clip: undefined,
         };
-        if (drag.kind === 'queue') pushHost(visual);
-        else if (drag.kind === 'hand') queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true).reverse(), visual);
+        if (drag.kind === 'queue') pushHost(visual, undefined, false);
+        else if (drag.kind === 'hand') queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true, '', false).reverse(), visual);
         else queued.push(visual);
       }
     }
@@ -434,6 +441,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         target: null,
         targets: [],
         flip: faceDown ? 180 : 0,
+        clip: CARD_WORKSPACE,
       })).filter((visual) => !inFlight.has(visual.uid));
     const physical = [
       ...pileCards(state.drawPile, DRAW_PILE, true),
@@ -459,6 +467,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       targets: [],
       detail: true,
       flip: 0,
+      clip: undefined,
     });
     return physical.sort((a, b) => Number(a.hovered || a.dragged || a.detail) - Number(b.hovered || b.dragged || b.detail));
   };
@@ -495,7 +504,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const ringing = ringingStatus
       ? `<span class="actor-stat ringing-stat${actor.ringing ? '' : ' pending'}" role="img" aria-label="${ringingStatus}" title="${ringingStatus}">${STATUS_ICONS.ringing}</span>`
       : '';
-    return `<section class="actor-target ${actorId === 'bob' ? 'actor-bob' : 'actor-guard'}"
+    const hud = ACTOR_HUD[actorId];
+    return `<section class="actor-target ${actorId === 'bob' ? 'actor-bob' : 'actor-guard'}" style="--actor-x:${hud.x}px;--actor-y:${hud.y}px;--actor-width:${hud.width}px"
       aria-label="${escapeHtml(actor.name)}. ${actor.hp} of ${actor.maxHp} health, ${actor.block} block, ${actor.exposed} exposed${ringingStatus ? `, ${ringingStatus}` : ''}">
       <span class="actor-name">${escapeHtml(actor.name)}</span>
       <span class="hp-line${healthClass}" style="${healthStyle}"><span class="hp-trail" aria-hidden="true"></span><span class="hp-fill" aria-hidden="true"></span><b>${actor.hp}</b> / ${actor.maxHp} HP</span>
@@ -587,7 +597,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       const cardTarget = { kind: 'card', uid: card.uid } as const;
       const classes = `hand-hit${selected ? ' selected' : ''}${modifier?.uid === card.uid ? ' modifier-source' : attachmentClass(cardTarget)}`;
       return `<div class="${classes}" data-hand-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" role="button" aria-disabled="${mode !== 'planning' || Boolean(modifier && modifier.uid !== card.uid && !attachmentAllowed(cardTarget))}" tabindex="${mode === 'planning' && (!modifier || modifier.uid === card.uid || attachmentAllowed(cardTarget)) ? 0 : -1}"
-        style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(visual.x + visual.width / 2 - HOVER_WIDTH / 2)}px" aria-label="Inspect ${escapeHtml(definition.name)}, ${definition.cost} energy, ${escapeHtml(definition.description)}">
+        style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - HOVER_WIDTH, visual.x + visual.width / 2 - HOVER_WIDTH / 2)))}px" aria-label="Inspect ${escapeHtml(definition.name)}, ${definition.cost} energy, ${escapeHtml(definition.description)}">
         ${handAttachmentTabsMarkup(card.uid, definition.name)}
       </div>`;
     }).join('');
@@ -773,7 +783,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       inFlight.set(card.uid, {
         uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
         hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
-        locked: false, target: null, targets: [], flip: 180, snap: true,
+        locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
       });
     }
     render();
@@ -782,7 +792,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       if (destroyed || run !== sequence) return;
       const destination = layout.get(card.uid);
       if (!destination) continue;
-      inFlight.set(card.uid, { ...destination, flip: 0, locked: false });
+      inFlight.set(card.uid, { ...destination, flip: 0, locked: false, clip: undefined });
       scene.setCards(visualCards());
       await wait(reduceMotion ? 0 : 55);
       if (destroyed || run !== sequence) return;
@@ -804,7 +814,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       inFlight.set(card.uid, {
         uid: card.uid, definition: CARDS[card.definitionId], ...origin,
         hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
-        locked: false, target: null, targets: [], flip: origin.flip ?? 0,
+        locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
       });
     }
     render();
@@ -887,6 +897,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
           queued: false,
           dragged: false,
           flip: 0,
+          clip: undefined,
         };
         notice = `Firing position ${action.slot} at ${state.actors[action.target].name}.`;
         render();
@@ -928,7 +939,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         inFlight.set(card.uid, {
           uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
           hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
-          locked: false, target: null, targets: [], flip: 180, snap: true,
+          locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
         });
       }
       for (const card of newlyDiscarded) {
@@ -937,7 +948,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         inFlight.set(card.uid, {
           uid: card.uid, definition: CARDS[card.definitionId], ...origin,
           hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
-          locked: false, target: null, targets: [], flip: origin.flip ?? 0,
+          locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
         });
       }
       hiddenHistoryPosition = firingCard && action?.slot !== undefined ? action.slot : null;
@@ -961,7 +972,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
             lingeringAttachments.set(card.uid, {
               uid: card.uid, definition: CARDS[card.definitionId], ...pose,
               hovered: false, dimmed: false, damageModifier: 0, queued: false, dragged: false,
-              locked: false, target: null, targets: [], flip: pose.flip ?? 0,
+              locked: false, target: null, targets: [], flip: pose.flip ?? 0, clip: undefined,
             });
           }
         }
@@ -1023,7 +1034,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
   const hitAt = (event: PointerEvent) => document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
   const queueSlotAt = ({ x, y }: { x: number; y: number }): number | null => {
-    if (y < QUEUE_HIT_TOP || y > QUEUE_HIT_BOTTOM) return null;
+    if (x < CARD_WORKSPACE.x || x > CARD_WORKSPACE.x + CARD_WORKSPACE.width
+      || y < QUEUE_HIT_TOP || y > Math.min(QUEUE_HIT_BOTTOM, HAND_TOP)) return null;
     let nearest: number | null = null;
     let distance = Infinity;
     for (let position = state.position; position < turnEnd(state); position++) {
@@ -1476,12 +1488,22 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       return;
     }
     event.preventDefault();
+    const release = designPoint(event);
+    const inWorkspace = release.x >= CARD_WORKSPACE.x && release.x <= CARD_WORKSPACE.x + CARD_WORKSPACE.width
+      && release.y >= CARD_WORKSPACE.y && release.y <= CARD_WORKSPACE.y + CARD_WORKSPACE.height;
+    if (!inWorkspace) {
+      selection = null;
+      pending = null;
+      notice = 'Drop canceled outside the card workspace. No energy was spent.';
+      render();
+      return;
+    }
     if (finished.kind === 'attachment') {
       const result = removeModifier(state, finished.uid);
       feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
       return;
     }
-    if (finished.kind === 'queue' && finished.y >= 800) {
+    if (finished.kind === 'queue' && release.y >= HAND_TOP) {
       const result = removeCard(state, finished.slot!);
       feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
       return;
