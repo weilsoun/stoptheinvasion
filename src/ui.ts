@@ -1053,8 +1053,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     void dealOpeningHand();
   };
 
-  const designPoint = (event: MouseEvent) => {
-    const rect = root.getBoundingClientRect();
+  const designPoint = (event: MouseEvent, rect = root.getBoundingClientRect()) => {
     return { x: (event.clientX - rect.left) * DESIGN_WIDTH / rect.width, y: (event.clientY - rect.top) * DESIGN_HEIGHT / rect.height };
   };
   const hitAt = (event: PointerEvent) => document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
@@ -1519,6 +1518,26 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     updateDrag(event);
   };
 
+  const onWheel = (event: WheelEvent) => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey
+      || !Number.isFinite(event.deltaX) || event.deltaX === 0
+      || Math.abs(event.deltaX) < Math.abs(event.deltaY)
+      || mode !== 'planning' || detail || inspector || menuOpen || drag || pan) return;
+    if (event.target instanceof Element && event.target.closest('.hand-zone')) return;
+    const rect = root.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const point = designPoint(event, rect);
+    if (point.x < CARD_WORKSPACE.x || point.x >= CARD_WORKSPACE.x + CARD_WORKSPACE.width
+      || point.y < CARD_WORKSPACE.y || point.y >= HAND_TOP) return;
+
+    event.preventDefault();
+    const pixelsPerUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? rect.width * CARD_WORKSPACE.width / DESIGN_WIDTH : 1;
+    cameraPosition -= event.deltaX * pixelsPerUnit * DESIGN_WIDTH / rect.width / stride();
+    cameraFollowing = false;
+    render();
+  };
+
   const finishPointer = (event: PointerEvent, cancelled = false) => {
     if (pan && pan.pointerId === event.pointerId) {
       if (pan.capture.hasPointerCapture?.(pan.pointerId)) pan.capture.releasePointerCapture(pan.pointerId);
@@ -1642,6 +1661,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   document.addEventListener('keydown', onKeyDown, listenerOptions);
   root.addEventListener('pointerdown', onPointerDown, listenerOptions);
   root.parentElement!.addEventListener('pointermove', onPointerMove, listenerOptions);
+  root.parentElement!.addEventListener('wheel', onWheel, { ...listenerOptions, passive: false });
   root.addEventListener('pointerup', finishPointer, listenerOptions);
   root.addEventListener('pointercancel', (event) => finishPointer(event, true), listenerOptions);
   root.addEventListener('pointerover', onPointerOver, listenerOptions);
