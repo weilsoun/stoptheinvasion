@@ -145,7 +145,7 @@ export function drawArenaArt(): HTMLCanvasElement {
   line(ctx, [120, 620, 1800, 620], '#9e783d', 6);
   line(ctx, [48, 790, 1872, 790], '#315c55', 6);
 
-  // Acidic infection trail points toward the guard.
+  // Alien residue trail points toward the guard.
   ctx.fillStyle = 'rgba(112,211,45,.34)';
   for (const [x, y, rx, ry] of [[325, 610, 92, 18], [230, 656, 44, 12], [470, 672, 28, 10]] as const) ellipse(ctx, 1920 - x, y, rx, ry, ctx.fillStyle as string, '#25411d', 5);
 
@@ -161,7 +161,7 @@ export function drawArenaArt(): HTMLCanvasElement {
 }
 
 function drawGuard(ctx: CanvasRenderingContext2D): void {
-  // Right-facing infected uniformed guard: broad back left, face/nose to right.
+  // Right-facing alien-possessed guard: broad back left, face/nose to right.
   ellipse(ctx, 310, 625, 190, 34, 'rgba(0,0,0,.34)', 'transparent', 0);
   polygon(ctx, [190, 345, 382, 332, 448, 585, 139, 585], '#263d47');
   polygon(ctx, [175, 365, 226, 340, 255, 580, 140, 585], '#172a33');
@@ -221,7 +221,7 @@ function drawBob(ctx: CanvasRenderingContext2D): void {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#422317';
   ctx.fillText('BOB', 359, 403);
-  // Oversized hammer held toward the infected guard.
+  // Oversized hammer held toward the possessed guard.
   line(ctx, [218, 410, 111, 539], '#72503b', 25);
   polygon(ctx, [67, 496, 165, 453, 190, 508, 88, 550], '#59676a', INK, 11);
   polygon(ctx, [168, 454, 203, 443, 225, 496, 190, 508], '#879496', INK, 8);

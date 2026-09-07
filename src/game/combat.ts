@@ -238,7 +238,7 @@ export function createCombat(seed = DEFAULT_SEED): CombatState {
     ENCOUNTER.turnLength,
     0,
   );
-  const guard = makeActor('guard', 'Infected Security', ENCOUNTER.enemyHp, 0, 0, 0, 0, ENCOUNTER.turnLength, 0);
+  const guard = makeActor('guard', 'Possessed Security', ENCOUNTER.enemyHp, 0, 0, 0, 0, ENCOUNTER.turnLength, 0);
   validateAmount(bob.hp, 'player health');
   validateAmount(guard.hp, 'enemy health');
   validateAmount(bob.energy, 'starting energy');
@@ -793,7 +793,7 @@ function applyTerminal(state: CombatState, events: CombatEvent[]): void {
     kind: phase,
     actor: phase === 'victory' ? 'bob' : 'guard',
     target: phase === 'victory' ? 'guard' : 'bob',
-    message: phase === 'victory' ? 'The infected guard is down. Victory!' : 'Bob is down. Defeat.',
+    message: phase === 'victory' ? 'The possessed guard is down. Victory!' : 'Bob is down. Defeat.',
   });
 }
 

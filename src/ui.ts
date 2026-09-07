@@ -622,15 +622,17 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     </section></div>`;
   };
 
-  const menuMarkup = () => menuOpen ? `<div class="menu-shade"><section class="game-menu" role="dialog" aria-modal="true" aria-labelledby="menu-title" aria-describedby="menu-note">
-    <span class="eyebrow">GAME MENU</span><h2 id="menu-title">Take a breather</h2><p id="menu-note">Combat does not pause while this menu is open.</p>
+  const menuMarkup = () => menuOpen ? `<div class="menu-shade"><section class="game-menu" role="dialog" aria-modal="true" aria-labelledby="menu-title" aria-describedby="menu-lore menu-note">
+    <span class="eyebrow">GAME MENU</span><h2 id="menu-title">Take a breather</h2>
+    <p id="menu-lore">Time-bending aliens are possessing ordinary people. This guard still wants your receipt.</p>
+    <p id="menu-note">Combat does not pause while this menu is open.</p>
     <div class="menu-actions"><button class="primary" data-action="close-menu">Return to game</button><button class="menu-restart" data-action="restart">Restart encounter</button></div>
   </section></div>` : '';
 
   const outcomeMarkup = () => {
     if (mode !== 'ended' || state.phase !== 'victory' && state.phase !== 'defeat') return '';
     const victory = state.phase === 'victory';
-    return `<div class="outcome-shade"><section class="outcome ${victory ? 'victory' : 'defeat'}" role="dialog" aria-modal="true" aria-labelledby="outcome-title"><span class="stamp">${victory ? 'AISLE SECURED' : 'SHIFT ENDED'}</span><h2 id="outcome-title">${victory ? 'Victory!' : 'Defeat'}</h2><p>${victory ? 'Bob survives another unreasonable customer interaction.' : 'The infected guard wins this round. Reset the aisle and try a new plan.'}</p><button class="primary" data-action="restart">Replay encounter</button></section></div>`;
+    return `<div class="outcome-shade"><section class="outcome ${victory ? 'victory' : 'defeat'}" role="dialog" aria-modal="true" aria-labelledby="outcome-title"><span class="stamp">${victory ? 'AISLE SECURED' : 'SHIFT ENDED'}</span><h2 id="outcome-title">${victory ? 'Victory!' : 'Defeat'}</h2><p>${victory ? 'Bob survives another unreasonable customer interaction.' : 'The alien-possessed guard wins this round. Reset the aisle and try a new plan.'}</p><button class="primary" data-action="restart">Replay encounter</button></section></div>`;
   };
 
   const missingTargets = () => state.queue.slice(state.position, turnEnd(state)).filter((slot) => slot?.kind === 'player' && slot.target === null).length;
