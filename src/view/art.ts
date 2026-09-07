@@ -76,87 +76,96 @@ function halftone(ctx: CanvasRenderingContext2D, x: number, y: number, width: nu
 
 export function drawArenaArt(): HTMLCanvasElement {
   const [surface, ctx] = canvas(1920, 1080);
-  const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
-  gradient.addColorStop(0, '#071c22');
-  gradient.addColorStop(0.6, '#0b3335');
-  gradient.addColorStop(1, '#071517');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 1920, 1080);
 
-  ctx.fillStyle = '#092a2d';
-  ctx.fillRect(0, 126, 1920, 494);
-  halftone(ctx, 0, 126, 1920, 494, 'rgba(80,196,168,.12)', 22);
+  // The left sixty percent is a quiet card table; environmental detail and perspective stay
+  // beyond the divider so card faces remain the visual priority.
+  const workspace = ctx.createLinearGradient(0, 0, 0, 1080);
+  workspace.addColorStop(0, '#06181d');
+  workspace.addColorStop(.66, '#092226');
+  workspace.addColorStop(1, '#050f12');
+  ctx.fillStyle = workspace;
+  ctx.fillRect(0, 0, 1152, 1080);
+  ctx.fillStyle = 'rgba(36,88,83,.1)';
+  ctx.fillRect(0, 88, 1152, 546);
+  halftone(ctx, 0, 88, 1152, 546, 'rgba(73,151,137,.055)', 28);
+  ctx.fillStyle = 'rgba(2,10,12,.3)';
+  ctx.fillRect(0, 720, 1152, 360);
+  line(ctx, [0, 720, 1152, 720], 'rgba(125,161,142,.24)', 4);
 
-  // Receding fluorescent ceiling and aisle perspective.
-  polygon(ctx, [0, 126, 1920, 126, 1710, 250, 210, 250], '#102c2f', '#183f40', 6);
-  for (const x of [265, 640, 1015, 1390, 1765]) {
-    polygon(ctx, [x - 105, 150, x + 105, 150, x + 73, 183, x - 73, 183], '#ffd477', '#472c18', 7);
-    ctx.fillStyle = 'rgba(255,205,92,.13)';
+  // MOREMART occupies only the right combat stage.
+  const stage = ctx.createLinearGradient(1152, 0, 1920, 1080);
+  stage.addColorStop(0, '#102d30');
+  stage.addColorStop(.55, '#173c3b');
+  stage.addColorStop(1, '#09191b');
+  ctx.fillStyle = stage;
+  ctx.fillRect(1152, 0, 768, 1080);
+  halftone(ctx, 1152, 0, 768, 560, 'rgba(105,203,171,.1)', 22);
+
+  // Receding ceiling and lights converge into the far guard corner.
+  polygon(ctx, [1152, 0, 1920, 0, 1920, 238, 1220, 238], '#10282b', '#244b47', 6);
+  for (const [x, width] of [[1300, 92], [1535, 78], [1745, 62]] as const) {
+    polygon(ctx, [x - width, 92, x + width, 92, x + width * .72, 121, x - width * .72, 121], '#ffd477', '#472c18', 6);
+    ctx.fillStyle = 'rgba(255,205,92,.1)';
     ctx.beginPath();
-    ctx.moveTo(x - 90, 184);
-    ctx.lineTo(x + 90, 184);
-    ctx.lineTo(x + 205, 600);
-    ctx.lineTo(x - 205, 600);
+    ctx.moveTo(x - width * .7, 122);
+    ctx.lineTo(x + width * .7, 122);
+    ctx.lineTo(1730, 520);
+    ctx.lineTo(1615, 520);
     ctx.closePath();
     ctx.fill();
   }
 
-  // MOREMART back-wall sign, kept above actor/HUD label space.
-  polygon(ctx, [650, 34, 1270, 34, 1232, 119, 688, 119], '#de5d2c', '#050f11', 10);
+  polygon(ctx, [1207, 25, 1510, 25, 1492, 86, 1225, 86], '#de5d2c', '#050f11', 8);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '900 62px Impact, Haettenschweiler, sans-serif';
+  ctx.font = '900 39px Impact, Haettenschweiler, sans-serif';
   ctx.fillStyle = '#fff0bd';
   ctx.strokeStyle = '#07191c';
-  ctx.lineWidth = 10;
-  ctx.strokeText('MOREMART', 960, 76);
-  ctx.fillText('MOREMART', 960, 76);
-  ctx.font = '800 18px Arial, sans-serif';
+  ctx.lineWidth = 7;
+  ctx.strokeText('MOREMART', 1358, 53);
+  ctx.fillText('MOREMART', 1358, 53);
+  ctx.font = '800 12px Arial, sans-serif';
   ctx.fillStyle = '#35170e';
-  ctx.fillText('SAVE LESS. SURVIVE MORE.', 960, 108);
+  ctx.fillText('SAVE LESS. SURVIVE MORE.', 1358, 76);
 
-  // Shelf bays frame the actors without painting over the fight silhouettes.
-  for (const side of [0, 1645]) {
-    ctx.fillStyle = '#102024';
-    ctx.fillRect(side, 242, 275, 378);
-    for (let shelf = 0; shelf < 4; shelf++) {
-      const sy = 290 + shelf * 92;
-      ctx.fillStyle = '#41615c';
-      ctx.fillRect(side, sy, 275, 16);
-      for (let item = 0; item < 5; item++) {
-        const colors = ['#d87535', '#8db54f', '#d9b858', '#466e72'];
-        ctx.fillStyle = colors[(shelf + item) % colors.length];
-        ctx.fillRect(side + 18 + item * 52, sy - 48 - (item % 2) * 10, 34, 48 + (item % 2) * 10);
-        ctx.strokeStyle = '#07191c';
-        ctx.lineWidth = 5;
-        ctx.strokeRect(side + 18 + item * 52, sy - 48 - (item % 2) * 10, 34, 48 + (item % 2) * 10);
-      }
+  // One far shelf bay gives the guard context without invading the workspace.
+  ctx.fillStyle = '#102024';
+  ctx.fillRect(1790, 176, 130, 350);
+  for (let shelf = 0; shelf < 4; shelf++) {
+    const sy = 234 + shelf * 83;
+    ctx.fillStyle = '#41615c';
+    ctx.fillRect(1790, sy, 130, 12);
+    for (let item = 0; item < 3; item++) {
+      const colors = ['#d87535', '#8db54f', '#d9b858', '#466e72'];
+      ctx.fillStyle = colors[(shelf + item) % colors.length];
+      ctx.fillRect(1800 + item * 39, sy - 40 - (item % 2) * 7, 24, 40 + (item % 2) * 7);
+      ctx.strokeStyle = '#07191c';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(1800 + item * 39, sy - 40 - (item % 2) * 7, 24, 40 + (item % 2) * 7);
     }
   }
 
-  // Floor depth, scuffs, lane divider, and reserved timeline/hand beds.
-  polygon(ctx, [0, 600, 1920, 600, 1920, 1080, 0, 1080], '#173638', '#07191c', 10);
-  for (let x = -300; x < 2300; x += 220) line(ctx, [960, 602, x, 1080], 'rgba(93,143,129,.22)', 5);
-  for (let y = 650; y < 1080; y += 86) line(ctx, [0, y, 1920, y], 'rgba(93,143,129,.16)', 4);
-  ctx.fillStyle = 'rgba(3,14,16,.66)';
-  ctx.fillRect(120, 620, 1680, 146);
-  ctx.fillStyle = 'rgba(3,14,16,.58)';
-  ctx.fillRect(48, 790, 1824, 265);
-  line(ctx, [120, 620, 1800, 620], '#9e783d', 6);
-  line(ctx, [48, 790, 1872, 790], '#315c55', 6);
+  // A diagonal stage floor makes Bob read near/lower-left and the guard far/upper-right.
+  polygon(ctx, [1152, 430, 1920, 510, 1920, 1080, 1152, 1080], '#183b3b', '#07191c', 8);
+  for (const x of [1160, 1350, 1540, 1730, 1920]) {
+    line(ctx, [1665, 475, x, 1080], 'rgba(116,163,144,.23)', 4);
+  }
+  for (const [leftY, rightY] of [[560, 590], [690, 725], [850, 890], [1020, 1065]] as const) {
+    line(ctx, [1152, leftY, 1920, rightY], 'rgba(116,163,144,.17)', 4);
+  }
+  ctx.fillStyle = 'rgba(2,12,14,.22)';
+  polygon(ctx, [1152, 764, 1920, 820, 1920, 1080, 1152, 1080], ctx.fillStyle as string, 'transparent', 0);
 
-  // Alien residue trail points toward the guard.
-  ctx.fillStyle = 'rgba(112,211,45,.34)';
-  for (const [x, y, rx, ry] of [[325, 610, 92, 18], [230, 656, 44, 12], [470, 672, 28, 10]] as const) ellipse(ctx, 1920 - x, y, rx, ry, ctx.fillStyle as string, '#25411d', 5);
+  // Alien residue recedes toward the possessed guard.
+  for (const [x, y, rx, ry] of [[1510, 705, 74, 17], [1620, 585, 42, 12], [1700, 500, 24, 8]] as const) {
+    ellipse(ctx, x, y, rx, ry, 'rgba(112,211,45,.27)', '#25411d', 4);
+  }
 
-  // Foreground safety tape is an intentional lower-frame accent behind cards.
-  ctx.save();
-  ctx.translate(1660, 1020);
-  ctx.rotate(-0.08);
-  ctx.fillStyle = '#e4b534';
-  ctx.fillRect(-300, -20, 620, 34);
-  for (let x = -300; x < 320; x += 64) polygon(ctx, [x, -20, x + 30, -20, x + 2, 14, x - 28, 14], '#142326', '#142326', 1);
-  ctx.restore();
+  // The partition is architectural rather than an opaque mask, allowing flights to cross it.
+  ctx.fillStyle = '#071619';
+  ctx.fillRect(1144, 0, 16, 1080);
+  ctx.fillStyle = 'rgba(172,135,66,.55)';
+  ctx.fillRect(1152, 0, 3, 1080);
   return surface;
 }
 

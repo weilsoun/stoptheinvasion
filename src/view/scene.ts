@@ -6,6 +6,8 @@ import {
   FOG_LINEAR,
   GAMMA_SRGB,
   PROJECTION_ORTHOGRAPHIC,
+  SHADERLANGUAGE_GLSL,
+  SHADERLANGUAGE_WGSL,
   SHADOW_PCF3,
   StandardMaterial,
   Texture,
@@ -14,7 +16,7 @@ import {
 } from 'playcanvas';
 import type { ActorId, CombatEvent, CombatState } from '../game/types';
 import { drawActorArt, drawArenaArt, drawCardArt, drawCardBack, drawEnergyBadge } from './art';
-import { ACTOR_CENTERS, CARD_TARGET_GAP, CARD_TARGET_Y, type CardVisual, type ScenePort } from './types';
+import { ACTOR_CENTERS, CARD_TARGET_GAP, CARD_TARGET_Y, CARD_WORKSPACE, type CardVisual, type ScenePort } from './types';
 
 const DESIGN_WIDTH = 1920;
 const DESIGN_HEIGHT = 1080;
@@ -47,6 +49,7 @@ type CardRig = {
   dots: CardDotRig[];
   textureKey: string;
   visual: CardVisual;
+  clipRect: Float32Array;
   layer: number;
   x: Spring;
   y: Spring;
@@ -120,6 +123,34 @@ function solidMaterial(color: Color, gloss = .25, emissive?: Color): StandardMat
   material.update();
   return material;
 }
+const UNCLIPPED_RECT = new Float32Array([-10_000, -10_000, 10_000, 10_000]);
+
+function enableCardClipping(material: StandardMaterial): void {
+  material.shaderChunksVersion = '2.18';
+  material.getShaderChunks(SHADERLANGUAGE_GLSL).add({
+    litUserDeclarationPS: 'uniform vec4 uCardClipRect;',
+    litUserMainStartPS: `
+      if (vPositionW.x < uCardClipRect.x || vPositionW.y < uCardClipRect.y ||
+          vPositionW.x > uCardClipRect.z || vPositionW.y > uCardClipRect.w) discard;
+    `,
+  });
+  material.getShaderChunks(SHADERLANGUAGE_WGSL).add({
+    litUserDeclarationPS: 'uniform uCardClipRect: vec4f;',
+    litUserMainStartPS: `
+      if (vPositionW.x < uniform.uCardClipRect.x || vPositionW.y < uniform.uCardClipRect.y ||
+          vPositionW.x > uniform.uCardClipRect.z || vPositionW.y > uniform.uCardClipRect.w) {
+        discard;
+      }
+    `,
+  });
+  material.update();
+}
+
+function applyClipParameter(entity: Entity, clipRect: Float32Array): void {
+  for (const meshInstance of entity.render?.meshInstances ?? []) {
+    meshInstance.setParameter('uCardClipRect', clipRect);
+  }
+}
 
 function primitive(
   app: Application,
@@ -191,21 +222,25 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   primitive(app, backdropRoot, 'Painted_Arena', 'box', [0, 0, -.95], [19.5, 11.1, .08], backdropMaterial);
   const shelfMaterial = solidMaterial(new Color(.105, .19, .185), .32);
   const shelfEdgeMaterial = solidMaterial(new Color(.28, .34, .29), .38);
-  for (const side of [-8.9, 8.9]) {
-    primitive(app, fixtureRoot, 'Shelf_Post', 'box', [side, .55, -.22], [.13, 3.9, .32], shelfEdgeMaterial, true);
-    for (const y of [-.75, .15, 1.05, 1.95]) {
-      primitive(app, fixtureRoot, 'Shelf_Lip', 'box', [side, y, -.17], [1.3, .09, .38], shelfMaterial, true);
-    }
+  const stageLeft = worldX(CARD_WORKSPACE.x + CARD_WORKSPACE.width);
+  primitive(app, fixtureRoot, 'Stage_Divider_Post', 'box', [stageLeft + .04, 0, -.2], [.08, 10.8, .24], shelfEdgeMaterial, true);
+  primitive(app, fixtureRoot, 'Far_Shelf_Post', 'box', [9.15, .75, -.22], [.12, 3.8, .3], shelfEdgeMaterial, true);
+  for (const y of [-.55, .32, 1.18, 2.04]) {
+    primitive(app, fixtureRoot, 'Far_Shelf_Lip', 'box', [8.72, y, -.17], [.86, .075, .34], shelfMaterial, true);
   }
   const amberMaterial = solidMaterial(new Color(.78, .44, .13), .38, new Color(.28, .09, .012));
-  for (const x of [-6.6, -2.2, 2.2, 6.6]) {
-    primitive(app, fixtureRoot, 'Amber_Practical', 'box', [x, 3.72, -.1], [1.15, .08, .18], amberMaterial);
+  for (const x of [3.35, 5.95, 8.35]) {
+    primitive(app, fixtureRoot, 'Amber_Practical', 'box', [x, 4.18, -.1], [.78, .065, .16], amberMaterial);
   }
   const foregroundMaterial = solidMaterial(new Color(.68, .4, .09), .34);
-  const leftBollard = primitive(app, arenaRoot, 'Foreground_Bollard', 'cylinder', [-8.55, -4.45, .35], [.28, .75, .28], foregroundMaterial, true);
-  leftBollard.setLocalEulerAngles(0, 0, -8);
-  const rightBollard = primitive(app, arenaRoot, 'Foreground_Bollard', 'cylinder', [8.62, -4.4, .35], [.3, .84, .3], foregroundMaterial, true);
-  rightBollard.setLocalEulerAngles(0, 0, 7);
+  for (const [x, y, rotation, width] of [
+    [3.05, -4.72, -5, 1.7],
+    [5.65, -4.48, -3, 1.45],
+    [8.12, -4.2, 1, 1.18],
+  ] as const) {
+    const seam = primitive(app, arenaRoot, 'Stage_Floor_Depth_Seam', 'box', [x, y, -.08], [width, .035, .05], foregroundMaterial);
+    seam.setLocalEulerAngles(0, 0, rotation);
+  }
 
   const key = new Entity('Warm_Aisle_Key', app);
   key.addComponent('light', {
@@ -219,7 +254,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     shadowBias: .08,
     normalOffsetBias: .04,
   });
-  key.setPosition(-2.5, 5.2, 7.5);
+  key.setPosition(5.6, 4.8, 7.5);
   app.root.addChild(key);
   const fill = new Entity('Muted_Aisle_Fill', app);
   fill.addComponent('light', {
@@ -229,17 +264,17 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     range: 12,
     castShadows: false,
   });
-  fill.setPosition(5.2, -.25, 5.5);
+  fill.setPosition(7.2, -.25, 5.5);
   app.root.addChild(fill);
   const handLight = new Entity('Tabletop_Reading_Light', app);
   handLight.addComponent('light', {
     type: 'omni',
     color: new Color(1, .9, .74),
-    intensity: .9,
-    range: 13,
+    intensity: .72,
+    range: 12,
     castShadows: false,
   });
-  handLight.setPosition(0, -4, 7);
+  handLight.setPosition(-4.1, -3.6, 7);
   app.root.addChild(handLight);
 
   const actorTextures = new Map<ActorId, Texture>();
@@ -249,8 +284,8 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     actorTextures.set(actor, texture);
     const material = texturedMaterial(texture, true, .055);
     const root = new Entity(actor === 'guard' ? 'Possessed_Security_Guard' : 'Hardware_Worker_Bob', app);
-    const surface = primitive(app, root, `${actor}_Illustrated_Surface`, 'box', [0, 0, 0], [3.2, 3.5, .09], material, true);
-    surface.setLocalPosition(0, -1.65, 0);
+    const actorScale = actor === 'bob' ? 1.05 : .75;
+    primitive(app, root, `${actor}_Illustrated_Surface`, 'box', [0, 0, 0], [3.2 * actorScale, 3.5 * actorScale, .09], material, true);
     const center = ACTOR_CENTERS[actor];
     const baseX = worldX(center.x);
     const baseY = worldY(center.y);
@@ -263,6 +298,9 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   const targetDimMaterial = solidMaterial(new Color(.34, .4, .39), .5);
   const targetTealMaterial = solidMaterial(new Color(.08, .82, .72), .7, new Color(.02, .25, .21));
   const targetAmberMaterial = solidMaterial(new Color(1, .57, .16), .7, new Color(.34, .13, .02));
+  for (const material of [targetWellMaterial, targetDimMaterial, targetTealMaterial, targetAmberMaterial]) {
+    enableCardClipping(material);
+  }
 
   const detailScrimMaterial = solidMaterial(new Color(0, 0, 0), 0);
   detailScrimMaterial.opacity = .62;
@@ -296,6 +334,8 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
   enemyCardBackMaterial.clearCoat = .08;
   enemyCardBackMaterial.clearCoatGloss = .4;
   enemyCardBackMaterial.update();
+  enableCardClipping(builderCardBackMaterial);
+  enableCardClipping(enemyCardBackMaterial);
 
   const cardTextures = new Map<string, Texture>();
   const energyBadgeMaterials = new Map<string, StandardMaterial>();
@@ -337,6 +377,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       material.specular = new Color(0, 0, 0);
       material.clearCoat = 0;
       material.update();
+      enableCardClipping(material);
     }
     return material;
   }
@@ -353,6 +394,24 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       );
       dot.ring.setLocalScale(diameter, .016, diameter);
       dot.well.setLocalScale(diameter * .56, .012, diameter * .56);
+    }
+  }
+  function syncCardClip(rig: CardRig): void {
+    const clip = rig.visual.clip;
+    if (clip) {
+      rig.clipRect[0] = worldX(clip.x);
+      rig.clipRect[1] = worldY(clip.y + clip.height);
+      rig.clipRect[2] = worldX(clip.x + clip.width);
+      rig.clipRect[3] = worldY(clip.y);
+    } else {
+      rig.clipRect.set(UNCLIPPED_RECT);
+    }
+    applyClipParameter(rig.surface, rig.clipRect);
+    applyClipParameter(rig.backSurface, rig.clipRect);
+    applyClipParameter(rig.energyBadge, rig.clipRect);
+    for (const dot of rig.dots) {
+      applyClipParameter(dot.ring, rig.clipRect);
+      applyClipParameter(dot.well, rig.clipRect);
     }
   }
 
@@ -380,6 +439,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       }
     }
     positionCardDots(rig);
+    syncCardClip(rig);
   }
 
 
@@ -424,7 +484,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
     material.gloss = .38;
     material.clearCoat = .08;
     material.clearCoatGloss = .4;
-    material.update();
+    enableCardClipping(material);
     const root = new Entity(`Card_${visual.uid}`, app);
     const surface = primitive(app, root, 'Printed_Lit_Card_Front', 'plane', [0, 0, .006], [visual.width / WORLD_SCALE, 1, visual.height / WORLD_SCALE], material, true);
     surface.setLocalEulerAngles(90, 0, 0);
@@ -448,6 +508,7 @@ export function createScene(canvas: HTMLCanvasElement): ScenePort {
       dots: [],
       textureKey,
       visual,
+      clipRect: new Float32Array(UNCLIPPED_RECT),
       layer,
       x: { value: x, velocity: 0 },
       y: { value: y, velocity: 0 },
