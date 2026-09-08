@@ -449,11 +449,11 @@ canvas#arena { display: block; background: #18201e; }
   position: absolute;
   z-index: 24;
   top: 56px;
-  left: 920px;
+  left: 1136px;
   display: flex;
   gap: 6px;
   padding: 5px;
-  transform: translateX(-50%);
+  transform: translateX(-100%);
   pointer-events: auto;
 }
 .timeline-controls button {
@@ -464,7 +464,8 @@ canvas#arena { display: block; background: #18201e; }
   border: 2px solid #050808;
   cursor: pointer;
 }
-.timeline-controls button:nth-child(2) { min-width: 68px; }
+.timeline-controls [data-action='zoom-reset'] { min-width: 68px; }
+.timeline-controls .timeline-step { font-family: Arial, sans-serif; font-size: 22px; }
 .timeline-controls .return-turn { min-width: 124px; color: #1b1508; background: var(--amber); font-weight: 900; }
 
 .piles {

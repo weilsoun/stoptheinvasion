@@ -148,9 +148,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const healthFeedback = new Map<ActorId, { value: number; from: number; changedAt: number; hitAt: number }>();
   let zoom = 1;
-  let cameraPosition = state.position + (turnLength(state) - 1) / 2;
+  let cameraPosition = Math.round(state.position + (turnLength(state) - 1) / 2);
   let cameraFollowing = true;
   let pan: { pointerId: number; x: number; camera: number; capture: HTMLElement } | null = null;
+  let navigationSequence = 0;
+  let navigationTarget: number | null = null;
+  let wheelSnapTimer: number | undefined;
 
   root.className = 'game-hud';
   root.setAttribute('aria-label', 'MOREMART combat controls');
@@ -679,11 +682,58 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const missing = missingTargets();
     return missing ? `${missing} queued card${missing === 1 ? ' needs' : 's need'} a target.` : '';
   };
+  const cancelNavigation = (settle = false) => {
+    if (settle) cameraPosition = Math.max(0, Math.round(navigationTarget ?? cameraPosition));
+    navigationSequence++;
+    navigationTarget = null;
+    window.clearTimeout(wheelSnapTimer);
+    wheelSnapTimer = undefined;
+  };
+  const updateTimelineView = () => {
+    if (destroyed) return;
+    const timeline = root.querySelector<HTMLElement>('.timeline');
+    if (!timeline) return;
+    const focus = timeline.contains(document.activeElement) ? returnFocusSelector(document.activeElement) : null;
+    timeline.innerHTML = queueMarkup();
+    scene.setCards(visualCards());
+    if (focus) timeline.querySelector<HTMLElement>(focus)?.focus({ preventScroll: true });
+    const back = root.querySelector<HTMLButtonElement>('[data-action="timeline-right"]');
+    if (back) back.disabled = mode !== 'planning' || (navigationTarget ?? cameraPosition) <= 0;
+  };
+  const slideTimeline = async (destination: number) => {
+    if (destroyed || mode !== 'planning' || detail || inspector || menuOpen || drag || pan) return;
+    cancelNavigation();
+    const run = navigationSequence;
+    const target = Math.max(0, Math.round(destination));
+    const origin = cameraPosition;
+    const started = performance.now();
+    navigationTarget = target;
+    cameraFollowing = false;
+    while (!destroyed && run === navigationSequence && mode === 'planning' && !detail && !inspector && !menuOpen && !drag && !pan) {
+      const progress = reduceMotion || origin === target ? 1 : Math.min(1, (performance.now() - started) / 180);
+      cameraPosition = progress === 1 ? target : origin + (target - origin) * (1 - (1 - progress) ** 3);
+      updateTimelineView();
+      if (progress === 1) {
+        navigationTarget = null;
+        return;
+      }
+      await wait(16);
+    }
+  };
+  const scheduleNavigationSnap = (delay: number) => {
+    window.clearTimeout(wheelSnapTimer);
+    wheelSnapTimer = window.setTimeout(() => {
+      wheelSnapTimer = undefined;
+      void slideTimeline(Math.round(cameraPosition));
+    }, delay);
+  };
   const returnToTurn = () => {
-    cameraPosition = state.position + (turnLength(state) - 1) / 2;
+    cancelNavigation();
+    cameraPosition = Math.round(state.position + (turnLength(state) - 1) / 2);
     cameraFollowing = true;
   };
   const changeZoom = (next: number) => {
+    cancelNavigation(true);
     if (root.contains(document.activeElement)) focusAfterRender = returnFocusSelector(document.activeElement);
     zoom = ZOOM_LEVELS.reduce((nearest, level) => Math.abs(level - next) < Math.abs(nearest - next) ? level : nearest);
     render();
@@ -704,6 +754,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       <main>${actorMarkup('bob')}${actorMarkup('guard')}
         <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}" aria-label="Persistent encounter timeline. History is right, future is left, resolving right to left">${queueMarkup()}</section>
         <nav class="timeline-controls ink-panel" aria-label="Timeline view controls">
+          <button class="timeline-step" data-action="timeline-left" aria-label="Scroll one position toward the future" title="One position left (future)" ${mode !== 'planning' ? 'disabled' : ''}>←</button>
+          <button class="timeline-step" data-action="timeline-right" aria-label="Scroll one position toward history" title="One position right (history)" ${mode !== 'planning' || cameraPosition <= 0 ? 'disabled' : ''}>→</button>
           <button data-action="zoom-out" aria-label="Zoom timeline out" title="Zoom out (minus)">−</button>
           <button data-action="zoom-reset" aria-label="Reset timeline zoom" title="Reset zoom (zero)">${Math.round(zoom * 100)}%</button>
           <button data-action="zoom-in" aria-label="Zoom timeline in" title="Zoom in (plus)">+</button>
@@ -744,6 +796,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
 
   const clearInteraction = (message?: string) => {
+    cancelNavigation(true);
     if (pan) {
       if (pan.capture.hasPointerCapture?.(pan.pointerId)) pan.capture.releasePointerCapture(pan.pointerId);
       pan = null;
@@ -788,6 +841,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   });
 
   const clearPlayback = () => {
+    cancelNavigation();
     for (const [timer, finish] of timers) {
       clearTimeout(timer);
       finish();
@@ -1141,6 +1195,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   };
 
   const openDetail = (element: HTMLElement) => {
+    cancelNavigation(true);
     const hand = element.closest<HTMLElement>('[data-hand-card]');
     const queueElement = element.closest<HTMLElement>('.queue-slot[data-slot]');
     const attachmentElement = element.closest<HTMLElement>('.attachment-tab[data-card]');
@@ -1198,6 +1253,9 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     if (actionElement) {
       const action = actionElement.dataset.action;
       if (action === 'restart') restart();
+      else if (action === 'timeline-left' || action === 'timeline-right') {
+        void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + (action === 'timeline-left' ? 1 : -1));
+      }
       else if (action === 'zoom-out') changeZoom(zoom - ZOOM_STEP);
       else if (action === 'zoom-reset') changeZoom(1);
       else if (action === 'zoom-in') changeZoom(zoom + ZOOM_STEP);
@@ -1219,6 +1277,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         focusAfterRender = menuReturnFocus;
         render();
       } else if (action === 'inspect') {
+        cancelNavigation(true);
         detail = null;
         inspector = actionElement.dataset.pile as 'draw' | 'discard';
         render();
@@ -1343,9 +1402,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
         event.preventDefault();
-        cameraPosition += event.key === 'ArrowLeft' ? 1 : -1;
-        cameraFollowing = false;
-        render();
+        void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + (event.key === 'ArrowLeft' ? 1 : -1));
         return;
       }
     }
@@ -1405,6 +1462,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const target = event.target as HTMLElement;
     if (!drag && !selection && !pending && !modifierSource() && (target.closest('[data-pan-surface]') || target.matches('.queue-slot, .position-label, .region-label'))) {
       event.preventDefault();
+      cancelNavigation();
       pan = { pointerId: event.pointerId, x: designPoint(event).x, camera: cameraPosition, capture: root };
       cameraFollowing = false;
       root.setPointerCapture?.(event.pointerId);
@@ -1430,6 +1488,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const source = handCard(uid);
     if (hand && (!source || !canAfford(source))) return;
     event.preventDefault();
+    cancelNavigation();
     pending = null;
     selection = null;
     const point = designPoint(event);
@@ -1510,7 +1569,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     if (pan && pan.pointerId === event.pointerId) {
       cameraPosition = pan.camera + (point.x - pan.x) / stride();
       cameraFollowing = false;
-      render();
+      updateTimelineView();
       return;
     }
     scene.setPointer(point.x, point.y);
@@ -1532,11 +1591,13 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       || point.y < CARD_WORKSPACE.y || point.y >= HAND_TOP) return;
 
     event.preventDefault();
+    cancelNavigation();
     const pixelsPerUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? rect.width * CARD_WORKSPACE.width / DESIGN_WIDTH : 1;
     cameraPosition -= event.deltaX * pixelsPerUnit * DESIGN_WIDTH / rect.width / stride();
     cameraFollowing = false;
-    render();
+    updateTimelineView();
+    scheduleNavigationSnap(140);
   };
 
   const finishPointer = (event: PointerEvent, cancelled = false) => {
@@ -1545,6 +1606,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       pan = null;
       root.classList.remove('timeline-panning');
       render();
+      void slideTimeline(Math.round(cameraPosition));
       return;
     }
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -1554,6 +1616,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     drag = null;
     scene.setTarget(null);
     root.querySelectorAll('.drop-hover,.drop-valid,.drop-invalid').forEach((element) => element.classList.remove('drop-hover', 'drop-valid', 'drop-invalid'));
+    if (cameraPosition !== Math.round(cameraPosition)) scheduleNavigationSnap(0);
     if (cancelled) {
       selection = null;
       pending = null;
