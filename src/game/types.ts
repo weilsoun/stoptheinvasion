@@ -31,6 +31,8 @@ export interface CardDefinition {
   scaling?: UpgradeScaling;
   /** Planning-only modifier attached to the current turn bracket. Expires at cleanup. */
   bracket?: { positions?: number; scouting?: number };
+  /** Immediate, non-refundable planning activation; energy effects grant temporary Surge. */
+  surge?: boolean;
 }
 export interface CardInstance { uid: string; definitionId: string; owner: ActorId }
 export interface Actor {
@@ -45,6 +47,8 @@ export interface Actor {
   /** Becomes active at cleanup, then expires after the following turn. */
   ringingNextTurn: boolean;
   energy: number;
+  /** Temporary planning energy, spent before stored energy and cleared at turn end. */
+  surgeEnergy: number;
   energyMax: number;
   energyGain: number;
   drawCount: number;
@@ -99,3 +103,4 @@ export interface CombatEvent {
 }
 export interface ResolutionStep { state: CombatState; events: CombatEvent[] }
 export interface CommandResult { ok: boolean; reason?: string }
+export interface SurgeResult extends CommandResult { events: CombatEvent[] }

@@ -12,11 +12,12 @@ export const CARDS: Record<string, CardDefinition> = {
   reinforce: { id: 'reinforce', name: 'Duct Tape Upgrade', cost: 1, type: 'skill', target: 'self', description: 'Upgrade a friendly card 1 level this turn.', flavor: 'Load-bearing adhesive.', icon: 'tape', effects: [], modifier: { levels: 1 } },
   overtime: { id: 'overtime', name: 'Overtime Approved', cost: 1, type: 'power', target: 'self', description: 'Extend this turn by 2 positions.', flavor: 'Just one more thing before you clock out.', icon: 'coffee', art: 'coffee', effects: [], bracket: { positions: 2 }, scaling: { bracket: { positions: 1 }, description: 'Extend this turn by {positions} positions.' } },
   lookout: { id: 'lookout', name: 'Read the Fine Print', cost: 0, type: 'skill', target: 'self', description: 'Reveal 3 positions beyond this turn.', flavor: 'The danger was in the small print.', icon: 'tape', art: 'tape', effects: [], bracket: { scouting: 3 }, scaling: { bracket: { scouting: 1 }, description: 'Reveal {scouting} positions beyond this turn.' } },
-  clockout: { id: 'clockout', name: 'Clock Out Early', cost: 1, type: 'power', target: 'self', description: 'Shorten this turn by 3 positions. Minimum 1.', flavor: 'That sounds like tomorrow Bob’s problem.', icon: 'toolbox', art: 'toolbox', effects: [], bracket: { positions: -3 }, scaling: { bracket: { positions: -1 }, description: 'Shorten this turn by {positions} positions. Minimum 1.' } },
+  clockout: { id: 'clockout', name: 'Clock Out Early', cost: 1, type: 'power', target: 'self', description: 'Shorten this turn by 3 positions. Minimum 1.', flavor: 'That sounds like tomorrow’s problem.', icon: 'toolbox', art: 'toolbox', effects: [], bracket: { positions: -3 }, scaling: { bracket: { positions: -1 }, description: 'Shorten this turn by {positions} positions. Minimum 1.' } },
+  surge: { id: 'surge', name: 'Second Wind', cost: 0, type: 'power', target: 'self', description: 'Gain 2 Surge energy now. Unused Surge expires this turn.', flavor: 'One last burst before clocking out.', icon: 'coffee', art: 'coffee', effects: [{ kind: 'energy', amount: 2, recipient: 'self' }], scaling: { effects: [2], description: 'Gain {effect:0} Surge energy now. Unused Surge expires this turn.' }, surge: true },
 };
 
-// The opening hand exposes the persistent bracket, scouting, defense, and an attack.
-export const STARTER_DECK = ['hammer', 'vest', 'overtime', 'lookout', 'coffee', 'weaken', 'reinforce', 'reinforce', 'weaken', 'tape', 'heavy', 'hammer', 'vest', 'brace', 'toolbox', 'hammer', 'vest', 'brace', 'clockout'];
+// The opening hand exposes attacks, defense, timeline planning, and immediate Surge energy.
+export const STARTER_DECK = ['hammer', 'vest', 'overtime', 'lookout', 'surge', 'weaken', 'reinforce', 'reinforce', 'weaken', 'tape', 'heavy', 'hammer', 'vest', 'brace', 'toolbox', 'hammer', 'vest', 'brace', 'clockout', 'coffee', 'surge'];
 export const ENCOUNTER = { playerHp: 42, enemyHp: 48, startingEnergy: 2, energyGain: 2, energyMax: 4, drawCount: 5, turnLength: 7 };
 
 /** Fixed encounter positions, independent of turn boundaries and scouting visibility. */
@@ -25,11 +26,11 @@ export function enemyIntent(position: number): EnemyAction | null {
   const phase = Math.floor(position / 6) % 4;
   const uid = `guard:intent:${position}`;
   if (phase === 1) {
-    return { kind: 'enemy', uid, actor: 'guard', target: 'bob', name: 'Marked for Review', description: 'Apply 4 Exposed to Bob. His next incoming hit deals 4 extra damage.', effects: [{ kind: 'exposed', amount: 4, recipient: 'target' }], scaling: { effects: [1], description: 'Apply {effect:0} Exposed to Bob. His next incoming hit deals {effect:0} extra damage.' } };
+    return { kind: 'enemy', uid, actor: 'guard', target: 'bob', name: 'Marked for Review', description: 'Apply 4 Exposed. The next incoming hit deals 4 extra damage.', effects: [{ kind: 'exposed', amount: 4, recipient: 'target' }], scaling: { effects: [1], description: 'Apply {effect:0} Exposed. The next incoming hit deals {effect:0} extra damage.' } };
   }
   if (phase === 3) {
-    return { kind: 'enemy', uid, actor: 'guard', target: 'guard', name: 'First Aid Violation', description: 'Restore 6 health to the guard, up to maximum health.', effects: [{ kind: 'heal', amount: 6, recipient: 'self' }], scaling: { effects: [2], description: 'Restore {effect:0} health to the guard, up to maximum health.' } };
+    return { kind: 'enemy', uid, actor: 'guard', target: 'guard', name: 'First Aid Violation', description: 'Restore 6 health, up to maximum health.', effects: [{ kind: 'heal', amount: 6, recipient: 'self' }], scaling: { effects: [2], description: 'Restore {effect:0} health, up to maximum health.' } };
   }
   const heavy = phase === 2;
-  return { kind: 'enemy', uid, actor: 'guard', target: 'bob', name: heavy ? 'Excessive Force' : 'Receipt Check', description: `Deal ${heavy ? 12 : 8} damage to Bob.`, effects: [{ kind: 'damage', amount: heavy ? 12 : 8, recipient: 'target' }], scaling: { effects: [4], description: 'Deal {effect:0} damage to Bob.' } };
+  return { kind: 'enemy', uid, actor: 'guard', target: 'bob', name: heavy ? 'Excessive Force' : 'Receipt Check', description: `Deal ${heavy ? 12 : 8} damage.`, effects: [{ kind: 'damage', amount: heavy ? 12 : 8, recipient: 'target' }], scaling: { effects: [4], description: 'Deal {effect:0} damage.' } };
 }

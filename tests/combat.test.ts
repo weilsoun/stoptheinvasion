@@ -8,6 +8,7 @@ import {
   moveCard,
   previewPlacement,
   queueCard,
+  playSurge,
   removeCard,
   removeModifier,
   resolveTurn,
@@ -542,5 +543,120 @@ describe('authored upgrade scaling', () => {
     const final = finish(state);
     expect(final.attachments).toEqual([]);
     expect(turnLength(final)).toBe(7);
+  });
+});
+
+describe('Surge planning energy', () => {
+  test('activates immediately above the stored cap and funds refundable plans without occupying the timeline', () => {
+    const state = createCombat(51);
+    const surge = card(state, 'surge');
+    const queueBefore = structuredClone(state.queue);
+
+    expect(previewPlacement(state, surge.uid, null, 0)).toBeNull();
+    expect(queueCard(state, surge.uid, null, 0).ok).toBe(false);
+    const result = playSurge(state, surge.uid);
+    expect(result.ok).toBe(true);
+    expect(state.queue).toEqual(queueBefore);
+    expect(state.actors.bob).toMatchObject({ energy: 2, surgeEnergy: 2, energyMax: 4 });
+    expect(availableEnergy(state)).toBe(4);
+    const second = card(state, 'surge');
+    expect(playSurge(state, second.uid).ok).toBe(true);
+    expect(availableEnergy(state)).toBe(6);
+    expect(state.actors.bob.energyMax).toBe(4);
+
+    const heavy = card(state, 'heavy');
+    const hammer = card(state, 'hammer');
+    expect(queueCard(state, heavy.uid, null, 0)).toEqual({ ok: true });
+    expect(queueCard(state, hammer.uid, null, 1)).toEqual({ ok: true });
+    expect(availableEnergy(state)).toBe(3);
+    expect(removeCard(state, 0)).toEqual({ ok: true });
+    expect(availableEnergy(state)).toBe(5);
+    expect(state.discardPile.filter((entry) => entry.uid === surge.uid)).toHaveLength(1);
+  });
+
+  test('multiple activations stack, zero-cost Surge works at zero, and a consumed source cannot be reused', () => {
+    const state = createCombat(52);
+    state.actors.bob.energy = 0;
+    const first = card(state, 'surge');
+
+    expect(playSurge(state, first.uid).ok).toBe(true);
+    const second = card(state, 'surge');
+    expect(playSurge(state, second.uid).ok).toBe(true);
+    expect(state.actors.bob).toMatchObject({ energy: 0, surgeEnergy: 4 });
+    const beforeReuse = structuredClone(state);
+    expect(playSurge(state, first.uid)).toMatchObject({ ok: false, events: [] });
+    expect(state).toEqual(beforeReuse);
+    expect(state.discardPile.filter((entry) => entry.uid === first.uid || entry.uid === second.uid)).toHaveLength(2);
+  });
+
+  test('pre-grant funding failure is pure and cannot borrow the Surge it would generate', () => {
+    const state = createCombat(53);
+    const surge = card(state, 'surge');
+    const heavy = card(state, 'heavy');
+    expect(queueCard(state, heavy.uid, null, 0)).toEqual({ ok: true });
+    const originalCost = CARDS.surge.cost;
+    try {
+      CARDS.surge.cost = 1;
+      const before = structuredClone(state);
+      expect(playSurge(state, surge.uid)).toMatchObject({ ok: false, events: [] });
+      expect(state).toEqual(before);
+    } finally {
+      CARDS.surge.cost = originalCost;
+    }
+  });
+
+  test('bound grades are paid once by their owner, consumed with the source, and returned as independent snapshots', () => {
+    const state = createCombat(54);
+    const surge = card(state, 'surge');
+    const reinforce = card(state, 'reinforce');
+    const hammer = card(state, 'hammer');
+    expect(attachModifier(state, reinforce.uid, { kind: 'card', uid: surge.uid })).toEqual({ ok: true });
+    expect(queueCard(state, hammer.uid, null, 0)).toEqual({ ok: true });
+    expect(availableEnergy(state)).toBe(0);
+
+    const result = playSurge(state, surge.uid);
+    expect(result.ok).toBe(true);
+    expect(state.actors.bob).toMatchObject({ energy: 1, surgeEnergy: 4 });
+    expect(availableEnergy(state)).toBe(4);
+    expect(state.attachments.some((entry) => entry.card.uid === reinforce.uid)).toBe(false);
+    expect(result.events.map((event) => event.kind)).toEqual(['energy', 'discard']);
+    expect(result.events[0]).toMatchObject({ actor: 'bob', target: 'bob', amount: 4 });
+    expect(result.events[1].cards?.map((entry) => entry.uid)).toEqual([surge.uid, reinforce.uid]);
+    result.events[1].cards![0].definitionId = 'vest';
+    expect(state.discardPile.find((entry) => entry.uid === surge.uid)?.definitionId).toBe('surge');
+
+    const final = finish(state);
+    expect(final.actors.bob).toMatchObject({ energy: 3, surgeEnergy: 0 });
+    expect(final.discardPile.filter((entry) => entry.uid === surge.uid)).toHaveLength(1);
+    expect(final.discardPile.filter((entry) => entry.uid === reinforce.uid)).toHaveLength(1);
+  });
+
+  test('costs use each card owner pool and unused Surge expires before normal refresh', () => {
+    const state = createCombat(55);
+    state.actors.bob.energy = 1;
+    const surge = card(state, 'surge');
+    expect(playSurge(state, surge.uid).ok).toBe(true);
+    const final = finish(state);
+    expect(final.actors.bob).toMatchObject({ energy: 3, surgeEnergy: 0 });
+
+    const terminal = createCombat(551);
+    terminal.actors.guard.hp = 6;
+    const terminalSurge = card(terminal, 'surge');
+    const hammer = card(terminal, 'hammer');
+    expect(playSurge(terminal, terminalSurge.uid).ok).toBe(true);
+    expect(queueCard(terminal, hammer.uid, null, 0)).toEqual({ ok: true });
+    const victory = finish(terminal);
+    expect(victory.phase).toBe('victory');
+    expect(victory.actors.bob.surgeEnergy).toBe(0);
+
+    const owned = createCombat(56);
+    owned.actors.guard.energy = 1;
+    const guardSurge: CardInstance = { uid: 'guard-surge', definitionId: 'surge', owner: 'guard' };
+    const guardGrade: CardInstance = { uid: 'guard-grade', definitionId: 'reinforce', owner: 'guard' };
+    owned.hand.push(guardSurge, guardGrade);
+    expect(attachModifier(owned, guardGrade.uid, { kind: 'card', uid: guardSurge.uid })).toEqual({ ok: true });
+    expect(playSurge(owned, guardSurge.uid).ok).toBe(true);
+    expect(owned.actors.guard).toMatchObject({ energy: 0, surgeEnergy: 4 });
+    expect(owned.actors.bob).toMatchObject({ energy: 2, surgeEnergy: 0 });
   });
 });

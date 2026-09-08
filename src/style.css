@@ -227,15 +227,17 @@ canvas#arena { display: block; background: #18201e; }
   z-index: 21;
   left: 576px;
   bottom: 14px;
+  min-width: 306px;
   height: 44px;
   padding: 5px 12px;
   display: flex;
   align-items: center;
+  gap: 9px;
   border-radius: 22px;
   transform: translateX(-50%);
   pointer-events: none;
 }
-  .energy-bubbles { display: flex; gap: 6px; }
+.energy-bubbles { display: flex; gap: 6px; }
 .energy-bubble {
   width: 24px;
   height: 24px;
@@ -248,6 +250,13 @@ canvas#arena { display: block; background: #18201e; }
   background: radial-gradient(circle at 35% 30%, #fff6ce, #ffca45 45%, #c68013);
   box-shadow: 0 0 10px rgba(255, 179, 26, .45);
 }
+.energy-overflow { min-width: 28px; color: #fff1bd; font-size: 19px; text-align: center; }
+.game-hud.surge-drag .energy-bar {
+  pointer-events: auto;
+  border-color: var(--teal);
+  filter: drop-shadow(0 0 9px var(--teal));
+}
+.game-hud.surge-drag .energy-bar.drop-hover { background: linear-gradient(165deg, rgba(26, 82, 75, .98), rgba(8, 28, 27, .98)); }
 
 .timeline {
   position: absolute;
@@ -273,6 +282,43 @@ canvas#arena { display: block; background: #18201e; }
   pointer-events: auto;
 }
 .timeline-panning .timeline-track { cursor: grabbing; }
+.timeline-overview {
+  position: absolute;
+  z-index: 6;
+  left: 24px;
+  top: 226px;
+  width: 1104px;
+  height: 20px;
+  overflow: hidden;
+  background: rgba(7, 13, 13, .7);
+  border: 1px solid rgba(225, 233, 218, .2);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.timeline-overview-turn,
+.timeline-overview-view {
+  position: absolute;
+  left: var(--overview-left);
+  top: 0;
+  width: var(--overview-width);
+  height: 100%;
+  pointer-events: none;
+}
+.timeline-overview-turn { background: rgba(255, 179, 26, .22); }
+.timeline-overview-view {
+  z-index: 2;
+  border: 2px solid rgba(255, 244, 201, .82);
+  background: rgba(255, 255, 255, .04);
+}
+.timeline-overview-tick {
+  position: absolute;
+  left: var(--tick-left);
+  top: 5px;
+  width: 2px;
+  height: 10px;
+  background: #b5d5cc;
+  opacity: .75;
+}
 .history-region, .future-fog {
   position: absolute;
   z-index: 1;
@@ -657,6 +703,12 @@ canvas#arena { display: block; background: #18201e; }
   letter-spacing: 2px;
 }
 .game-menu p { margin: 0 0 28px; color: #4f5048; font-size: 19px; }
+.game-menu .gamepad-guide {
+  margin-top: -14px;
+  color: #68685e;
+  font-size: 16px;
+  line-height: 1.25;
+}
 .menu-actions { display: grid; gap: 12px; }
 .menu-actions button { min-height: 54px; font-size: 20px; }
 .menu-actions .primary { background: var(--amber); }

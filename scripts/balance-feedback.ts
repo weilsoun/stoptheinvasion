@@ -57,6 +57,8 @@ function sumUsage(run: Run, cardId: string): Usage {
     played: 0,
     attached: 0,
     scoutedPositions: 0,
+    surgeActivations: 0,
+    surgeGranted: 0,
     energySpent: 0,
     upgradeTargets: {},
   };
@@ -93,8 +95,11 @@ function cardUsageLine(report: BalanceReport, run: Run, cardId: string): string 
     ? `; authored grade targets ${scalingTargets.length > 0 ? scalingTargets.map(([target, count]) => `${target}=${count}`).join(', ') : 'none'}; nondamage target uses ${nondamageTargets.reduce((sum, [, count]) => sum + count, 0)} across ${nondamageTargets.length} authored target(s)`
     : '';
   const scouting = usage.scoutedPositions > 0 ? `; actually revealed ${usage.scoutedPositions} scouted positions` : '';
+  const surge = usage.surgeActivations > 0
+    ? `; activated ${usage.surgeActivations} time(s), granted ${usage.surgeGranted} actual Surge energy`
+    : '';
   const free = card.cost === 0 ? ' Free-card use is availability evidence, not overpower evidence.' : '';
-  return `${card.name}: drawn ${usage.drawn}; played/hand ${ratio(usage.played, usage.handOpportunities)}, played/affordable ${ratio(usage.played, usage.affordableOpportunities)}, played/legal ${ratio(usage.played, usage.legalOpportunities)}${attachment}${targeting}${scouting}; ${timingRate} uses per 100 playable-position opportunities${exposure}; energy spent ${usage.energySpent}.${free}`;
+  return `${card.name}: drawn ${usage.drawn}; played/hand ${ratio(usage.played, usage.handOpportunities)}, played/affordable ${ratio(usage.played, usage.affordableOpportunities)}, played/legal ${ratio(usage.played, usage.legalOpportunities)}${attachment}${targeting}${scouting}${surge}; ${timingRate} uses per 100 playable-position opportunities${exposure}; energy spent ${usage.energySpent}.${free}`;
 }
 
 function policyDelta(baseline: Run, candidate: Run): string {
@@ -139,9 +144,10 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
     ...report.limitations,
     `Rules measured: ${report.rulesModel}. Planning has no realtime countdown.`,
     'Policies inspect only the current bracket plus positions revealed by active scouting. Scouting is exercised and reported, but receives no invented combat-power or information-value score.',
-    'Authored upgrade-target counts report actual chosen attachments, including nondamage effects and temporal cards; they do not assign those targets an assumed strategic value.',
+    'Authored upgrade-target counts report actual chosen attachments, including grades consumed by immediate Surge activation, nondamage effects, and temporal cards; they do not assign those targets an assumed strategic value.',
     'Policies are deterministic heuristics, not human or optimal play; differences can reflect policy assumptions rather than card power.',
     'Aggregate card use is normalized by legal and changing playable-position opportunities but is not a causal estimate of card strength. High use alone—especially for zero-cost cards—is not evidence that a card is overpowered.',
+    'Surge use and grant totals come only from successful immediate playSurge commands. A zero-grant candidate remains an actual activation but contributes no positive Surge-energy grant.',
     'Candidate comparisons use reported 95% win-rate intervals and aggregate outcomes. Overlapping intervals or policy disagreement are uncertainty, not permission to choose a preferred result.',
     'Recommendations only select tested candidates; they do not auto-apply changes or extrapolate untested numeric tuning.',
   ]));
@@ -179,6 +185,11 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
   const studyNondamageTargets = Object.entries(studyUpgradeTargets)
     .filter(([target]) => !target.includes(':effect:damage:'));
   diagnostics.push(`Study-wide authored nondamage grade usage: ${studyNondamageTargets.reduce((sum, [, count]) => sum + count, 0)} chosen attachment(s) across ${studyNondamageTargets.length} target(s)${studyNondamageTargets.length > 0 ? ` (${studyNondamageTargets.map(([target, count]) => `${target}=${count}`).join(', ')})` : ''}.`);
+  const studySurgeActivations = report.runs.reduce((total, run) => total + POLICIES.reduce((policyTotal, policy) =>
+    policyTotal + Object.values(run.policies[policy].usage).reduce((sum, usage) => sum + usage.surgeActivations, 0), 0), 0);
+  const studySurgeGranted = report.runs.reduce((total, run) => total + POLICIES.reduce((policyTotal, policy) =>
+    policyTotal + Object.values(run.policies[policy].usage).reduce((sum, usage) => sum + usage.surgeGranted, 0), 0), 0);
+  diagnostics.push(`Study-wide immediate Surge usage: ${studySurgeActivations} successful activation(s), ${studySurgeGranted} actual temporary energy granted.`);
 
   for (const cardId of Object.keys(report.cards)) diagnostics.push(cardUsageLine(report, baseline, cardId));
   diagnostics.push('Scouting attachments and revealed-position counts are exercised coverage, not a combat-power estimate. Scouting-number candidates remain in the report but are ineligible for automatic recommendation by these one-turn heuristics.');
@@ -288,7 +299,7 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
       const afterNondamage = Object.entries(after.upgradeTargets)
         .filter(([target]) => !target.includes(':effect:damage:'))
         .reduce((sum, [, count]) => sum + count, 0);
-      tradeoffs.push(`${report.cards[cardId]?.name ?? cardId} played/legal ${ratio(before.played, before.legalOpportunities)}→${ratio(after.played, after.legalOpportunities)}; attached/legal ${ratio(before.attached, before.legalOpportunities)}→${ratio(after.attached, after.legalOpportunities)}; played/affordable ${ratio(before.played, before.affordableOpportunities)}→${ratio(after.played, after.affordableOpportunities)}; nondamage grade targets ${beforeNondamage}→${afterNondamage}; scouted positions ${before.scoutedPositions}→${after.scoutedPositions}.`);
+      tradeoffs.push(`${report.cards[cardId]?.name ?? cardId} played/legal ${ratio(before.played, before.legalOpportunities)}→${ratio(after.played, after.legalOpportunities)}; attached/legal ${ratio(before.attached, before.legalOpportunities)}→${ratio(after.attached, after.legalOpportunities)}; played/affordable ${ratio(before.played, before.affordableOpportunities)}→${ratio(after.played, after.affordableOpportunities)}; Surge activations ${before.surgeActivations}→${after.surgeActivations}, actual grant ${before.surgeGranted}→${after.surgeGranted}; nondamage grade targets ${beforeNondamage}→${afterNondamage}; scouted positions ${before.scoutedPositions}→${after.scoutedPositions}.`);
     }
     recommendations.push({
       target: candidate.change.kind === 'encounter' ? 'encounter pressure' : report.cards[candidate.change.cardId]?.name ?? candidate.change.cardId,
@@ -317,6 +328,7 @@ export function buildFeedback(report: BalanceReport): BalanceFeedback {
     roleFinding(report, 'Block', ['effect:block'], survivabilityConcern ? 'losses or stalls suggest testing mitigation access against encounter-pressure candidates' : 'survivability data does not establish a mitigation gap'),
     roleFinding(report, 'Exposed/setup', ['effect:exposed', 'effect:setup'], separatedBaseline ? 'policy separation suggests testing whether setup sequencing is too policy-sensitive' : 'no measured policy split establishes a setup gap'),
     roleFinding(report, 'Energy', ['effect:energy'], 'a large played/hand versus played/affordable gap would justify testing resource access'),
+    roleFinding(report, 'Surge', ['surge:planning'], 'a large played/affordable gap would justify testing immediate temporary-resource access and sequencing'),
     roleFinding(report, 'Draw', ['effect:draw'], 'low hand opportunities or stalls would justify testing access consistency'),
     roleFinding(report, 'Heal', ['effect:heal'], survivabilityConcern ? 'losses or stalls make sustain worth testing against block or encounter-pressure candidates' : 'the current outcomes do not establish a sustain need'),
     roleFinding(report, 'Positive upgrade sources', ['modifier:level:positive'], separatedBaseline ? 'policy separation makes attachment sequencing a testable source of skill gap' : 'no measured weakness requires another positive upgrade source'),
