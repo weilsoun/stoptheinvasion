@@ -16,6 +16,7 @@ import type {
   QueueSlot,
   ResolutionStep,
   TimelineEntry,
+  SurgeResult,
 } from './types';
 
 const LOG_LIMIT = 80;
@@ -29,6 +30,12 @@ function definition(card: CardInstance) {
   const value = CARDS[card.definitionId];
   if (!value) throw new Error(`Unknown card definition: ${card.definitionId}`);
   return value;
+}
+
+function energyCost(card: CardInstance): number {
+  const cost = definition(card).cost;
+  if (!Number.isSafeInteger(cost) || cost < 0) throw new Error(`${definition(card).name} has an invalid energy cost.`);
+  return cost;
 }
 
 function cloneCard(card: CardInstance): CardInstance {
@@ -147,6 +154,7 @@ function validateAction(state: CombatState, action: QueueSlot): void {
       throw new Error('Invalid queued player action.');
     }
     const cardDefinition = definition(action.card);
+    if (cardDefinition.surge) throw new Error('Surge cards cannot occupy queue slots.');
     if (cardDefinition.modifier || cardDefinition.bracket) throw new Error('Attachment cards cannot occupy queue slots.');
     const targetFailure = validateTarget(state, action.card, action.target);
     if (targetFailure) throw new Error(targetFailure);
@@ -228,7 +236,7 @@ function makeActor(
 ): Actor {
   return {
     id, name, hp, maxHp: hp, block: 0, exposed: 0, ringing: false, ringingNextTurn: false,
-    energy, energyMax, energyGain, drawCount, turnLength, scouting,
+    energy, surgeEnergy: 0, energyMax, energyGain, drawCount, turnLength, scouting,
   };
 }
 
@@ -286,15 +294,24 @@ export function createCombat(seed = DEFAULT_SEED): CombatState {
 export function availableEnergy(state: CombatState, actor: ActorId = 'bob'): number {
   const source = state.actors[actor];
   if (!source) throw new Error(`Unknown actor: ${actor}`);
-  if (state.phase !== 'planning') return source.energy;
+  if (
+    !Number.isSafeInteger(source.energy)
+    || source.energy < 0
+    || !Number.isSafeInteger(source.surgeEnergy)
+    || source.surgeEnergy < 0
+    || !Number.isSafeInteger(source.energy + source.surgeEnergy)
+  ) throw new Error(`${source.name} has invalid energy.`);
+  const total = source.energy + source.surgeEnergy;
+  if (state.phase !== 'planning') return total;
   let reserved = 0;
   for (const slot of state.queue) {
-    if (slot?.kind === 'player' && slot.card.owner === actor) reserved += definition(slot.card).cost;
+    if (slot?.kind === 'player' && slot.card.owner === actor) reserved += energyCost(slot.card);
   }
   for (const attachment of state.attachments) {
-    if (attachment.card.owner === actor) reserved += definition(attachment.card).cost;
+    if (attachment.card.owner === actor) reserved += energyCost(attachment.card);
   }
-  return source.energy - reserved;
+  if (!Number.isSafeInteger(reserved) || reserved < 0) throw new Error(`${source.name} has invalid energy commitments.`);
+  return total - reserved;
 }
 interface UpgradeCandidate {
   uid: string;
@@ -603,6 +620,9 @@ function planPlacement(
 
   const card = queued?.kind === 'player' ? queued.card : state.hand[handIndex];
   const cardDefinition = definition(card);
+  if (cardDefinition.surge) {
+    return { ok: false, reason: 'Surge cards activate immediately and do not occupy timeline positions.' };
+  }
   if (cardDefinition.modifier || cardDefinition.bracket) {
     return { ok: false, reason: 'Attachments do not occupy timeline positions.' };
   }
@@ -758,6 +778,111 @@ export function retargetCard(state: CombatState, slot: number, target: ActorId):
   action.target = target;
   appendLog(state, `Targeted ${cardName} at ${targetName}.`);
   return { ok: true };
+}
+
+function spendEnergy(actor: Actor, amount: number): void {
+  if (!Number.isSafeInteger(amount) || amount < 0) throw new Error(`Energy cost must be a nonnegative safe integer: ${amount}`);
+  if (
+    !Number.isSafeInteger(actor.energy)
+    || actor.energy < 0
+    || !Number.isSafeInteger(actor.surgeEnergy)
+    || actor.surgeEnergy < 0
+    || !Number.isSafeInteger(actor.energy + actor.surgeEnergy)
+  ) throw new Error(`${actor.name} has invalid energy.`);
+  if (amount > actor.energy + actor.surgeEnergy) throw new Error(`${actor.name} spent more energy than available.`);
+  const fromSurge = Math.min(actor.surgeEnergy, amount);
+  actor.surgeEnergy -= fromSurge;
+  actor.energy -= amount - fromSurge;
+}
+
+export function playSurge(state: CombatState, uid: string): SurgeResult {
+  const phaseFailure = planningFailure(state);
+  if (phaseFailure) return { ...phaseFailure, events: [] };
+  const handIndex = state.hand.findIndex((card) => card.uid === uid);
+  if (handIndex < 0) return { ...failure('That Surge card is not in hand.'), events: [] };
+  const source = state.hand[handIndex];
+  const sourceDefinition = definition(source);
+  if (!sourceDefinition.surge) return { ...failure('That card is not a Surge.'), events: [] };
+  if (state.actors[source.owner].hp <= 0) return { ...failure('A defeated actor cannot activate Surge.'), events: [] };
+
+  validateInventory(state);
+  validateAttachments(state);
+  energyCost(source);
+  for (const actor of Object.values(state.actors)) {
+    if (
+      !Number.isSafeInteger(actor.energy)
+      || actor.energy < 0
+      || !Number.isSafeInteger(actor.surgeEnergy)
+      || actor.surgeEnergy < 0
+      || !Number.isSafeInteger(actor.energy + actor.surgeEnergy)
+    ) throw new Error(`${actor.name} has invalid energy.`);
+  }
+
+  const level = upgradeLevel(state, source.uid, null);
+  const effective = applyUpgrade(sourceDefinition, level);
+  if (!effective.effects.length || effective.effects.some((effect) => effect.kind !== 'energy' || effect.recipient !== 'self')) {
+    throw new Error(`${sourceDefinition.name} must contain only self Surge energy effects.`);
+  }
+  let grant = 0;
+  for (const effect of effective.effects) {
+    validateEffect(effect, `${sourceDefinition.name} Surge effect`);
+    grant += effect.amount;
+    if (!Number.isSafeInteger(grant)) throw new Error(`${sourceDefinition.name} has an invalid Surge grant.`);
+  }
+
+  const bound = state.attachments.filter((attachment) =>
+    attachment.target.kind === 'card' && attachment.target.uid === source.uid
+  );
+  const committed: Record<ActorId, number> = { bob: source.owner === 'bob' ? sourceDefinition.cost : 0, guard: source.owner === 'guard' ? sourceDefinition.cost : 0 };
+  for (const slot of state.queue) {
+    if (slot?.kind === 'player') committed[slot.card.owner] += energyCost(slot.card);
+  }
+  for (const attachment of state.attachments) {
+    committed[attachment.card.owner] += energyCost(attachment.card);
+  }
+  for (const actorId of ['bob', 'guard'] as const) {
+    if (!Number.isSafeInteger(committed[actorId]) || committed[actorId] < 0) throw new Error(`${actorId} has invalid energy commitments.`);
+    const actor = state.actors[actorId];
+    if (committed[actorId] > actor.energy + actor.surgeEnergy) {
+      return { ...failure('Not enough available energy.'), events: [] };
+    }
+  }
+  const immediateCosts: Record<ActorId, number> = { bob: 0, guard: 0 };
+  immediateCosts[source.owner] += sourceDefinition.cost;
+  for (const attachment of bound) immediateCosts[attachment.card.owner] += energyCost(attachment.card);
+  const sourceActor = state.actors[source.owner];
+  const surgeAfterCost = sourceActor.surgeEnergy - Math.min(sourceActor.surgeEnergy, immediateCosts[source.owner]);
+  if (!Number.isSafeInteger(surgeAfterCost + grant)) {
+    throw new Error(`${sourceDefinition.name} would overflow Surge energy.`);
+  }
+
+  for (const actorId of ['bob', 'guard'] as const) spendEnergy(state.actors[actorId], immediateCosts[actorId]);
+
+  state.hand.splice(handIndex, 1);
+  const boundUids = new Set(bound.map((attachment) => attachment.card.uid));
+  state.attachments = state.attachments.filter((attachment) => !boundUids.has(attachment.card.uid));
+  const discarded = [source, ...bound.map((attachment) => attachment.card)];
+  state.discardPile.push(...discarded);
+  state.actors[source.owner].surgeEnergy += grant;
+
+  const events: CombatEvent[] = [];
+  record(state, events, {
+    kind: 'energy',
+    actor: source.owner,
+    target: source.owner,
+    amount: grant,
+    message: `${state.actors[source.owner].name} gained ${grant} Surge energy.`,
+  });
+  record(state, events, {
+    kind: 'discard',
+    actor: source.owner,
+    amount: discarded.length,
+    cards: discarded,
+    message: `${state.actors[source.owner].name} consumed ${sourceDefinition.name}${
+      bound.length ? ` with ${bound.length} attached upgrade${bound.length === 1 ? '' : 's'}` : ''
+    }.`,
+  });
+  return { ok: true, events: events.map(cloneEvent) };
 }
 
 function hashText(value: string, seed: number): number {
@@ -988,16 +1113,17 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
   const reservedByActor: Record<ActorId, number> = { bob: 0, guard: 0 };
   for (let position = start; position < end; position += 1) {
     const action = working.queue[position];
-    if (action?.kind === 'player') reservedByActor[action.card.owner] += definition(action.card).cost;
+    if (action?.kind === 'player') reservedByActor[action.card.owner] += energyCost(action.card);
   }
   for (const attachment of working.attachments) {
-    reservedByActor[attachment.card.owner] += definition(attachment.card).cost;
+    reservedByActor[attachment.card.owner] += energyCost(attachment.card);
   }
   for (const actorId of ['bob', 'guard'] as const) {
-    if (reservedByActor[actorId] > working.actors[actorId].energy) {
+    const actor = working.actors[actorId];
+    if (reservedByActor[actorId] > actor.energy + actor.surgeEnergy) {
       throw new Error(`${actorId} queued more energy than available.`);
     }
-    working.actors[actorId].energy -= reservedByActor[actorId];
+    spendEnergy(actor, reservedByActor[actorId]);
   }
   working.phase = 'resolving';
   appendLog(working, `Resolution began; ${reservedByActor.bob} energy committed.`);
@@ -1107,6 +1233,7 @@ export function resolveTurn(state: CombatState): ResolutionStep[] {
       actor.ringingNextTurn = false;
     }
   }
+  for (const actor of Object.values(working.actors)) actor.surgeEnergy = 0;
   const finalEvents: CombatEvent[] = [];
   const discarded = working.discardPile.slice(discardStart);
   if (discarded.length) {

@@ -1,7 +1,8 @@
-import { attachModifier, availableEnergy, canAttachModifier, createCombat, moveCard, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, upgradeLevel, visibleEnd } from './game/combat';
+import { attachModifier, availableEnergy, canAttachModifier, createCombat, moveCard, playSurge, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, upgradeLevel, visibleEnd } from './game/combat';
 import { CARDS } from './game/content';
 import { applyUpgrade } from './game/upgrades';
 import type { ActorId, Attachment, CardDefinition, CardInstance, EnemyAction, ModifierTarget, PlayerAction, QueueSlot } from './game/types';
+import { mountGamepad } from './gamepad';
 import { ACTOR_CENTERS, ACTOR_HUD, CARD_WORKSPACE, HAND_TOP, type CardVisual, type ScenePort } from './view/types';
 
 type Selection = { kind: 'hand'; uid: string } | { kind: 'queue'; slot: number } | null;
@@ -32,7 +33,7 @@ type Drag = {
   preview: QueueSlot[] | null;
   attachmentTarget: ModifierTarget | null;
 };
-type Mode = 'dealing' | 'planning' | 'resolving' | 'ended';
+type Mode = 'dealing' | 'planning' | 'surging' | 'resolving' | 'ended';
 export interface GamePort {
   destroy(): void;
 }
@@ -57,6 +58,7 @@ const HOVER_Y = HAND_BOTTOM - HOVER_HEIGHT;
 const ATTACHMENT_SCALE = .9;
 const ATTACHMENT_GAP = 8;
 const CARD_ATTACHMENT_PEEK = 28;
+const BRACKET_CARD_Y = -65;
 const DETAIL = { x: 720, y: 180, width: 480, height: 672 };
 const DRAW_PILE = { x: 26, y: 844, width: 96, height: 134, rotation: 0, flip: 180 };
 const DISCARD_PILE = { x: 1027, y: 844, width: 96, height: 134, rotation: 0, flip: 0 };
@@ -223,7 +225,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       type: kind === 'damage' ? 'attack' : 'skill',
       target: action.target === action.actor ? 'self' : 'enemy',
       description: action.description,
-      flavor: `${kind === 'heal' ? 'Restores' : 'Targets'} ${state.actors[action.target].name}.`,
+      flavor: kind === 'heal' ? 'Restores the acting card owner.' : 'Targets the opposing actor.',
       icon: kind === 'heal' ? 'shield' : kind === 'exposed' ? 'tape' : 'boot',
       effects: action.effects,
       scaling: action.scaling,
@@ -389,7 +391,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         clip: CARD_WORKSPACE,
       }, position);
     }
-    const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
+    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
     for (const host of attachmentVisuals(bracketPose, bracketAttachments(), undefined, false)) {
       host.upgradeLevel = upgradeLevel(state, host.uid, null);
       queued.push(...attachmentVisuals(host, cardAttachments(host.uid), host.uid, true).reverse(), host);
@@ -563,10 +565,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       : '';
     const level = history?.upgradeLevel ?? upgradeLevel(state, sourceUid, position);
     const effective = applyUpgrade(definition, level);
-    const targetName = slot.target === null ? 'missing target' : state.actors[slot.target].name;
-    const cardLabel = slot.kind === 'enemy'
-      ? `${effective.name}. ${effective.description} Target ${targetName}`
-      : `Bob card ${effective.name}, cost ${effective.cost}, target ${targetName}. ${effective.description}`;
+    const targetName = slot.target === null ? 'missing target' : slot.target === (slot.kind === 'enemy' ? slot.actor : slot.card.owner) ? 'self' : 'opponent';
+    const cardLabel = `${slot.kind === 'enemy' ? 'Enemy' : 'Player'} card ${effective.name}, cost ${effective.cost}, target ${targetName}. ${effective.description}`;
     return `<div class="queue-slot ${slot.kind}${editable && slot.kind === 'player' ? ' queue-card' : slot.kind === 'enemy' ? ' locked' : ''}${region}${active}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" ${style}>
       ${guide}${cardTabs}<div class="queue-card-body${editable ? attachmentClass(cardTarget) : ''}" data-card-uid="${escapeHtml(renderUid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || canTarget) ? 0 : -1}"
         aria-label="Inspect position ${position}, ${regionLabel}, ${escapeHtml(cardLabel)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}"></div>
@@ -578,7 +578,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const left = Math.min(startX, endX);
     const width = Math.abs(startX - endX) + stride();
     const attachments = bracketAttachments();
-    const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
+    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
     const chips = attachments.map(({ card }, index) => {
       const definition = CARDS[card.definitionId];
       const mini = attachmentCardPose(bracketPose, index, attachments.length);
@@ -596,10 +596,35 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     return `<div class="turn-bracket${attachmentClass({ kind: 'bracket' })}" data-bracket-target role="button" tabindex="${modifierSource() && attachmentAllowed({ kind: 'bracket' }) ? 0 : -1}" aria-label="Current turn bracket, positions ${state.position} through ${turnEnd(state) - 1}. Attach selected bracket card." style="--bracket-left:${left}px;--bracket-width:${width}px">
       <span>TURN ${state.turn} · ${turnLength(state)} POSITIONS</span></div>${chips}`;
   };
+  const overviewMarkup = () => {
+    const visible = visibleEnd(state);
+    const viewRadius = CARD_WORKSPACE.width / (2 * stride());
+    const domainSpan = Math.max(visible + turnLength(state), Math.ceil(cameraPosition + .5 + viewRadius));
+    const edge = (position: number) => (domainSpan - Math.max(0, Math.min(domainSpan, position))) / domainSpan * 100;
+    const viewLow = Math.max(0, cameraPosition + .5 - viewRadius);
+    const viewHigh = Math.min(domainSpan, cameraPosition + .5 + viewRadius);
+    const bins = new Set<number>();
+    const mark = (position: number) => bins.add(Math.max(0, Math.min(255, Math.floor(edge(position + .5) * 2.56))));
+    for (const entry of state.history) if (entry.action && entry.position !== hiddenHistoryPosition) mark(entry.position);
+    for (let position = state.position; position < visible; position++) {
+      if (presentedSlot(position)) mark(position);
+    }
+    const ticks = [...bins].map((bin) => `<span class="timeline-overview-tick" style="--tick-left:${bin / 2.56}%"></span>`).join('');
+    const turnLeft = edge(turnEnd(state));
+    const turnRight = edge(state.position);
+    const viewLeft = edge(viewHigh);
+    const viewRight = edge(viewLow);
+    return `<div class="timeline-overview" role="img" aria-label="Queue overview. View centered on position ${Math.round(cameraPosition)}. Current turn positions ${state.position} through ${turnEnd(state) - 1}. Higher positions are left." title="Queue overview: higher positions are left">
+      <span class="timeline-overview-turn" style="--overview-left:${turnLeft}%;--overview-width:${Math.max(0, turnRight - turnLeft)}%"></span>
+      <span class="timeline-overview-ticks" aria-hidden="true">${ticks}</span>
+      <span class="timeline-overview-view" style="--overview-left:${viewLeft}%;--overview-width:${Math.max(0, viewRight - viewLeft)}%"></span>
+    </div>`;
+  };
   const queueMarkup = () => {
     const positions = visiblePositions();
     const fogEdge = queueSlotX(visibleEnd(state)) + stride();
     return `<div class="timeline-track" data-pan-surface aria-hidden="true"></div>
+      ${overviewMarkup()}
       ${state.history.length ? `<div class="history-region" style="--history-left:${queueSlotX(state.position - 1)}px"></div>` : ''}
       <div class="future-fog" style="--fog-edge:${fogEdge}px"><span>UNSCOUTED</span></div>
       ${bracketMarkup()}${positions.map(slotMarkup).join('')}`;
@@ -639,7 +664,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const level = detail.upgradeLevel ?? upgradeLevel(state, detail.cardUid, detail.slot);
     let actions = '';
     if (sourceCard) {
-      actions = `<button data-action="detail-play" ${canAfford(sourceCard) ? '' : 'disabled'}>${isAttachment(detail.definition) ? 'Attach' : 'Queue card'}</button>`;
+      actions = `<button data-action="${detail.definition.surge ? 'detail-surge' : 'detail-play'}" ${canAfford(sourceCard) ? '' : 'disabled'}>${detail.definition.surge ? 'Surge now' : isAttachment(detail.definition) ? 'Attach' : 'Queue card'}</button>`;
     } else if (detail.source === 'queue') {
       actions = '<button data-action="detail-move">Move card</button>';
     } else if (detail.source === 'attachment') {
@@ -661,15 +686,16 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     </section></div>`;
   };
 
-  const menuMarkup = () => menuOpen ? `<div class="menu-shade"><section class="game-menu" role="dialog" aria-modal="true" aria-labelledby="menu-title" aria-describedby="menu-lore menu-note">
+  const menuMarkup = () => menuOpen ? `<div class="menu-shade"><section class="game-menu" role="dialog" aria-modal="true" aria-labelledby="menu-title" aria-describedby="menu-lore menu-note menu-controls">
     <span class="eyebrow">GAME MENU</span><h2 id="menu-title">Take a breather</h2>
     <p id="menu-lore">Time-bending aliens are possessing ordinary people. This guard still wants your receipt.</p>
     <p id="menu-note">Combat does not pause while this menu is open.</p>
+    <p id="menu-controls" class="gamepad-guide">Controller: hold Select + D-pad to browse, Select + L1/R1 to zoom, Start for menu.${window.isSecureContext ? '' : ' Controller input requires HTTPS or localhost.'}</p>
     <div class="menu-actions"><button class="primary" data-action="close-menu">Return to game</button><button class="menu-restart" data-action="restart">Restart encounter</button></div>
   </section></div>` : '';
 
   const outcomeMarkup = () => {
-    if (mode !== 'ended' || state.phase !== 'victory' && state.phase !== 'defeat') return '';
+    if (menuOpen || mode !== 'ended' || state.phase !== 'victory' && state.phase !== 'defeat') return '';
     const victory = state.phase === 'victory';
     return `<div class="outcome-shade"><section class="outcome ${victory ? 'victory' : 'defeat'}" role="dialog" aria-modal="true" aria-labelledby="outcome-title"><span class="stamp">${victory ? 'AISLE SECURED' : 'SHIFT ENDED'}</span><h2 id="outcome-title">${victory ? 'Victory!' : 'Defeat'}</h2><p>${victory ? 'Bob survives another unreasonable customer interaction.' : 'The alien-possessed guard wins this round. Reset the aisle and try a new plan.'}</p><button class="primary" data-action="restart">Replay encounter</button></section></div>`;
   };
@@ -744,11 +770,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const focusedMenuAction = menuOpen ? root.querySelector<HTMLElement>('.game-menu button:focus')?.dataset.action : null;
     const bob = state.actors.bob;
     const energy = availableEnergy(state, 'bob');
+    const commitments = Math.max(0, bob.energy + bob.surgeEnergy - energy);
+    const energyText = `${energy} spendable energy: ${bob.energy} stored plus ${bob.surgeEnergy} Surge, minus ${commitments} committed`;
     const log = state.log.slice(-LOG_LIMIT);
     const blocked = resolveReason();
     const modifier = modifierSource();
     const showGuides = Boolean(selection || pending || drag);
     root.classList.toggle('resolving', mode === 'resolving');
+    root.classList.toggle('surging', mode === 'surging');
     root.classList.toggle('detail-open', Boolean(detail));
     root.innerHTML = `<div class="hud-controls" aria-label="Turn and menu"><div class="turn-badge"><small>TURN</small><b>${state.turn}</b></div><button class="menu-trigger" data-action="open-menu" aria-haspopup="dialog">Menu</button></div>
       <main>${actorMarkup('bob')}${actorMarkup('guard')}
@@ -765,9 +794,10 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         <section class="combat-log ink-panel" aria-label="Combat log"><h2>FIELD NOTES</h2><ol>${log.length ? log.map((line) => `<li>${escapeHtml(line)}</li>`).join('') : '<li>The aisle is quiet. For now.</li>'}</ol></section>
         <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn${mode === 'dealing' ? '<span>Dealing cards</span>' : blocked ? `<span>${escapeHtml(blocked)}</span>` : ''}</button>
         <div id="resolve-reason" class="notice ${blocked || /cannot|need|invalid|occupied|locked/i.test(notice) ? 'warning' : ''}" role="status" aria-live="polite">${escapeHtml(notice)}</div>
-        <div class="hand-zone${modifier ? ' attachment-targeting' : ''}" aria-label="Bob's hand">${handMarkup()}</div>
-        <section class="energy-bar ink-panel" role="meter" aria-label="Bob's energy" aria-valuemin="0" aria-valuemax="${bob.energyMax}" aria-valuenow="${energy}" aria-valuetext="${energy} energy">
-          <span class="energy-bubbles" aria-hidden="true">${Array.from({ length: bob.energyMax }, (_, index) => `<span class="energy-bubble ${index < energy ? 'available' : 'empty'}"></span>`).join('')}</span>
+        <div class="hand-zone${modifier ? ' attachment-targeting' : ''}" aria-label="Player hand">${handMarkup()}</div>
+        <section class="energy-bar ink-panel" data-surge-target role="meter" aria-label="Player energy" aria-valuemin="0" aria-valuemax="${Math.max(8, energy)}" aria-valuenow="${energy}" aria-valuetext="${escapeHtml(energyText)}" title="${escapeHtml(energyText)}">
+          <span class="energy-bubbles" aria-hidden="true">${Array.from({ length: 8 }, (_, index) => `<span class="energy-bubble ${index < energy ? 'available' : 'empty'}"></span>`).join('')}</span>
+          ${energy > 8 ? `<b class="energy-overflow" aria-hidden="true">+${energy - 8}</b>` : ''}
         </section>
       </main>${detailMarkup()}${inspectorMarkup()}${outcomeMarkup()}${menuMarkup()}`;
     scene.setState(state);
@@ -791,7 +821,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   const clearCapture = () => {
     if (!drag) return;
     if (drag.capture.hasPointerCapture?.(drag.pointerId)) drag.capture.releasePointerCapture(drag.pointerId);
-    root.classList.remove('physical-drag');
+    root.classList.remove('physical-drag', 'surge-drag');
     drag = null;
   };
 
@@ -856,6 +886,25 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     lingeringAttachments.clear();
     healthFeedback.clear();
   };
+  const toggleMenu = () => {
+    if (menuOpen) {
+      menuOpen = false;
+      focusAfterRender = menuReturnFocus;
+      render();
+      return;
+    }
+    if (mode === 'surging') {
+      sequence++;
+      clearPlayback();
+      mode = state.phase === 'planning' ? 'planning' : 'ended';
+    }
+    menuReturnFocus = mode === 'ended' ? '.outcome button' : '.menu-trigger';
+    clearInteraction();
+    detail = null;
+    inspector = null;
+    menuOpen = true;
+    render();
+  };
 
   const animateDraws = async (cards: CardInstance[], run: number) => {
     if (!cards.length) return;
@@ -912,6 +961,37 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       inFlight.delete(card.uid);
       discardedCards.add(card.uid);
     }
+    render();
+  };
+  const activateSurge = async (uid: string) => {
+    if (mode !== 'planning' || state.phase !== 'planning') return;
+    const card = handCard(uid);
+    if (!card || !CARDS[card.definitionId].surge) return;
+    const origins = new Map<string, Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'>>();
+    const sourcePose = scene.getCardPose(uid) ?? cardLayout(state.hand).get(uid);
+    if (sourcePose) origins.set(uid, sourcePose);
+    for (const { card: attached } of cardAttachments(uid)) {
+      const pose = scene.getCardPose(attached.uid);
+      if (pose) origins.set(attached.uid, pose);
+    }
+    const result = playSurge(state, uid);
+    if (!result.ok) {
+      feedback(false, '', result.reason);
+      return;
+    }
+    const cards = result.events.flatMap((event) => event.kind === 'discard' ? event.cards ?? [] : []);
+    const run = ++sequence;
+    mode = 'surging';
+    clearInteraction();
+    detail = null;
+    notice = result.events.map((event) => event.message).join(' ');
+    const animation = animateDiscards(cards, origins, run);
+    for (const event of result.events) scene.playEvent(event);
+    await animation;
+    if (destroyed || run !== sequence) return;
+    for (const discarded of cards) discardedCards.delete(discarded.uid);
+    mode = 'planning';
+    notice = result.events.map((event) => event.message).join(' ');
     render();
   };
 
@@ -1153,7 +1233,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const hit = hitAt(event);
     const card = handCard(drag.uid);
     const draggingModifier = Boolean(card && isAttachment(CARDS[card.definitionId]));
-    if (drag.kind === 'attachment') {
+    const draggingSurge = Boolean(card && CARDS[card.definitionId].surge);
+    if (drag.kind === 'attachment' || draggingSurge) {
       drag.destination = null;
       drag.preview = null;
       drag.attachmentTarget = null;
@@ -1167,9 +1248,12 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       drag.attachmentTarget = null;
       setDragDestination(queueSlotAt(point));
     }
+    const overSurgeTarget = draggingSurge && point.x >= CARD_WORKSPACE.x && point.x <= CARD_WORKSPACE.x + CARD_WORKSPACE.width
+      && (point.y < HAND_TOP || Boolean(hit?.closest('[data-surge-target]')));
+    root.querySelector('[data-surge-target]')?.classList.toggle('drop-hover', overSurgeTarget);
     root.querySelectorAll<HTMLElement>('.queue-slot').forEach((element) => {
       const slot = Number(element.dataset.slot);
-      const over = drag?.kind !== 'attachment' && !draggingModifier && slot === drag?.destination;
+      const over = drag?.kind !== 'attachment' && !draggingModifier && !draggingSurge && slot === drag?.destination;
       element.classList.toggle('drop-valid', over && drag?.preview !== null);
       element.classList.toggle('drop-invalid', over && drag?.preview === null);
     });
@@ -1265,18 +1349,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         render();
       }
       else if (action === 'resolve') void playResolution();
-      else if (action === 'open-menu') {
-        menuReturnFocus = '.menu-trigger';
-        clearInteraction();
-        detail = null;
-        inspector = null;
-        menuOpen = true;
-        render();
-      } else if (action === 'close-menu') {
-        menuOpen = false;
-        focusAfterRender = menuReturnFocus;
-        render();
-      } else if (action === 'inspect') {
+      else if (action === 'open-menu' || action === 'close-menu') toggleMenu();
+      else if (action === 'inspect') {
         cancelNavigation(true);
         detail = null;
         inspector = actionElement.dataset.pile as 'draw' | 'discard';
@@ -1288,6 +1362,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         render();
       } else if (action === 'close-card-detail' && detail) {
         closeDetail();
+      } else if (action === 'detail-surge' && detail?.source === 'hand' && mode === 'planning') {
+        void activateSurge(detail.cardUid);
       } else if (action === 'detail-play' && detail?.source === 'hand' && mode === 'planning') {
         const card = handCard(detail.cardUid);
         if (!card || !canAfford(card)) {
@@ -1429,14 +1505,8 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
         inspector = null;
         focusAfterRender = `.pile-button[data-pile="${pile}"]`;
         render();
-      } else if (menuOpen) {
-        menuOpen = false;
-        focusAfterRender = menuReturnFocus;
-        render();
-      } else if (mode !== 'ended') {
-        menuReturnFocus = returnFocusSelector(document.activeElement);
-        menuOpen = true;
-        render();
+      } else {
+        toggleMenu();
       }
       return;
     }
@@ -1493,7 +1563,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     selection = null;
     const point = designPoint(event);
     const capture = attachmentTab ?? hand ?? queue!;
-    const bracketPose = { x: bracketCenterX() - 52, y: -43, width: 105, height: 147, rotation: 0 };
+    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
     let fallback = hand
       ? cardLayout(state.hand).get(uid)!
       : queue ? queueCardPose(slot!) : attachmentHand ? cardLayout(state.hand).get(attachmentHand.dataset.handCard!)!
@@ -1547,8 +1617,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     hoveredQueueSlot = null;
     root.classList.add('physical-drag');
     const draggingModifier = Boolean(source && isAttachment(CARDS[source.definitionId]));
-    root.querySelector('.timeline')?.classList.add('show-guides');
-    if (draggingModifier) {
+    const draggingSurge = Boolean(source && CARDS[source.definitionId].surge);
+    root.classList.toggle('surge-drag', draggingSurge);
+    if (!draggingSurge) root.querySelector('.timeline')?.classList.add('show-guides');
+    if (draggingSurge) {
+      notice = 'Release over the timeline or energy meter to activate Surge now. This cannot be refunded.';
+      const noticeElement = root.querySelector<HTMLElement>('.notice');
+      if (noticeElement) noticeElement.textContent = notice;
+    } else if (draggingModifier) {
       root.querySelector('.timeline')?.classList.add('attachment-targeting');
       root.querySelector('.hand-zone')?.classList.add('attachment-targeting');
     }
@@ -1611,8 +1687,9 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     }
     if (!drag || drag.pointerId !== event.pointerId) return;
     const finished = drag;
+    const releaseHit = hitAt(event);
     if (finished.capture.hasPointerCapture?.(finished.pointerId)) finished.capture.releasePointerCapture(finished.pointerId);
-    root.classList.remove('physical-drag');
+    root.classList.remove('physical-drag', 'surge-drag');
     drag = null;
     scene.setTarget(null);
     root.querySelectorAll('.drop-hover,.drop-valid,.drop-invalid').forEach((element) => element.classList.remove('drop-hover', 'drop-valid', 'drop-invalid'));
@@ -1632,6 +1709,17 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const release = designPoint(event);
     const inWorkspace = release.x >= CARD_WORKSPACE.x && release.x <= CARD_WORKSPACE.x + CARD_WORKSPACE.width
       && release.y >= CARD_WORKSPACE.y && release.y <= CARD_WORKSPACE.y + CARD_WORKSPACE.height;
+    const source = handCard(finished.uid);
+    if (finished.kind === 'hand' && source && CARDS[source.definitionId].surge) {
+      const surgeTarget = inWorkspace && (release.y < HAND_TOP || Boolean(releaseHit?.closest('[data-surge-target]')));
+      if (surgeTarget) {
+        void activateSurge(finished.uid);
+      } else {
+        notice = 'Surge canceled. Drop it over the timeline or energy meter to activate it.';
+        render();
+      }
+      return;
+    }
     if (!inWorkspace) {
       selection = null;
       pending = null;
@@ -1649,7 +1737,6 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
       return;
     }
-    const source = handCard(finished.uid);
     if (source && isAttachment(CARDS[source.definitionId])) {
       if (finished.attachmentTarget) {
         attachTo(finished.attachmentTarget, finished.uid);
@@ -1732,6 +1819,14 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
   root.addEventListener('pointerout', onPointerOut, listenerOptions);
   root.addEventListener('focusin', onFocusIn, listenerOptions);
   root.addEventListener('focusout', onFocusOut, listenerOptions);
+  const stopGamepad = mountGamepad({
+    canNavigate: () => mode === 'planning' && !detail && !inspector && !menuOpen && !drag && !pan,
+    navigate: (direction) => {
+      void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + direction);
+    },
+    zoom: (direction) => changeZoom(zoom + direction * ZOOM_STEP),
+    toggleMenu,
+  });
   render();
   void dealOpeningHand();
 
@@ -1743,6 +1838,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       clearInteraction();
       listeners.abort();
       root.replaceChildren();
+      stopGamepad();
       scene.setTarget(null);
       scene.setCards([]);
     },

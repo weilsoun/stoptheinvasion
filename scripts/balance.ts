@@ -8,6 +8,7 @@ import {
   availableEnergy,
   canAttachModifier,
   createCombat,
+  playSurge,
   queueCard,
   removeModifier,
   resolveTurn,
@@ -16,7 +17,7 @@ import {
   upgradeLevel,
 } from '../src/game/combat';
 import { scaledBracket } from '../src/game/upgrades';
-import type { CardDefinition, CombatState, ModifierTarget } from '../src/game/types';
+import type { CardDefinition, CombatEvent, CombatState, ModifierTarget } from '../src/game/types';
 
 export type PolicyName = 'strong' | 'tactical' | 'greedy';
 export type CardUsage = {
@@ -29,6 +30,8 @@ export type CardUsage = {
   played: number;
   attached: number;
   scoutedPositions: number;
+  surgeActivations: number;
+  surgeGranted: number;
   upgradeTargets: Record<string, number>;
   energySpent: number;
 };
@@ -59,7 +62,7 @@ export type BalanceRun = {
   policies: Record<PolicyName, PolicySummary>;
 };
 export type BalanceReport = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   generatedAt: string;
   rulesModel: string;
   fingerprint: string;
@@ -75,11 +78,28 @@ const POLICIES: PolicyName[] = ['strong', 'tactical', 'greedy'];
 const MAX_TURNS = 20;
 const MAX_ACTION_STATES = 256;
 const MAX_PLANS = 256;
-
 type Counters = BalanceReport['counts'];
-type Plan = {
-  key: string;
+
+type SurgeGradeUse = Readonly<{
+  uid: string;
+  definitionId: string;
+  cost: number;
+  upgradeTargets: readonly string[];
+}>;
+type SurgeActivation = Readonly<{
+  sourceUid: string;
+  sourceDefinitionId: string;
+  sourceCost: number;
+  granted: number;
+  consumedGrades: readonly SurgeGradeUse[];
+  events: readonly Readonly<CombatEvent>[];
+}>;
+type PlanningBranch = Readonly<{
   state: CombatState;
+  surgeActivations: readonly SurgeActivation[];
+}>;
+type Plan = PlanningBranch & {
+  key: string;
   playedUids: string[];
   attachedUids: string[];
   spent: number;
@@ -122,6 +142,8 @@ function emptyUsage(): CardUsage {
     played: 0,
     attached: 0,
     scoutedPositions: 0,
+    surgeActivations: 0,
+    surgeGranted: 0,
     energySpent: 0,
     upgradeTargets: {},
   };
@@ -196,8 +218,14 @@ function effectiveDamage(card: CardDefinition, level: number): number {
     : total, 0);
 }
 
-function planKey(state: CombatState): string {
-  const actions: string[] = [];
+function activationKey(activation: SurgeActivation): string {
+  const grades = activation.consumedGrades.map((grade) => grade.definitionId).join('+');
+  return `${activation.sourceDefinitionId}${grades ? `+${grades}` : ''}(${activation.granted})`;
+}
+
+function planKey(branch: PlanningBranch): string {
+  const { state } = branch;
+  const actions: string[] = branch.surgeActivations.map((activation) => `activate:${activationKey(activation)}`);
   for (let position = state.position; position < turnEnd(state); position += 1) {
     const action = state.queue[position];
     if (action?.kind === 'player') actions.push(`${action.card.definitionId}@${position}`);
@@ -222,7 +250,7 @@ function stateKey(state: CombatState): string {
   }).join('|');
   const actors = (['bob', 'guard'] as const).map((id) => {
     const actor = state.actors[id];
-    return `${id}:${actor.hp}:${actor.block}:${actor.exposed}:${Number(actor.ringing)}:${Number(actor.ringingNextTurn)}:${actor.energy}:${actor.turnLength}:${actor.scouting}`;
+    return `${id}:${actor.hp}:${actor.block}:${actor.exposed}:${Number(actor.ringing)}:${Number(actor.ringingNextTurn)}:${actor.energy}:${actor.surgeEnergy}:${actor.turnLength}:${actor.scouting}`;
   }).join('|');
   const inventory = [state.hand, state.drawPile, state.discardPile]
     .map((pile) => pile.map((card) => card.uid).join(','))
@@ -239,14 +267,19 @@ function hash(value: string, seed = 2166136261): number {
   return result >>> 0;
 }
 
-function bounded(states: CombatState[], limit: number, salt: string): CombatState[] {
-  const unique = new Map<string, CombatState>();
-  for (const state of states) unique.set(stateKey(state), state);
+function branchKey(branch: PlanningBranch): string {
+  const activations = branch.surgeActivations.map(activationKey).join('>');
+  return `${stateKey(branch.state)}/surge:${activations}`;
+}
+
+function bounded(states: PlanningBranch[], limit: number, salt: string): PlanningBranch[] {
+  const unique = new Map<string, PlanningBranch>();
+  for (const branch of states) unique.set(branchKey(branch), branch);
   if (unique.size <= limit) return [...unique.values()];
   return [...unique.entries()]
     .sort(([left], [right]) => hash(`${salt}:${left}`) - hash(`${salt}:${right}`) || left.localeCompare(right))
     .slice(0, limit)
-    .map(([, state]) => state);
+    .map(([, branch]) => branch);
 }
 
 function canonicalModifierTargets(state: CombatState, uid: string): ModifierTarget[] {
@@ -272,43 +305,110 @@ function canonicalModifierTargets(state: CombatState, uid: string): ModifierTarg
   return targets;
 }
 
+function activateSurge(branch: PlanningBranch, uid: string): PlanningBranch | undefined {
+  const source = branch.state.hand.find((card) => card.uid === uid);
+  if (!source) return undefined;
+  const candidateGrades = branch.state.attachments
+    .filter((attachment) => attachment.target.kind === 'card' && attachment.target.uid === uid)
+    .map((attachment): SurgeGradeUse => ({
+      uid: attachment.card.uid,
+      definitionId: attachment.card.definitionId,
+      cost: CARDS[attachment.card.definitionId].cost,
+      upgradeTargets: upgradeTargetKeys(branch.state, attachment.target),
+    }));
+  const next = clonePlanningState(branch.state);
+  const result = playSurge(next, uid);
+  if (!result.ok) return undefined;
+  const discardedUids = new Set(result.events.flatMap((event) =>
+    event.kind === 'discard' ? (event.cards ?? []).map((card) => card.uid) : []));
+  const consumedGrades = candidateGrades.filter((grade) => discardedUids.has(grade.uid));
+  const granted = result.events.reduce((total, event) =>
+    event.kind === 'energy' && event.actor === source.owner ? total + (event.amount ?? 0) : total, 0);
+  return {
+    state: next,
+    surgeActivations: [...branch.surgeActivations, {
+      sourceUid: uid,
+      sourceDefinitionId: source.definitionId,
+      sourceCost: CARDS[source.definitionId].cost,
+      granted,
+      consumedGrades,
+      events: result.events,
+    }],
+  };
+}
+
+function commitmentCost(state: CombatState): number {
+  let cost = 0;
+  for (const action of state.queue) {
+    if (action?.kind === 'player') cost += CARDS[action.card.definitionId].cost;
+  }
+  for (const attachment of state.attachments) cost += CARDS[attachment.card.definitionId].cost;
+  return cost;
+}
+
 function enumeratePlans(source: CombatState): Plan[] {
   const bracketModifiers = source.hand.filter((card) => CARDS[card.definitionId].bracket).map((card) => card.uid);
+  const surges = source.hand.filter((card) => CARDS[card.definitionId].surge).map((card) => card.uid);
   const ordinary = source.hand.filter((card) => {
     const cardDefinition = CARDS[card.definitionId];
-    return !cardDefinition.modifier && !cardDefinition.bracket;
+    return !cardDefinition.modifier && !cardDefinition.bracket && !cardDefinition.surge;
   }).map((card) => card.uid);
   const gradeSources = source.hand.filter((card) => CARDS[card.definitionId].modifier).map((card) => card.uid);
-  let states = [clonePlanningState(source)];
+  let states: PlanningBranch[] = [{ state: clonePlanningState(source), surgeActivations: [] }];
+  // Each Surge may be skipped, activated raw, or graded by any still-available friendly source.
+  // Activations are sequenced so an earlier raw Surge can fund grades consumed by a later Surge.
+  for (const surgeUid of surges) {
+    const expanded = [...states];
+    for (const branch of states) {
+      if (!branch.state.hand.some((card) => card.uid === surgeUid)) continue;
+      let variants = [branch];
+      for (const gradeUid of gradeSources) {
+        const withGrade = [...variants];
+        for (const variant of variants) {
+          if (!variant.state.hand.some((card) => card.uid === gradeUid)) continue;
+          const next = clonePlanningState(variant.state);
+          if (attachModifier(next, gradeUid, { kind: 'card', uid: surgeUid }).ok) {
+            withGrade.push({ ...variant, state: next });
+          }
+        }
+        variants = bounded(withGrade, MAX_PLANS, `${source.seed}:${source.position}:surge-grade:${surgeUid}:${gradeUid}`);
+      }
+      for (const variant of variants) {
+        const activated = activateSurge(variant, surgeUid);
+        if (activated) expanded.push(activated);
+      }
+    }
+    states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:surge:${surgeUid}`);
+  }
 
-  // Temporal cards come first because their effective grades define the legal range and visible future.
+  // Temporal cards follow Surge funding, but still precede ordinary placement.
   for (const uid of bracketModifiers) {
     const expanded = [...states];
-    for (const state of states) {
-      const sourceCard = state.hand.find((card) => card.uid === uid);
+    for (const branch of states) {
+      const sourceCard = branch.state.hand.find((card) => card.uid === uid);
       if (!sourceCard) continue;
       const scouting = CARDS[sourceCard.definitionId].bracket?.scouting ?? 0;
-      const next = clonePlanningState(state);
+      const next = clonePlanningState(branch.state);
       if (!attachModifier(next, uid, { kind: 'bracket' }).ok) continue;
-      expanded.push(next);
+      expanded.push({ ...branch, state: next });
       if (scouting > 0) {
         const refunded = clonePlanningState(next);
-        if (removeModifier(refunded, uid).ok) expanded.push(refunded);
+        if (removeModifier(refunded, uid).ok) expanded.push({ ...branch, state: refunded });
       }
     }
     states = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:bracket:${uid}`);
   }
 
-  const attachGrades = (initial: CombatState[], phase: string, temporal: boolean): CombatState[] => {
+  const attachGrades = (initial: PlanningBranch[], phase: string, temporal: boolean): PlanningBranch[] => {
     let graded = initial;
     for (const uid of gradeSources) {
       const expanded = [...graded];
-      for (const state of graded) {
-        if (!state.hand.some((card) => card.uid === uid)) continue;
-        for (const target of canonicalModifierTargets(state, uid)) {
-          if (isActiveTemporalTarget(state, target) !== temporal) continue;
-          const next = clonePlanningState(state);
-          if (attachModifier(next, uid, target).ok) expanded.push(next);
+      for (const branch of graded) {
+        if (!branch.state.hand.some((card) => card.uid === uid)) continue;
+        for (const target of canonicalModifierTargets(branch.state, uid)) {
+          if (isActiveTemporalTarget(branch.state, target) !== temporal) continue;
+          const next = clonePlanningState(branch.state);
+          if (attachModifier(next, uid, target).ok) expanded.push({ ...branch, state: next });
         }
       }
       graded = bounded(expanded, MAX_PLANS, `${source.seed}:${source.position}:${phase}:${uid}`);
@@ -316,17 +416,18 @@ function enumeratePlans(source: CombatState): Plan[] {
     return graded;
   };
 
-  // Grade active temporal hosts before placing actions so their authored range is planned immediately.
+  // Grade active temporal hosts before other planning so their authored range applies immediately.
   states = attachGrades(states, 'temporal-grade', true);
+
 
   for (const uid of ordinary) {
     const expanded = [...states];
-    for (const state of states) {
-      if (!state.hand.some((card) => card.uid === uid)) continue;
-      for (let position = state.position; position < turnEnd(state); position += 1) {
-        if (state.queue[position] !== null) continue;
-        const next = clonePlanningState(state);
-        if (queueCard(next, uid, null, position).ok) expanded.push(next);
+    for (const branch of states) {
+      if (!branch.state.hand.some((card) => card.uid === uid)) continue;
+      for (let position = branch.state.position; position < turnEnd(branch.state); position += 1) {
+        if (branch.state.queue[position] !== null) continue;
+        const next = clonePlanningState(branch.state);
+        if (queueCard(next, uid, null, position).ok) expanded.push({ ...branch, state: next });
       }
     }
     states = bounded(expanded, MAX_ACTION_STATES, `${source.seed}:${source.position}:action:${uid}`);
@@ -336,7 +437,8 @@ function enumeratePlans(source: CombatState): Plan[] {
   states = attachGrades(states, 'ordinary-grade', false);
   states = bounded(states, MAX_PLANS, `${source.seed}:${source.position}:complete`);
 
-  return states.map((state) => {
+  return states.map((branch) => {
+    const { state } = branch;
     const played = state.queue.slice(state.position, turnEnd(state))
       .flatMap((entry) => entry?.kind === 'player' ? [entry.card] : []);
     const attached = state.attachments.map((entry) => entry.card);
@@ -348,12 +450,14 @@ function enumeratePlans(source: CombatState): Plan[] {
         upgradeLevel(state, action.card.uid, position),
       );
     }, 0);
+    const immediateCost = branch.surgeActivations.reduce((total, activation) =>
+      total + activation.sourceCost + activation.consumedGrades.reduce((sum, grade) => sum + grade.cost, 0), 0);
     return {
-      key: planKey(state),
-      state,
+      ...branch,
+      key: planKey(branch),
       playedUids: played.map((card) => card.uid),
       attachedUids: attached.map((card) => card.uid),
-      spent: state.actors.bob.energy - availableEnergy(state),
+      spent: immediateCost + commitmentCost(state),
       greedyValue: effectivePlayerDamage,
     };
   });
@@ -433,6 +537,7 @@ function hasLegalUse(state: CombatState, uid: string): boolean {
   const card = state.hand.find((entry) => entry.uid === uid);
   if (!card) return false;
   const cardDefinition = CARDS[card.definitionId];
+  if (cardDefinition.surge) return playSurge(clonePlanningState(state), uid).ok;
   if (cardDefinition.bracket) return canAttachModifier(state, uid, { kind: 'bracket' });
   if (cardDefinition.modifier) return canonicalModifierTargets(state, uid).length > 0;
   for (let position = state.position; position < turnEnd(state); position += 1) {
@@ -442,17 +547,21 @@ function hasLegalUse(state: CombatState, uid: string): boolean {
   return false;
 }
 
-function observeOpportunities(state: CombatState, planned: CombatState, usage: Record<string, CardUsage>): void {
+function observeOpportunities(state: CombatState, planned: Plan, usage: Record<string, CardUsage>): void {
   const energy = availableEnergy(state);
-  const end = turnEnd(planned);
+  const end = turnEnd(planned.state);
   let playablePositions = 0;
-  for (let position = planned.position; position < end; position += 1) {
-    if (planned.queue[position]?.kind !== 'enemy') playablePositions += 1;
+  for (let position = planned.state.position; position < end; position += 1) {
+    if (planned.state.queue[position]?.kind !== 'enemy') playablePositions += 1;
   }
-  const visiblePositions = visibleEnd(planned) - planned.position;
+  const visiblePositions = visibleEnd(planned.state) - planned.state.position;
   const selectedUids = new Set([
-    ...planned.attachments.map((entry) => entry.card.uid),
-    ...planned.queue.slice(planned.position, end).flatMap((entry) => entry?.kind === 'player' ? [entry.card.uid] : []),
+    ...planned.surgeActivations.flatMap((activation) => [
+      activation.sourceUid,
+      ...activation.consumedGrades.map((grade) => grade.uid),
+    ]),
+    ...planned.state.attachments.map((entry) => entry.card.uid),
+    ...planned.state.queue.slice(planned.state.position, end).flatMap((entry) => entry?.kind === 'player' ? [entry.card.uid] : []),
   ]);
   for (const card of state.hand) {
     const entry = usage[card.definitionId];
@@ -465,6 +574,21 @@ function observeOpportunities(state: CombatState, planned: CombatState, usage: R
 }
 
 function observeChoice(evaluation: Evaluation, usage: Record<string, CardUsage>): void {
+  for (const activation of evaluation.surgeActivations) {
+    const sourceUsage = usage[activation.sourceDefinitionId];
+    sourceUsage.played += 1;
+    sourceUsage.surgeActivations += 1;
+    sourceUsage.surgeGranted += activation.granted;
+    sourceUsage.energySpent += activation.sourceCost;
+    for (const grade of activation.consumedGrades) {
+      const gradeUsage = usage[grade.definitionId];
+      gradeUsage.attached += 1;
+      gradeUsage.energySpent += grade.cost;
+      for (const key of grade.upgradeTargets) {
+        gradeUsage.upgradeTargets[key] = (gradeUsage.upgradeTargets[key] ?? 0) + 1;
+      }
+    }
+  }
   for (const uid of evaluation.playedUids) {
     const definitionId = definitionIdForUid(evaluation.state, uid);
     if (!definitionId) throw new Error(`Chosen card ${uid} has no live definition.`);
@@ -501,7 +625,7 @@ function fight(seed: number, policy: PolicyName, damageScale: number, counters: 
 
   while (state.phase === 'planning' && turns < MAX_TURNS) {
     const selected = choose(evaluatePlans(state, damageScale, counters), policy, rng);
-    observeOpportunities(state, selected.state, usage);
+    observeOpportunities(state, selected, usage);
     observeChoice(selected, usage);
     trajectory.push(`t${state.turn}@${state.position}:${selected.key}`);
     state = selected.next;
@@ -619,6 +743,12 @@ function candidates(cards: Record<string, CardDefinition>): Candidate[] {
           change: { kind: 'card-effect', cardId: id, effectKind: primaryKind, delta },
         });
       }
+      if (card.surge && primaryAmount > 1) {
+        result.push({
+          id: `card:${id}:${primaryKind}:zero`,
+          change: { kind: 'card-effect', cardId: id, effectKind: primaryKind, delta: -primaryAmount },
+        });
+      }
     }
     if (card.modifier) {
       for (const delta of validSignedDeltas(card.modifier.levels)) {
@@ -678,6 +808,7 @@ function candidates(cards: Record<string, CardDefinition>): Candidate[] {
 
 function roles(card: CardDefinition): string[] {
   const result = card.effects.map((effect) => `effect:${effect.kind}:${effect.recipient}`);
+  if (card.surge) result.push('surge:planning');
   if (card.modifier) {
     const polarity = card.modifier.levels < 0 ? 'negative' : 'positive';
     result.push(`modifier:level:${polarity}`);
@@ -747,9 +878,9 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
     }
     restoreContent(originalCards, originalEncounter);
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       generatedAt: new Date().toISOString(),
-      rulesModel: 'Canonical production combat engine: persistent absolute-position timeline resolving toward higher indices; current turn bracket is playable and scouted future is inspectable only.',
+      rulesModel: 'Canonical production combat engine: immediate non-refundable planning Surge spends temporary energy before stored energy; persistent absolute-position timeline resolves toward higher indices; current turn bracket is playable and scouted future is inspectable only.',
       fingerprint: await fingerprint(originalCards, originalEncounter),
       seeds,
       counts: counters,
@@ -761,15 +892,16 @@ async function buildReport(seeds: number[]): Promise<BalanceReport> {
       },
       limitations: [
         `Heuristic policies are neither human nor optimal play and look ahead only one canonical resolveTurn transition, for at most ${MAX_TURNS} turns.`,
-        `Search keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; temporal cards are enumerated and graded before actions, but large hands can still leave legal combinations unevaluated.`,
+        `Planner keeps at most ${MAX_ACTION_STATES} action states and ${MAX_PLANS} complete plans per turn using deterministic sampling; temporal cards are graded before immediate Surge activation and ordinary actions, but large hands can still leave legal combinations unevaluated.`,
+        'Surge activations are real playSurge commands, sequenced before ordinary placement. Plans may grade a Surge before consuming it and may use an earlier activation to fund a later one; activation source, granted amount, command events, and consumed grade targets travel with each bounded branch.',
         'Only the absolute current bracket is planned or scored. Scouted positions are read only after a real scouting attachment reveals them; cached positions beyond visibleEnd are never inspected.',
         'Scouting has no combat score or fabricated information-value bonus. Its attachment, authored-scaling target, and revealed-position counts prove actual use, but this one-turn policy cannot measure how a human values future knowledge.',
         'Opportunity counts include the changing playable and visible position exposure available while each card is in hand; a selected sequential use is counted as legal even when an earlier attachment created its target or range.',
         'Equivalent occupied card/position grade routes are represented by the card target, and equivalent empty current-bracket routes by one position.',
-        'Analysis projects presentation-only timeline history to an empty array before every branch and resolution; absolute position, queue, actors, cards, attachments, and resources remain in the simulation and state keys.',
+        'Analysis projects presentation-only timeline history to an empty array before every branch and resolution; absolute position, queue, actors, cards, attachments, stored energy, and temporary Surge energy remain in the simulation and state keys.',
         'Confidence intervals reflect sampled seeds and policy behavior, not player populations; every candidate reuses the same paired seed set and isolates only the named data change.',
         'Strong scores resolved one-turn outcomes; tactical uses that score but makes a uniformly random legal choice on 25% of turns; greedy prioritizes effective authored player damage after grades. Policy randomness is separate from combat RNG.',
-        'Played counts include only actions that actually fire; energy spent includes all commitments, including actions canceled by earlier lethal damage.',
+        'Played counts include only timed actions that actually fire plus Surge cards that actually activate. Energy spent is the nonnegative sum of immediate Surge groups and resolution commitments, including actions canceled by earlier lethal damage; consumed grade sources are counted exactly once.',
         'Base-stat, authored scaling-step, source-level, and encounter candidates are diagnostics only. The runner never applies tuning to production content.',
       ],
     };
