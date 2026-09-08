@@ -266,7 +266,7 @@ canvas#arena { display: block; background: #18201e; }
   right: 0;
   top: 314px;
   height: 304px;
-  border-block: 3px solid rgba(238, 220, 164, .42);
+  border-block: 1px solid rgba(238, 220, 164, .16);
   background: transparent;
   cursor: grab;
   touch-action: none;
@@ -310,7 +310,7 @@ canvas#arena { display: block; background: #18201e; }
   top: 278px;
   width: var(--bracket-width);
   height: 32px;
-  border: 5px solid var(--amber);
+  border: 2px solid rgba(255, 179, 26, .55);
   border-bottom: 0;
   pointer-events: auto;
 }
@@ -318,12 +318,13 @@ canvas#arena { display: block; background: #18201e; }
   content: '';
   position: absolute;
   top: 0;
-  width: 5px;
-  height: 22px;
-  background: var(--amber);
+  width: 2px;
+  height: 338px;
+  background: linear-gradient(rgba(255, 179, 26, .4), rgba(255, 179, 26, .12));
+  pointer-events: none;
 }
-.turn-bracket::before { left: -5px; }
-.turn-bracket::after { right: -5px; }
+.turn-bracket::before { left: -2px; }
+.turn-bracket::after { right: -2px; }
 .turn-bracket > span {
   position: absolute;
   left: 50%;
@@ -341,6 +342,7 @@ canvas#arena { display: block; background: #18201e; }
 .turn-bracket.attachment-invalid { opacity: .55; cursor: not-allowed; }
 .turn-bracket.drop-hover { border-color: var(--teal); }
 .queue-slot {
+  --slot-ink: rgba(238, 220, 164, .14);
   position: absolute;
   z-index: calc(var(--slot-z) + 6);
   left: var(--slot-x);
@@ -355,15 +357,39 @@ canvas#arena { display: block; background: #18201e; }
 }
 .queue-slot.empty { z-index: 7; pointer-events: none; }
 .timeline.show-guides .queue-slot.empty.current { pointer-events: auto; }
-.queue-slot.empty.current:focus-visible { outline: 3px solid var(--amber); outline-offset: -5px; }
-.queue-slot.active::after {
-  content: '';
+.slot-guide {
   position: absolute;
-  inset: -8px 3px 26px;
-  border: 5px solid #fff4c9;
-  box-shadow: 0 0 18px rgba(255, 211, 91, .7);
+  left: var(--card-x);
+  top: var(--card-y);
+  width: var(--card-w);
+  height: var(--card-h);
+  border: 1px solid var(--slot-ink);
+  border-radius: 7% / 5%;
   pointer-events: none;
 }
+.queue-slot.current { --slot-ink: rgba(255, 179, 26, .25); }
+.queue-slot.future { --slot-ink: rgba(150, 190, 181, .18); }
+.queue-slot.history { --slot-ink: rgba(180, 195, 188, .1); }
+.queue-slot.empty .slot-guide { background: linear-gradient(rgba(255, 210, 135, .035), rgba(255, 210, 135, .01)); }
+.queue-slot.future .slot-guide { border-style: dashed; }
+.slot-guide::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: 1px;
+  height: max(0px, calc(var(--slot-y) + var(--card-y) - 314px));
+  background: var(--slot-ink);
+  pointer-events: none;
+}
+.queue-slot:not(.empty) .slot-guide::before { display: none; }
+.queue-slot.active .slot-guide {
+  border-color: rgba(255, 244, 201, .7);
+  box-shadow: 0 0 12px rgba(255, 211, 91, .12);
+}
+.queue-slot.drop-valid .slot-guide { border-color: var(--teal); }
+.queue-slot.empty.current:focus-visible { outline: none; }
+.queue-slot.empty.current:focus-visible .slot-guide { outline: 2px solid var(--amber); outline-offset: 3px; }
 .queue-card-body {
   position: absolute;
   z-index: 2;

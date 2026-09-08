@@ -540,6 +540,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     const pose = queueCardPose(position);
     const slotX = queueSlotX(position);
     const style = `style="--slot-x:${slotX}px;--slot-y:${QUEUE_CARD_Y - 6}px;--slot-z:${Math.max(1, position)};--slot-w:${stride()}px;--card-x:${pose.x - slotX}px;--card-y:${pose.y - (QUEUE_CARD_Y - 6)}px;--card-w:${pose.width}px;--card-h:${pose.height}px"`;
+    const guide = '<span class="slot-guide" aria-hidden="true"></span>';
     const target = { kind: 'slot', slot: position } as const;
     const editable = !history && !future && mode === 'planning';
     const fixedAttachments = editable ? positionAttachments(position) : [];
@@ -547,7 +548,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
     if (!slot) {
       const fixedCards = editable ? attachmentTabsMarkup(fixedAttachments, '', pose, slotX) : '';
       return `<div class="queue-slot empty${region}${active}${pending && editable ? ' pending-destination' : ''}${editable ? attachmentClass(target) : ''}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" role="button" tabindex="${editable && Boolean(selection || pending) ? 0 : -1}" aria-label="${regionLabel}, position ${position}, ${history ? 'empty history' : future ? 'no scouted action' : 'open position'}" ${style}>
-        ${fixedCards}</div>`;
+        ${guide}${fixedCards}</div>`;
     }
     const sourceUid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
     const renderUid = history ? `history:${position}:${sourceUid}` : sourceUid;
@@ -564,7 +565,7 @@ export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
       ? `${effective.name}. ${effective.description} Target ${targetName}`
       : `Bob card ${effective.name}, cost ${effective.cost}, target ${targetName}. ${effective.description}`;
     return `<div class="queue-slot ${slot.kind}${editable && slot.kind === 'player' ? ' queue-card' : slot.kind === 'enemy' ? ' locked' : ''}${region}${active}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" ${style}>
-      ${cardTabs}<div class="queue-card-body${editable ? attachmentClass(cardTarget) : ''}" data-card-uid="${escapeHtml(renderUid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || canTarget) ? 0 : -1}"
+      ${guide}${cardTabs}<div class="queue-card-body${editable ? attachmentClass(cardTarget) : ''}" data-card-uid="${escapeHtml(renderUid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || canTarget) ? 0 : -1}"
         aria-label="Inspect position ${position}, ${regionLabel}, ${escapeHtml(cardLabel)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}"></div>
       </div>`;
   };
