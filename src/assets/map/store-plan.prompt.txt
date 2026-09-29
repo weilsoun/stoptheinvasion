@@ -1,0 +1,37 @@
+ARCHIVED MOREMART — TOP-DOWN PIXEL ENVIRONMENT GENERATION BRIEF
+
+Status: parked with the inactive MOREMART direction, not part of the active Kestrel combat deliverable. This records a requested generation, not completed artwork. No image-generation provider was connected. The retained world artwork is original hand-authored pixel art; do not relabel it as generated or use this brief to replace the illustrated spaceship direction.
+
+GOAL
+Create an original, finished pixel-art big-box store environment for a walkable top-down game. MOREMART is an ordinary retail store trapped in a repeating closing shift by time-manipulating aliens. The employees remain recognizable people with jobs, not infection monsters. Use readable classic top-down 16-bit spatial grammar without copying another game's tiles, characters, insignia or layouts.
+
+This replaces the former illustrated route-map request. Do not generate a paper evacuation diagram, node graph, isometric scene, cinematic perspective, generic fantasy dungeon or another vector-plan draft.
+
+DELIVERY AND INTEGRATION
+Deliver lossless PNG environment tiles and compatible prop/foreground layers, with native pixel dimensions documented and integer-scaled previews. Tile edges must join cleanly. Keep a consistent grid, light direction and pixel-cluster size. Supply open/closed door variants and transparent foreground pieces where occlusion needs a separate layer. No blurred resizing or antialiased pseudo-pixels.
+
+The authoritative store is a 33-column by 35-row grid in src/game/map.ts. Match that topology and the approved tile dimensions when composing the stitched store reference. Do not invent walkable shortcuts or move gates to suit an attractive composition. A continuous background image, if supplied, must remain grid-aligned and support separately rendered doors, objects and actors.
+
+The game uses 1920×1080 design coordinates. The map occupies only the upper 1920×540 region; the lower half contains physical cards. The map camera shows a portion of the store, not a permanently fitted overview. Review at the live scale and at a 1280×800 letterboxed tablet viewport. Keep corridors and collision boundaries legible without zooming.
+
+ART DIRECTION: MISPRINTED TOMORROW
+Warm stock #F1E6C8, carbon #172324, deep ink #0D1718, store teal #477B78, builder orange #D86532, safety yellow #E8BA45, possession plum #70516F and receipt red #AC443E. Use deliberate pixel clusters, restrained flat shadow masses and familiar retail materials. Floors remain visually quieter than walls, shelves, tables and interactive props. A localized delayed mark can suggest time slipping; no neon science-fiction glow or full-screen chromatic aberration.
+
+Give departments identity through tills, receipt gates, pallets, stock shelves, staff doors, mop storage, returns counters, a break-room microwave, supply lockers, a repair bench and rear shutter machinery. No random grunge, glossy 3D, concept-art airbrush, fake miniature text, placeholder geometric icons or tiny detail that disappears at play scale.
+
+SPATIAL REQUIREMENTS
+- Preserve the front entrance and Security checkpoint.
+- Preserve the Checkout/Stock Aisle branches and staff-access gate.
+- Preserve the break-room service, Supervisor station and both rear interlock departments.
+- Preserve the optional Control Office detour, Supply Corridor and preparation service.
+- Preserve the Night Manager's rear area and the loading exit.
+- Doorways and intersections must correspond to real grid connections, not arrows between labels.
+- Furniture must read as occupying its actual blocked footprint. A decorative opening must not imply an accessible route through a closed gate.
+
+SIGNAGE AND SEPARATE GAME LAYERS
+If environmental signage is included, use only the relevant exact department names: ENTRANCE, SECURITY DESK, CHECKOUT, STOCK AISLE, BREAK ROOM, STAFF ACCESS, CLEANING BAY, CUSTOMER SERVICE, CONTROL OFFICE, SUPPLY CORRIDOR, PREP BENCH and LOADING BAY. Place signs naturally and legibly without obscuring doors or floor routes. Do not turn the entire store into a labelled diagram.
+
+Do not bake Bob, enemies, collectible potions, target outlines, selected routes, completion stamps, locks, buttons, HP, resources, cards, NOW markers or tutorials into the environment. These are separate game-owned objects and interfaces. Current directional character sprites and comic card illustrations remain separate assets.
+
+ACCEPTANCE
+Review seam continuity, collision-footprint correspondence, open/closed door readability, sprite contrast, foreground occlusion and the actual upper-half camera crop. Check a quiet floor, a crowded aisle and a gate/interaction area. Keep the prompt, references, provider/model details and generated source files with the final asset. Claim model generation only after it actually occurs.

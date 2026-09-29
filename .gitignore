@@ -6,3 +6,4 @@ dist/
 .omp/cache/
 .omp/state/
 .omp/sessions/
+.balance/

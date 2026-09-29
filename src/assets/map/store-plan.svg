@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" role="img" aria-label="A printed big-box store floor plan with aisles, staff rooms, supply corridor, and rear loading bay">
+  <defs>
+    <pattern id="plan-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M20 0H0v20" fill="none" stroke="#477B78" stroke-width="1" opacity=".15"/>
+    </pattern>
+    <pattern id="staff-screen" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(-18)">
+      <path d="M0 2h14" stroke="#477B78" stroke-width="3" opacity=".16"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="650" fill="#F1E6C8"/>
+  <rect x="26" y="24" width="1148" height="602" rx="3" fill="url(#plan-grid)" stroke="#172324" stroke-width="8"/>
+  <path d="M39 39h1120v572H39z" fill="none" stroke="#477B78" stroke-width="3"/>
+
+  <!-- public floor mass and broad transverse aisles -->
+  <path d="M56 224H1009V488H56z" fill="#F1E6C8" stroke="#477B78" stroke-width="5"/>
+  <path d="M56 274H1009M56 455H1009" stroke="#477B78" stroke-width="3" stroke-dasharray="18 9" opacity=".8"/>
+  <path d="M298 224v264M560 224v264M810 224v264" stroke="#477B78" stroke-width="4"/>
+
+  <!-- entrance vestibule; center remains quiet for native node at 90,570 -->
+  <path d="M39 510h142v101H39z" fill="#F1E6C8" stroke="#477B78" stroke-width="5"/>
+  <path d="M64 611v-31c0-29 23-52 52-52h41M157 611v-31c0-29-23-52-52-52H64" fill="none" stroke="#477B78" stroke-width="3"/>
+  <path d="M58 614h42m25 0h42" stroke="#172324" stroke-width="5"/>
+
+  <!-- security vestibule around exact center 285,570 -->
+  <path d="M202 510h166v101H202z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="5"/>
+  <path d="M215 523h140M215 598h140" stroke="#477B78" stroke-width="2"/>
+  <path d="M202 548h21v44h-21M368 548h-21v44h21" fill="none" stroke="#172324" stroke-width="5"/>
+  <path d="M240 531h90v12h-90z" fill="#477B78" opacity=".38"/>
+
+  <!-- checkout corral centered at 180,365, constructed from real counters -->
+  <path d="M82 300h196v130H82z" fill="#F1E6C8" stroke="#477B78" stroke-width="5"/>
+  <g fill="none" stroke="#477B78" stroke-width="5">
+    <path d="M98 320h54v28H98zM98 382h54v28H98zM208 320h54v28h-54zM208 382h54v28h-54z"/>
+  </g>
+  <path d="M160 305v120M200 305v120" stroke="#477B78" stroke-width="2" stroke-dasharray="8 7"/>
+
+  <!-- stock aisle work cell centered at 445,570 -->
+  <path d="M375 500h140v111H375z" fill="#F1E6C8" stroke="#477B78" stroke-width="5"/>
+  <path d="M390 515h23v78h-23zM435 515h23v78h-23zM480 515h23v78h-23z" fill="#477B78" opacity=".28" stroke="#477B78" stroke-width="2"/>
+  <path d="M375 550h140" stroke="#F1E6C8" stroke-width="15"/>
+
+  <!-- staff corridor links break room, supervisor, cleaning, and customer service -->
+  <path d="M328 286h692v158H328z" fill="none" stroke="#172324" stroke-width="5"/>
+  <path d="M340 365h668" stroke="#477B78" stroke-width="20" opacity=".17"/>
+  <path d="M340 365h668" stroke="#477B78" stroke-width="3" stroke-dasharray="12 10"/>
+
+  <!-- break room centered at 445,365; table anatomy stays outside overlay center -->
+  <path d="M367 305h156v120H367z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="5"/>
+  <circle cx="398" cy="334" r="17" fill="none" stroke="#477B78" stroke-width="4"/>
+  <path d="M389 323l18 22M407 323l-18 22M482 317v31h23" fill="none" stroke="#477B78" stroke-width="4"/>
+  <path d="M428 305h34" stroke="#F1E6C8" stroke-width="9"/>
+
+  <!-- supervisor office centered at 685,365 -->
+  <path d="M605 305h160v120H605z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="5"/>
+  <path d="M620 320h51v25h-51zM699 385h51v25h-51z" fill="none" stroke="#477B78" stroke-width="4"/>
+  <path d="M665 305h34" stroke="#F1E6C8" stroke-width="9"/>
+  <path d="M677 305a17 17 0 0117 17" fill="none" stroke="#477B78" stroke-width="3"/>
+
+  <!-- customer-service/greeter room centered at 935,365 -->
+  <path d="M855 305h160v120H855z" fill="#F1E6C8" stroke="#477B78" stroke-width="5"/>
+  <path d="M870 397c34-27 76-27 130 0v13H870z" fill="#477B78" opacity=".26" stroke="#477B78" stroke-width="3"/>
+  <path d="M914 305h36" stroke="#F1E6C8" stroke-width="9"/>
+  <path d="M926 305a18 18 0 0118 18" fill="none" stroke="#477B78" stroke-width="3"/>
+
+  <!-- cleaner store centered at 685,145 -->
+  <path d="M605 85h160v120H605z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="5"/>
+  <path d="M620 101h28v88h-28zM722 101h28v88h-28z" fill="#477B78" opacity=".25" stroke="#477B78" stroke-width="3"/>
+  <path d="M670 85h30" stroke="#F1E6C8" stroke-width="9"/>
+  <path d="M680 85v-26h12v26" fill="none" stroke="#172324" stroke-width="3"/>
+
+  <!-- floor-manager office centered at 935,145 -->
+  <path d="M855 85h160v120H855z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="5"/>
+  <path d="M870 102h58v29h-58zM944 160h56v29h-56z" fill="none" stroke="#477B78" stroke-width="4"/>
+  <path d="M919 85h32" stroke="#F1E6C8" stroke-width="9"/>
+  <path d="M930 85a17 17 0 0117 17" fill="none" stroke="#477B78" stroke-width="3"/>
+
+  <!-- narrow supply corridor with bays centered on 1100,510 and 1100,265 -->
+  <path d="M1025 215h134v396h-134z" fill="#F1E6C8" stroke="#172324" stroke-width="5"/>
+  <path d="M1025 330h134M1025 438h134" stroke="#477B78" stroke-width="5"/>
+  <path d="M1040 451h104v118h-104z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="4"/>
+  <path d="M1051 464v92M1073 464v92M1111 464v92M1133 464v92" stroke="#477B78" stroke-width="3"/>
+  <path d="M1040 231h104v68h-104z" fill="url(#staff-screen)" stroke="#477B78" stroke-width="4"/>
+  <path d="M1053 247h78M1053 280h78" stroke="#477B78" stroke-width="3"/>
+
+  <!-- rear loading bay and shutter controls centered at 1100,80 -->
+  <path d="M1025 39h134v98h-134z" fill="#F1E6C8" stroke="#172324" stroke-width="5"/>
+  <path d="M1040 49h104v71h-104z" fill="none" stroke="#477B78" stroke-width="5"/>
+  <path d="M1040 61h104M1040 75h104M1040 89h104M1040 103h104" stroke="#477B78" stroke-width="3"/>
+  <path d="M1013 63h12v34h-12z" fill="#172324"/>
+  <circle cx="1019" cy="72" r="3" fill="#F1E6C8"/>
+  <circle cx="1019" cy="88" r="3" fill="#F1E6C8"/>
+
+  <!-- physical staff passages, hinges and thresholds; no route or state baked in -->
+  <path d="M685 205v80M935 205v80M1009 365h16M1100 137v78M765 145h90" fill="none" stroke="#477B78" stroke-width="4" stroke-dasharray="10 7"/>
+  <g stroke="#172324" stroke-width="3" fill="none">
+    <path d="M605 348h16m-16 34h16M765 348h-16m16 34h-16M855 348h16m-16 34h16M1015 348h-16m16 34h-16"/>
+  </g>
+  <path d="M46 46h84M1070 604h82" stroke="#477B78" stroke-width="5" stroke-linecap="square"/>
+</svg>

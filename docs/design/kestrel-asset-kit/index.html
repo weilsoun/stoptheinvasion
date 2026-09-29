@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kestrel cutout asset kit</title>
+  <link rel="stylesheet" href="kestrel-cutout.css">
+  <style>
+    *{box-sizing:border-box} body{margin:0;background:#070d18;color:#fff4d3;font:22px/1.25 "Arial Narrow",Arial,sans-serif} main{width:min(1500px,calc(100% - 48px));margin:auto;padding:44px 0 80px} h1,h2{font-family:Impact,"Arial Narrow",sans-serif;letter-spacing:.08em;text-transform:uppercase} h1{font-size:64px;margin:0 0 12px} h2{margin:54px 0 18px;color:#f3ac63}.plate{width:100%;border:3px solid #c8753f;box-shadow:8px 9px 0 #0009}.ships{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;background:url(assets/production/backgrounds/viewscreen-spacefield.png) center/cover;border:3px solid #6fb9d0;padding:22px}.ships figure{margin:0;text-align:center}.ships img{display:block;width:100%;filter:drop-shadow(0 12px 12px #000b)} figcaption{font-weight:800;letter-spacing:.08em;text-transform:uppercase}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.cards figure{margin:0;background:#0d1826;border:2px solid #c8753f;padding:10px}.cards img{display:block;width:100%;aspect-ratio:672/472;object-fit:cover}.chips{display:flex;flex-wrap:wrap;gap:20px}.demo-card{margin-top:44px}.demo-card img{width:100%;height:100%;object-fit:cover}@media(max-width:850px){.ships,.cards{grid-template-columns:1fr}.ships img{max-width:540px;margin:auto}}
+  </style>
+</head>
+<body class="kestrel-cutout-theme">
+  <main>
+    <p class="k-display">Asset handoff / 1920×1440</p>
+    <h1>Kestrel Cutout Kit</h1>
+    <p>Generated raster sources, production crops, and deterministic native UI templates.</p>
+    <h2>Viewscreen plate</h2>
+    <img class="plate" src="assets/production/backgrounds/viewscreen-spacefield.png" alt="Deep-space battlefield plate">
+    <h2>Enemy cutouts</h2>
+    <section class="ships">
+      <figure><img src="assets/production/ships/sable-corsair.png" alt="Sable Corsair"><figcaption>Sable Corsair</figcaption></figure>
+      <figure><img src="assets/production/ships/needle-drone.png" alt="Needle Drone"><figcaption>Needle Drone</figcaption></figure>
+      <figure><img src="assets/production/ships/bulwark-tug.png" alt="Bulwark Tug"><figcaption>Bulwark Tug</figcaption></figure>
+    </section>
+    <h2>Card action plates</h2>
+    <section class="cards">
+      <figure><img src="assets/production/cards/pulse-cannon.png" alt="Pulse Cannon"><figcaption>Pulse Cannon</figcaption></figure>
+      <figure><img src="assets/production/cards/shield-cycle.png" alt="Shield Cycle"><figcaption>Shield Cycle</figcaption></figure>
+      <figure><img src="assets/production/cards/rail-lance.png" alt="Rail Lance"><figcaption>Rail Lance</figcaption></figure>
+      <figure><img src="assets/production/cards/reserve-cell.png" alt="Reserve Cell"><figcaption>Reserve Cell</figcaption></figure>
+      <figure><img src="assets/production/cards/tactical-sweep.png" alt="Tactical Sweep"><figcaption>Tactical Sweep</figcaption></figure>
+      <figure><img src="assets/production/cards/twin-burst.png" alt="Twin Burst"><figcaption>Twin Burst</figcaption></figure>
+    </section>
+    <h2>Native chip grammar</h2>
+    <section class="chips">
+      <div class="k-chip k-cutout" data-tone="hull"><span class="k-chip__label">Hull</span><strong class="k-chip__value">70 / 70</strong></div>
+      <div class="k-chip k-cutout" data-tone="shield"><span class="k-chip__label">Shield</span><strong class="k-chip__value">12 / 12</strong></div>
+      <div class="k-chip k-cutout" data-tone="energy"><span class="k-chip__label">Energy</span><strong class="k-chip__value">3</strong></div>
+      <div class="k-chip k-cutout" data-tone="system"><span class="k-chip__label">Next</span><strong class="k-chip__value">Needle Pair</strong></div>
+    </section>
+    <section class="demo-card">
+      <article class="k-card" data-kind="attack">
+        <header class="k-card__header"><span class="k-card__cost">1</span><span class="k-card__title">Pulse Cannon</span></header>
+        <img class="k-card__art" src="assets/production/cards/pulse-cannon.png" alt="">
+        <div class="k-card__rules">Deal 8 damage.</div>
+        <footer class="k-card__footer">Attack</footer>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

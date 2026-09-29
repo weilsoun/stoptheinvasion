@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="320" viewBox="0 0 960 320">
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#203849"/><stop offset="1" stop-color="#070d18"/>
+    </linearGradient>
+    <symbol id="cutout-chip" viewBox="0 0 300 86">
+      <path d="M14 1h272l13 13v58l-13 13H14L1 72V14Z" fill="url(#panel)" stroke="var(--chip-accent, #f3ac63)" stroke-width="3"/>
+      <path d="M17 8h266l8 8v54l-8 8H17l-8-8V16Z" fill="none" stroke="#fff4d3" stroke-opacity=".22"/>
+      <path d="M248 72h31" stroke="var(--chip-accent, #f3ac63)" stroke-width="3"/>
+      <circle cx="18" cy="18" r="3" fill="#cbb88e"/><circle cx="282" cy="18" r="3" fill="#cbb88e"/>
+    </symbol>
+    <symbol id="target-brackets" viewBox="0 0 300 180">
+      <path d="M44 3H3v41M256 3h41v41M44 177H3v-41m253 41h41v-41" fill="none" stroke="var(--target-accent, #f3ac63)" stroke-width="6"/>
+    </symbol>
+    <symbol id="meter-frame" viewBox="0 0 300 34">
+      <path d="M7 1h286l6 6v20l-6 6H7l-6-6V7Z" fill="#071019" stroke="#07151d" stroke-width="2"/>
+      <path d="M8 7h284v20H8Z" fill="none" stroke="#fff4d3" stroke-opacity=".2"/>
+    </symbol>
+  </defs>
+  <g style="--chip-accent:#d44f49"><use href="#cutout-chip" x="20" y="20" width="300" height="86"/></g>
+  <g style="--chip-accent:#6fb9d0"><use href="#cutout-chip" x="340" y="20" width="300" height="86"/></g>
+  <g style="--chip-accent:#f0c35b"><use href="#cutout-chip" x="660" y="20" width="280" height="86"/></g>
+  <g style="--target-accent:#f3ac63"><use href="#target-brackets" x="20" y="126" width="300" height="180"/></g>
+  <use href="#meter-frame" x="350" y="145" width="570" height="65"/>
+  <use href="#meter-frame" x="350" y="226" width="570" height="65"/>
+</svg>
