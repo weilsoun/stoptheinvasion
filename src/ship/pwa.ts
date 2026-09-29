@@ -3,7 +3,7 @@ import '@fontsource/barlow-condensed/latin-700.css';
 import '@fontsource/barlow-condensed/latin-900.css';
 import '@fontsource/bebas-neue/latin-400.css';
 
-/** Register once per mounted application; never reload an ongoing battle. */
+/** Register once per mounted application; never reload an ongoing expedition. */
 export function registerShipApp(): () => void {
   const lifetime = new AbortController();
   const options = { signal: lifetime.signal };
@@ -26,7 +26,7 @@ export function registerShipApp(): () => void {
   const guidance = document.createElement('p');
   guidance.textContent = 'On iPad: open this page in Safari, choose Share → Add to Home Screen, then enable Open as Web App if offered. On other devices, use your browser’s Install app menu. Landscape is recommended; portrait also works.';
   const safety = document.createElement('p');
-  safety.textContent = 'Finish your battle before closing: battles are not saved. Updates never reload a battle. A downloaded update takes over after every Kestrel window is closed and you launch again. Your browser may remove offline files when device storage is low.';
+  safety.textContent = 'Expedition progress is saved after accepted commands. Updates never reload an active expedition. A downloaded update takes over after every Kestrel window is closed and you launch again. Your browser may remove offline files when device storage is low.';
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = 'Back to bridge';
@@ -52,7 +52,7 @@ export function registerShipApp(): () => void {
     const report = (worker?: ServiceWorker) => {
       // Worker state events can precede the registration's slot update.
       if (registration.waiting || (worker?.state === 'installed' && registration.active)) {
-        setStatus('Update downloaded. Finish your battle, close all Kestrel windows and launch again to use it. This version remains available offline.');
+        setStatus('Update downloaded. Your committed expedition is saved; close all Kestrel windows and launch again to use the update. This version remains available offline.');
       } else if (registration.active || worker?.state === 'activated') {
         setStatus('Ready offline. You can launch Kestrel without a connection after this first successful download.');
       }
@@ -61,7 +61,7 @@ export function registerShipApp(): () => void {
       const worker = registration.installing;
       if (!worker) return;
       worker.addEventListener('statechange', () => {
-        if (worker.state === 'redundant') setStatus('Offline download failed. Stay online to play; after finishing your battle, check your connection and reopen Kestrel to try again.', true);
+        if (worker.state === 'redundant') setStatus('Offline download failed. Stay online to play; after your expedition is saved, check your connection and reopen Kestrel to try again.', true);
         else report(worker);
       }, options);
     };
@@ -81,7 +81,7 @@ export function registerShipApp(): () => void {
     void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, {
       scope: import.meta.env.BASE_URL,
       updateViaCache: 'none',
-    }).then(observe, () => setStatus('Offline setup failed. Keep this page online to play. After finishing your battle, check your connection, allow website storage and reopen Kestrel to try again.', true));
+    }).then(observe, () => setStatus('Offline setup failed. Keep this page online to play. After your expedition is saved, check your connection, allow website storage and reopen Kestrel to try again.', true));
   }
 
   return () => {

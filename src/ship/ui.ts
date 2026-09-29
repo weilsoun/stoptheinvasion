@@ -1,11 +1,10 @@
 import {
-  cardDefinition,
-  createBattle,
-  dispatchBattle,
+  definitionForCard,
   legalTargets,
   nextIntent,
   previewCard,
 } from './combat';
+import type { ShipCombatOptions, ShipCombatPort } from './expedition-types';
 import { cardIdentity, DEPARTMENT_LABELS, rarityStyle } from './card-identity';
 import {
   SHIP_DESIGN,
@@ -24,7 +23,6 @@ import {
   type ShipCardVisual,
   type ShipCardDefinition,
   type ShipEffect,
-  type ShipGamePort,
   type ShipScene,
 } from './types';
 
@@ -32,9 +30,6 @@ type PileName = 'draw' | 'discard' | 'exhaust';
 type Modal =
   | { type: 'detail'; card: ShipCard; origin: string; parentPile?: PileName }
   | { type: 'pile'; pile: PileName; origin: string }
-  | { type: 'help'; origin: string; parentMenu?: boolean }
-  | { type: 'menu'; origin: string }
-  | { type: 'confirm'; action: 'restart' | 'replay'; origin: string }
   | null;
 
 type DebugWindow = Window & { __SHIP__?: unknown };
@@ -111,15 +106,9 @@ function actorMeter(label: string, value: number, maximum: number, className: st
   return `<p class="ship-meter ${className}">${label} <output>${value}/${maximum}</output></p>`;
 }
 
-function freshSeed(): number {
-  const values = new Uint32Array(1);
-  crypto.getRandomValues(values);
-  return values[0]!;
-}
 
-export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePort {
-  const seed = freshSeed();
-  let state = createBattle(seed);
+export function mountShipCombat(root: HTMLElement, scene: ShipScene, options: ShipCombatOptions): ShipCombatPort {
+  let state = options.state();
   let displayed = clone(state);
   let selectedUid: string | null = null;
   let selectedTargetId: string | null = null;
@@ -127,15 +116,14 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
   let busy = false;
   let destroyed = false;
   let sequence = 0;
-  let reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let message = 'Awaiting orders.';
+  let message = 'Select a card.';
   let restoreFocusKey: string | null = null;
   let drag: CardDrag | null = null;
   let suppressClickThrough = false;
   let acceptedDrag: CardDrag | null = null;
   let aimTargetId: string | null = null;
 
-  root.className = 'ship-hud';
+  root.classList.add('ship-hud');
   root.innerHTML = '<main aria-label="Kestrel combat"></main>';
   const main = root.querySelector('main')!;
 
@@ -143,6 +131,8 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     return selectedUid ? state.hand.find((card) => card.uid === selectedUid) : undefined;
   }
 
+  const reducedMotion = (): boolean => options.presentation().reducedMotion;
+  const externallyBlocked = (): boolean => options.blocked();
   function selectedDefinition(): ShipCardDefinition | undefined {
     return selectedUid ? previewCard(state, selectedUid) : undefined;
   }
@@ -163,7 +153,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
   }
 
   function canPlayHandCard(view: ShipBattleState, uid: string, definition: ShipCardDefinition): boolean {
-    return !busy && !modal && view.phase === 'player'
+    return !busy && !modal && !externallyBlocked() && view.phase === 'player'
       && definition.cost <= view.energy && legalTargets(view, uid).length > 0;
   }
 
@@ -171,7 +161,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     const poses = shipHandPoses(view.hand.length);
     const visuals: ShipCardVisual[] = view.hand.map((card, index) => {
       const pose = poses[index]!;
-      const definition = previewCard(view, card.uid) ?? cardDefinition(card.id, view.catalog);
+      const definition = previewCard(view, card.uid) ?? definitionForCard(view, card);
       return {
         ...pose,
         uid: card.uid,
@@ -183,11 +173,11 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     if (modal?.type === 'detail') {
       const detailCard = modal.card;
       const definition = state.hand.some((card) => card.uid === detailCard.uid)
-        ? (previewCard(state, modal.card.uid) ?? cardDefinition(modal.card.id, state.catalog))
-        : cardDefinition(modal.card.id, state.catalog);
+        ? (previewCard(state, detailCard.uid) ?? definitionForCard(state, detailCard))
+        : definitionForCard(state, detailCard);
       visuals.push({
         ...DETAIL_POSE,
-        uid: `detail:${modal.card.uid}`,
+        uid: `detail:${detailCard.uid}`,
         definition,
         selected: false,
         dimmed: false,
@@ -219,7 +209,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     const poses = shipHandPoses(view.hand.length);
     return view.hand.map((card, index) => {
       const pose = poses[index]!;
-      const definition = previewCard(view, card.uid) ?? cardDefinition(card.id, view.catalog);
+      const definition = previewCard(view, card.uid) ?? definitionForCard(view, card);
       const classification = cardClassification(definition);
       const selected = card.uid === selectedUid;
       const affordable = definition.cost <= view.energy;
@@ -230,13 +220,13 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       const y = pose.y - (selected ? SHIP_CARD_LIFT : 0);
       const style = `left:${pose.x - width / 2}px;top:${y - height / 2}px;width:${width}px;height:${height}px;transform:rotate(${pose.rotation}deg)`;
       const unavailable = !affordable ? ', unaffordable' : !playable ? ', currently unplayable' : '';
-      return `<button class="ship-card-hit${selected ? ' selected' : ''}${playable ? ' draggable' : ''}" style="${style}" data-card="${escapeHtml(card.uid)}" data-focus-key="card:${escapeHtml(card.uid)}" aria-pressed="${selected}" aria-disabled="${busy}" ${busy ? 'disabled' : ''} aria-label="${escapeHtml(definition.title)}, ${escapeHtml(classification.ariaText)}, ${definition.cost} energy${unavailable}. ${escapeHtml(effectsText(definition))}"></button>`;
+      return `<button class="ship-card-hit${selected ? ' selected' : ''}${playable ? ' draggable' : ''}" style="${style}" data-card="${escapeHtml(card.uid)}" data-focus-key="card:${escapeHtml(card.uid)}" aria-pressed="${selected}" aria-disabled="${busy || externallyBlocked()}" ${busy || externallyBlocked() ? 'disabled' : ''} aria-label="${escapeHtml(definition.title)}, ${escapeHtml(classification.ariaText)}, ${definition.cost} energy${unavailable}. ${escapeHtml(effectsText(definition))}"></button>`;
     }).join('');
   }
 
   function enemyMarkup(view: ShipBattleState): string {
     return view.enemies.map((enemy, index) => {
-      const pose = enemyShipPose(index);
+      const pose = enemyShipPose(index, view.enemies.length);
       const intent = nextIntent(enemy);
       const alive = enemy.hull > 0;
       const legal = selectedUid ? legalTargets(state, selectedUid).includes(enemy.id) : false;
@@ -251,14 +241,14 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
         <p>${escapeHtml(enemy.role)}. Hull <output data-enemy-hull>${enemy.hull}</output> of ${enemy.maxHull}. Shield <output data-enemy-shield>${enemy.shield}</output> of ${enemy.maxShield}.</p>
         <p>${escapeHtml(status)}</p>
       </section>
-      <button class="enemy-target${legal ? ' legal' : ''}${selected ? ' selected' : ''}" style="left:${pose.x - pose.width / 2}px;top:${pose.y - pose.height / 2}px;width:${pose.width}px;height:${pose.height}px" data-target="${escapeHtml(enemy.id)}" data-focus-key="target:${escapeHtml(enemy.id)}" aria-describedby="${escapeHtml(statusId)}" aria-pressed="${selected}" ${(!alive || busy || !legal) ? 'disabled' : ''} aria-label="${selected ? 'Selected target: ' : 'Target '}${escapeHtml(enemy.name)}, ${enemy.hull} hull, ${enemy.shield} shield"></button>`;
+      <button class="enemy-target${legal ? ' legal' : ''}${selected ? ' selected' : ''}" style="left:${pose.x - pose.width / 2}px;top:${pose.y - pose.height / 2}px;width:${pose.width}px;height:${pose.height}px" data-target="${escapeHtml(enemy.id)}" data-focus-key="target:${escapeHtml(enemy.id)}" aria-describedby="${escapeHtml(statusId)}" aria-pressed="${selected}" ${(!alive || busy || externallyBlocked() || !legal) ? 'disabled' : ''} aria-label="${selected ? 'Selected target: ' : 'Target '}${escapeHtml(enemy.name)}, ${enemy.hull} hull, ${enemy.shield} shield"></button>`;
     }).join('');
   }
 
   function selectionMarkup(view: ShipBattleState): string {
     const card = currentCard();
     if (!card) return `<section class="selection-console ink-plate"><div><b>Card console</b><span>Hand ${view.hand.length}</span></div><p>Selection —</p><p class="selection-target">Target —</p></section>`;
-    const definition = selectedDefinition() ?? cardDefinition(card.id, state.catalog);
+    const definition = selectedDefinition() ?? definitionForCard(state, card);
     const targets = legalTargets(state, card.uid);
     const affordable = definition.cost <= state.energy;
     const requiresEnemyChoice = definition.kind === 'attack' && targets.length > 1;
@@ -286,8 +276,8 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     if (modal.type === 'detail') {
       const detailCard = modal.card;
       const definition = state.hand.some((card) => card.uid === detailCard.uid)
-        ? (previewCard(state, modal.card.uid) ?? cardDefinition(modal.card.id, state.catalog))
-        : cardDefinition(modal.card.id, state.catalog);
+        ? (previewCard(state, detailCard.uid) ?? definitionForCard(state, detailCard))
+        : definitionForCard(state, detailCard);
       const detailWidth = DETAIL_POSE.width * SHIP_CARD_DETAIL_SCALE;
       const detailHeight = DETAIL_POSE.height * SHIP_CARD_DETAIL_SCALE;
       const guardStyle = `left:${DETAIL_POSE.x - detailWidth / 2}px;top:${DETAIL_POSE.y - detailHeight / 2}px;width:${detailWidth}px;height:${detailHeight}px;transform:rotate(${DETAIL_POSE.rotation}deg)`;
@@ -298,36 +288,27 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       const title = modal.pile[0]!.toUpperCase() + modal.pile.slice(1);
       const groups = new Map<string, { card: ShipCard; count: number }>();
       for (const card of cards) {
-        const group = groups.get(card.id);
+        const key = `${card.id}:${card.upgradeLevel ?? 0}`;
+        const group = groups.get(key);
         if (group) group.count += 1;
-        else groups.set(card.id, { card, count: 1 });
+        else groups.set(key, { card, count: 1 });
       }
       const body = modal.pile === 'draw'
         ? `<p class="hidden-pile">${cards.length} cards remain. Draw order and identities are hidden.</p>`
         : cards.length === 0
           ? '<p>This pile is empty.</p>'
           : `<ul class="pile-list">${Array.from(groups.values()).map(({ card, count }) => {
-            const definition = cardDefinition(card.id, state.catalog);
+            const definition = definitionForCard(state, card);
             return `<li><button data-pile-card="${escapeHtml(card.uid)}" data-focus-key="pile-card:${escapeHtml(card.uid)}"><b>${escapeHtml(definition.title)}${classificationMarkup(definition)}</b><span class="pile-card-action">×${count} · Inspect</span></button></li>`;
           }).join('')}</ul>`;
       return `<div class="ship-modal" data-modal-backdrop="true"><section role="dialog" aria-modal="true" aria-labelledby="pile-title" class="ship-dialog ink-plate"><p class="eyebrow">Card bay</p><h2 id="pile-title">${escapeHtml(title)} pile</h2>${body}<button data-action="close-modal" data-focus-key="modal-close">Close</button></section></div>`;
     }
-    if (modal.type === 'help') {
-      const intentLegend = '<li>Each enemy’s bottom readout shows its next action: RCH is shield recharge before the action; DMG is damage per hit (× is hit count); SHD is shield restoration. Shield gains are capped by capacity.</li>';
-      const cardLegend = '<li>Frame colour shows rarity: Common steel/ivory, Uncommon blue, Rare gold; Unrated research uses a neutral frame. The footer emblem and short label show department: Weapons crosshair, Engineering gear, Command radar. These classifications do not change energy costs or draw odds.</li>';
-      return `<div class="ship-modal" data-modal-backdrop="true"><section role="dialog" aria-modal="true" aria-labelledby="help-title" class="ship-dialog ink-plate"><p class="eyebrow">Bridge manual</p><h2 id="help-title">Combat rules</h2><ul class="rules"><li>Tap a card to select it, then choose a target and Play. Affordable cards can also be dragged: attacks go onto a living enemy; systems and crew go into the teal self zone or onto Play.</li><li>The cyan reticle previews the nearest legal enemy while dragging; release over that ship’s actual target area to fire.</li><li>Cards resolve immediately. Attacks need a living target; with several enemies, choose one explicitly.</li>${cardLegend}<li>End Turn discards your hand. Living enemies recharge, then act left to right. If Kestrel survives, draw five cards and reset energy to 3.</li>${intentLegend}<li>Damage drains shield before hull. Shields recharge only up to their printed maximum.</li><li>Adaptive Coils adds 2 shield to the first shield card you play each turn.</li><li>Destroyed ships stop acting. Reduce every enemy hull to zero to win.</li><li>On iPad, use Share → Add to Home Screen to install. Offline play is available after the first online production load; reloading starts a fresh battle.</li></ul><button data-action="close-modal" data-focus-key="modal-close">Return</button></section></div>`;
-    }
-    if (modal.type === 'menu') {
-      return `<div class="ship-modal" data-modal-backdrop="true"><section role="dialog" aria-modal="true" aria-labelledby="menu-title" class="ship-dialog menu-dialog ink-plate"><p class="eyebrow">Command menu</p><h2 id="menu-title">Battle paused</h2><button class="primary" data-action="close-modal" data-focus-key="menu-resume">Resume</button><button data-action="help" data-focus-key="menu-help">Combat rules</button><label class="motion-toggle"><span>Reduced motion</span><input type="checkbox" data-action="motion" ${reducedMotion ? 'checked' : ''}></label><button data-action="confirm-restart" data-focus-key="menu-restart">Restart battle</button></section></div>`;
-    }
-    const verb = modal.action === 'replay' ? 'Replay' : 'Restart';
-    return `<div class="ship-modal" data-modal-backdrop="true"><section role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-copy" class="ship-dialog confirm-dialog ink-plate"><p class="eyebrow">Confirm command</p><h2 id="confirm-title">${verb} battle?</h2><p id="confirm-copy">The current battle state will be lost. The same combat seed will be used.</p><div><button class="primary" data-action="cancel-confirm" data-focus-key="confirm-cancel">Cancel</button><button data-action="restart" data-focus-key="confirm-accept">${verb}</button></div></section></div>`;
   }
 
   function outcomeMarkup(view: ShipBattleState): string {
     if (view.phase === 'player') return '';
     const victory = view.phase === 'victory';
-    return `<section class="battle-outcome ${view.phase}" aria-labelledby="outcome-title"><p class="eyebrow">Battle report</p><h1 id="outcome-title">${victory ? 'Sector secured' : 'Kestrel lost'}</h1><p>${victory ? 'All hostile ships have been disabled.' : 'The Kestrel’s hull has failed.'}</p><button class="primary" data-action="confirm-replay" data-focus-key="replay">Replay battle</button></section>`;
+    return `<section class="battle-outcome ${view.phase}" tabindex="-1" data-focus-key="outcome" aria-labelledby="outcome-title"><p class="eyebrow">Battle report</p><h1 id="outcome-title">${victory ? 'Contact cleared' : 'Kestrel disabled'}</h1><p>${victory ? 'All hostile ships are disabled. Salvage is ready.' : 'Hull failure confirmed.'}</p><button class="primary" data-action="complete-battle">${victory ? 'Collect salvage' : 'Continue report'}</button></section>`;
   }
 
   function render(requestedFocus?: string | null): void {
@@ -337,7 +318,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     const player = view.player;
     main.setAttribute('aria-busy', String(busy));
     main.classList.toggle('detail-open', modal?.type === 'detail');
-    main.innerHTML = `<header class="bridge-heading"><span>KESTREL // CONTACT</span><b>TURN <output data-turn>${view.turn}</output></b><button data-action="help" data-focus-key="help" ${busy ? 'disabled' : ''}>Rules</button><button data-action="menu" data-focus-key="menu" ${busy ? 'disabled' : ''}>Menu</button></header>
+    main.innerHTML = `<header class="bridge-heading"><span>KESTREL // CONTACT</span><b>TURN <output data-turn>${view.turn}</output></b><button data-action="menu" data-focus-key="menu">Menu</button></header>
       <section class="player-console sr-only" aria-label="Kestrel status"><p>Player vessel</p><h1>${escapeHtml(player.name)}</h1>${actorMeter('Hull', player.hull, player.maxHull, 'hull')}${actorMeter('Shield', player.shield, player.maxShield, 'shield')}<div class="console-facts"><span>Recharge <b>${player.recharge}</b></span><span>Energy <b data-energy>${view.energy} · ${view.maxEnergy} each turn</b></span></div><p class="trait"><b>Adaptive Coils</b><span data-coils>${view.coilsAvailable ? 'Ready · first shield card +2' : 'Spent this turn'}</span></p></section>
       <div class="enemy-layer">${enemyMarkup(view)}</div>
       <div class="viewscreen-drop-zone" style="left:${SHIP_SCREEN.x}px;top:${SHIP_SCREEN.y}px;width:${SHIP_SCREEN.width}px;height:${SHIP_SCREEN.height}px" aria-hidden="true"></div>
@@ -357,7 +338,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     }
     scene.setState(view);
     aimTargetId = null;
-    scene.setCards(acceptedDrag ? heldCardVisuals(view, acceptedDrag) : cardVisuals(view), { reducedMotion });
+    scene.setCards(acceptedDrag ? heldCardVisuals(view, acceptedDrag) : cardVisuals(view), { reducedMotion: reducedMotion() });
     focusKey(priorFocus);
   }
 
@@ -382,7 +363,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     for (let index = 0; index < state.enemies.length; index += 1) {
       const enemy = state.enemies[index]!;
       if (enemy.hull <= 0 || !legal.includes(enemy.id)) continue;
-      const pose = enemyShipPose(index);
+      const pose = enemyShipPose(index, state.enemies.length);
       const distanceSquared = (point.x - pose.x) ** 2 + (point.y - pose.y) ** 2;
       if (distanceSquared <= maximumDistanceSquared && distanceSquared < nearestDistanceSquared) {
         nearestDistanceSquared = distanceSquared;
@@ -398,7 +379,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       const enemy = state.enemies.find((candidate) => candidate.id === target.dataset.target);
       const isLegal = Boolean(enemy && enemy.hull > 0 && legal.includes(enemy.id));
       target.classList.toggle('legal', isLegal);
-      target.disabled = busy || !isLegal;
+      target.disabled = busy || externallyBlocked() || !isLegal;
     }
   }
 
@@ -410,7 +391,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     main.classList.remove('card-dragging', 'dragging-self', 'dragging-attack');
     if (releaseCapture && main.hasPointerCapture(active.pointerId)) main.releasePointerCapture(active.pointerId);
     syncEnemyDropSurfaces(selectedUid);
-    if (!destroyed) scene.setCards(cardVisuals(busy ? displayed : state), { reducedMotion });
+    if (!destroyed) scene.setCards(cardVisuals(busy ? displayed : state), { reducedMotion: reducedMotion() });
   }
 
   function retainDraggedCardForPlayback(active: CardDrag): void {
@@ -454,13 +435,13 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       if (event.pointerId !== drag.pointerId) restoreDraggedCard();
       return;
     }
-    if (!event.isPrimary || event.button !== 0 || destroyed || busy || modal || state.phase !== 'player') return;
+    if (!event.isPrimary || event.button !== 0 || destroyed || busy || modal || externallyBlocked() || state.phase !== 'player') return;
     setAimTarget(null);
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>('.ship-card-hit.draggable[data-card]');
     if (!target || !main.contains(target) || !target.dataset.card) return;
     const card = state.hand.find((candidate) => candidate.uid === target.dataset.card);
     if (!card) return;
-    const definition = previewCard(state, card.uid) ?? cardDefinition(card.id, state.catalog);
+    const definition = previewCard(state, card.uid) ?? definitionForCard(state, card);
     if (!canPlayHandCard(state, card.uid, definition)) return;
     const point = designPoint(event.clientX, event.clientY);
     const bounds = target.getBoundingClientRect();
@@ -494,7 +475,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     active.heldX = point.x - active.grabOffsetX;
     active.heldY = point.y - active.grabOffsetY;
     setAimTarget(definition?.kind === 'attack' ? nearestAimTarget(active.uid, point) : null);
-    scene.setCards(heldCardVisuals(state, active), { reducedMotion });
+    scene.setCards(heldCardVisuals(state, active), { reducedMotion: reducedMotion() });
     event.preventDefault();
   }
 
@@ -624,7 +605,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
 
   async function command(type: 'play' | 'end-turn'): Promise<void> {
     setAimTarget(null);
-    if (destroyed || busy || modal || state.phase !== 'player') return;
+    if (destroyed || busy || modal || externallyBlocked() || state.phase !== 'player') return;
     const card = currentCard();
     const definition = selectedDefinition();
     let result: ShipCommandResult;
@@ -642,9 +623,9 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
         render('play');
         return;
       }
-      result = dispatchBattle(state, { type: 'play', uid: card.uid, targetId });
+      result = options.dispatch({ type: 'play', uid: card.uid, targetId });
     } else {
-      result = dispatchBattle(state, { type: 'end-turn' });
+      result = options.dispatch({ type: 'end-turn' });
     }
     if (!result.ok) {
       clearAcceptedDrag();
@@ -652,6 +633,8 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       render();
       return;
     }
+    const finalState = options.state();
+    state = finalState;
     const token = ++sequence;
     busy = true;
     selectedUid = null;
@@ -659,8 +642,8 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     message = result.events[0]?.text ?? 'Resolving action…';
     render(null);
     try {
-      await scene.present(result.events, state, {
-        reducedMotion,
+      await scene.present(result.events, finalState, {
+        reducedMotion: reducedMotion(),
         onEvent: (event) => {
           if (!destroyed && token === sequence) updateDisplayedActor(event);
         },
@@ -668,51 +651,18 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     } finally {
       if (destroyed || token !== sequence) return;
       clearAcceptedDrag();
-      displayed = clone(state);
+      displayed = clone(finalState);
       busy = false;
-      message = state.phase === 'player'
-        ? (type === 'end-turn' ? `Turn ${state.turn}. Energy and hand refreshed.` : 'Action resolved.')
-        : (state.phase === 'victory' ? 'Victory. All hostile ships are disabled.' : 'Defeat. The Kestrel has been destroyed.');
-      render(state.phase === 'player' ? 'end-turn' : 'replay');
+      message = finalState.phase === 'player'
+        ? (type === 'end-turn' ? `Turn ${finalState.turn}. Energy and hand refreshed.` : 'Action resolved.')
+        : (finalState.phase === 'victory' ? 'Contact cleared.' : 'The Kestrel has been disabled.');
+      render(finalState.phase === 'player' ? 'end-turn' : 'outcome');
     }
   }
 
-  async function dealOpeningHand(): Promise<void> {
-    const token = ++sequence;
-    // createBattle already owns this deal. Rewind only the displayed snapshot,
-    // never the canonical deck, and replay its known opening UIDs in order.
-    displayed = clone(state);
-    const opening = displayed.hand.splice(0);
-    displayed.draw.unshift(...opening);
-    const events: ShipBattleEvent[] = opening.map((card) => ({
-      type: 'draw',
-      actorId: displayed.player.id,
-      targetId: displayed.player.id,
-      card: { ...card },
-      amount: 1,
-      text: `${cardDefinition(card.id, displayed.catalog).title} was drawn.`,
-    }));
-    busy = true;
-    message = 'Dealing opening hand…';
-    render(null);
-    try {
-      await scene.present(events, state, {
-        reducedMotion,
-        onEvent: (event) => {
-          if (!destroyed && token === sequence) updateDisplayedActor(event);
-        },
-      });
-    } finally {
-      if (destroyed || token !== sequence) return;
-      displayed = clone(state);
-      busy = false;
-      message = 'Awaiting orders.';
-      render('end-turn');
-    }
-  }
 
   function selectCard(uid: string): void {
-    if (busy || modal || state.phase !== 'player') return;
+    if (busy || modal || externallyBlocked() || state.phase !== 'player') return;
     const card = state.hand.find((candidate) => candidate.uid === uid);
     if (!card) return;
     selectedUid = selectedUid === uid ? null : uid;
@@ -720,7 +670,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     if (selectedUid) {
       const targets = legalTargets(state, selectedUid);
       if (targets.length === 1) selectedTargetId = targets[0]!;
-      const definition = previewCard(state, selectedUid) ?? cardDefinition(card.id, state.catalog);
+      const definition = previewCard(state, selectedUid) ?? definitionForCard(state, card);
       message = definition.cost > state.energy
         ? `${definition.title} costs ${definition.cost}; it can be inspected but not played.`
         : `${definition.title} selected.`;
@@ -731,9 +681,9 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
   }
 
   function openModal(next: Exclude<Modal, null>, focus: string): void {
-    if (busy) return;
+    if (busy || externallyBlocked()) return;
     restoreDraggedCard();
-    if (!(next.type === 'help' && next.parentMenu)) restoreFocusKey = next.origin;
+    restoreFocusKey = next.origin;
     modal = next;
     render(focus);
   }
@@ -746,35 +696,12 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       render(`pile-card:${card.uid}`);
       return;
     }
-    if (modal.type === 'help' && modal.parentMenu) {
-      modal = { type: 'menu', origin: 'menu' };
-      render('menu-help');
-      return;
-    }
-    if (modal.type === 'confirm' && modal.action === 'restart') {
-      modal = { type: 'menu', origin: 'menu' };
-      render('menu-restart');
-      return;
-    }
     const origin = restoreFocusKey ?? modal.origin;
     modal = null;
     restoreFocusKey = null;
     render(origin);
   }
 
-  function restartBattle(): void {
-    restoreDraggedCard();
-    clearAcceptedDrag();
-    sequence += 1;
-    scene.cancel();
-    state = createBattle(seed);
-    busy = true;
-    selectedUid = null;
-    selectedTargetId = null;
-    modal = null;
-    restoreFocusKey = null;
-    void dealOpeningHand();
-  }
 
   function click(event: MouseEvent): void {
     if (drag) {
@@ -789,7 +716,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       event.stopPropagation();
       return;
     }
-    const target = (event.target as HTMLElement).closest<HTMLElement>('button, input, [data-modal-backdrop]');
+    const target = (event.target as HTMLElement).closest<HTMLElement>('button, [data-modal-backdrop]');
     if (!target || !main.contains(target)) return;
     if (target.dataset.modalBackdrop === 'true' && event.target === target) {
       closeModal();
@@ -797,6 +724,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     }
     if (target instanceof HTMLButtonElement && target.disabled) return;
     const action = target.dataset.action;
+    if (externallyBlocked() && action !== 'menu') return;
     if (target.dataset.card) selectCard(target.dataset.card);
     else if (target.dataset.target && selectedUid && !busy && !modal) {
       if (legalTargets(state, selectedUid).includes(target.dataset.target)) {
@@ -820,26 +748,16 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     else if (action === 'inspect') {
       const card = currentCard();
       if (card) openModal({ type: 'detail', card, origin: 'inspect' }, 'modal-close');
-    } else if (action === 'help') openModal({ type: 'help', origin: target.dataset.focusKey ?? 'help', parentMenu: modal?.type === 'menu' }, 'modal-close');
-    else if (action === 'menu') openModal({ type: 'menu', origin: 'menu' }, 'menu-resume');
-    else if (action === 'close-modal' || action === 'cancel-confirm') closeModal();
-    else if (action === 'confirm-restart') {
-      modal = { type: 'confirm', action: 'restart', origin: 'menu-restart' };
-      render('confirm-cancel');
-    } else if (action === 'confirm-replay') openModal({ type: 'confirm', action: 'replay', origin: 'replay' }, 'confirm-cancel');
-    else if (action === 'restart') restartBattle();
-  }
-
-  function change(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    if (input.dataset.action !== 'motion') return;
-    reducedMotion = input.checked;
-    root.classList.toggle('reduced-motion', reducedMotion);
-    scene.setCards(cardVisuals(busy ? displayed : state), { reducedMotion });
+    } else if (action === 'complete-battle' && state.phase !== 'player' && !busy) {
+      options.onComplete();
+    } else if (action === 'menu') {
+      restoreDraggedCard();
+      options.onMenu();
+    } else if (action === 'close-modal') closeModal();
   }
 
   function keydown(event: KeyboardEvent): void {
-    if (destroyed) return;
+    if (destroyed || event.defaultPrevented || externallyBlocked()) return;
     if (drag) {
       event.preventDefault();
       if (event.key === 'Escape') restoreDraggedCard();
@@ -886,10 +804,11 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       }
       return;
     }
-    if (busy || editable) return;
+    if (editable) return;
     if (event.key === 'Escape') {
       event.preventDefault();
-      openModal({ type: 'menu', origin: rememberFocus() ?? 'menu' }, 'menu-resume');
+      restoreDraggedCard();
+      options.onMenu();
     } else if (!event.repeat && event.key.toLowerCase() === 'e') {
       event.preventDefault();
       void command('end-turn');
@@ -901,7 +820,6 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
   }
 
   main.addEventListener('click', click);
-  main.addEventListener('change', change);
   main.addEventListener('pointerdown', pointerdown);
   main.addEventListener('pointermove', pointermove);
   main.addEventListener('pointerup', pointerup);
@@ -913,11 +831,11 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
   window.addEventListener('blur', cancelDragForViewportChange);
   window.addEventListener('resize', cancelDragForViewportChange);
   window.visualViewport?.addEventListener('resize', cancelDragForViewportChange);
-  root.classList.toggle('reduced-motion', reducedMotion);
+  root.classList.toggle('reduced-motion', reducedMotion());
 
   const debugGetter = () => ({
-    seed,
     state: clone(state),
+    displayed: clone(displayed),
     busy,
     selected: { cardUid: selectedUid, targetId: selectedTargetId },
     modal: modal ? clone(modal) : null,
@@ -929,9 +847,22 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
     get: debugGetter,
   });
 
-  void dealOpeningHand();
+  render(state.phase === 'player' ? 'end-turn' : 'outcome');
 
   return {
+    refresh(): void {
+      if (destroyed) return;
+      root.classList.toggle('reduced-motion', reducedMotion());
+      if (busy) return;
+      state = options.state();
+      displayed = clone(state);
+      render();
+    },
+    cancelInteraction(): void {
+      if (destroyed) return;
+      restoreDraggedCard();
+      setAimTarget(null);
+    },
     destroy(): void {
       if (destroyed) return;
       restoreDraggedCard();
@@ -940,7 +871,6 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       sequence += 1;
       scene.cancel();
       main.removeEventListener('click', click);
-      main.removeEventListener('change', change);
       main.removeEventListener('pointerdown', pointerdown);
       main.removeEventListener('pointermove', pointermove);
       main.removeEventListener('pointerup', pointerup);
@@ -956,7 +886,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene): ShipGamePo
       const descriptor = Object.getOwnPropertyDescriptor(debugWindow, '__SHIP__');
       if (descriptor?.configurable && descriptor.get === debugGetter) delete debugWindow.__SHIP__;
       root.replaceChildren();
-      root.className = '';
+      root.classList.remove('ship-hud', 'reduced-motion');
     },
   };
 }
