@@ -1,19 +1,12 @@
-import { SHIP_SCREEN, type EnemyShip, type ShipCardDefinition } from './types';
+import { SHIP_SCREEN, type CrewId, type EnemyShip, type ShipCardDefinition } from './types';
 import { getCardActionArtwork, getEnemyShipArtwork, getShipSpacefield } from './assets';
 import { cardIdentity, DEPARTMENT_LABELS, rarityStyle, type CardDepartment } from './card-identity';
+import { CARD_TEMPLATE, drawCardTemplateChrome } from './card-template';
+import { drawCrewCardArtwork } from './crew-art';
 
-const CARD_PALETTE = Object.freeze({
-  ink: '#07151d',
-  titlePanel: '#fff4d3',
-  face: '#f7edcd',
-  stock: '#eadbb6',
-  footer: '#ded3b5',
-  bodyInk: '#10232a',
-  mutedInk: '#465457',
-});
+const CARD_PALETTE = CARD_TEMPLATE.chrome;
 const INK = CARD_PALETTE.ink;
-const PAPER = '#f3e8c8';
-const FONT = '"Barlow Condensed", "Arial Narrow", Arial, sans-serif';
+const FONT = CARD_TEMPLATE.typography.condensed;
 
 function surface(width: number, height: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const canvas = document.createElement('canvas');
@@ -82,6 +75,35 @@ function star(ctx: CanvasRenderingContext2D, x: number, y: number, radius: numbe
   ctx.globalAlpha = .55;
   ctx.fillRect(x - radius * .5, y - radius * .5, radius, radius);
   ctx.globalAlpha = 1;
+}
+
+export function drawNavigationArt(): HTMLCanvasElement {
+  const [canvas, ctx] = surface(1920, 1440);
+  const space = ctx.createRadialGradient(960, 600, 80, 960, 600, 1100);
+  space.addColorStop(0, '#17364a');
+  space.addColorStop(.52, '#091a2a');
+  space.addColorStop(1, '#030912');
+  ctx.fillStyle = space;
+  ctx.fillRect(0, 0, 1920, 1440);
+  for (let index = 0; index < 110; index++) {
+    const x = 28 + (index * 347) % 1870;
+    const y = 22 + (index * 193) % 1370;
+    star(ctx, x, y, index % 17 === 0 ? 3 : index % 5 === 0 ? 2 : 1, index % 11 === 0 ? '#f2d58a' : '#c9e8e7');
+  }
+  ctx.strokeStyle = 'rgba(104,205,202,.16)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(960, 650, 650, 270, -.18, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(960, 650, 385, 590, .42, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.roundRect(92, 96, 1736, 1248, 42);
+  ctx.strokeStyle = 'rgba(121,203,198,.25)';
+  ctx.lineWidth = 5;
+  ctx.stroke();
+  return canvas;
 }
 
 export function drawBridgeArt(): HTMLCanvasElement {
@@ -205,13 +227,16 @@ function drawResearchIllustration(ctx: CanvasRenderingContext2D, definition: Shi
 }
 
 function actionIllustration(ctx: CanvasRenderingContext2D, definition: ShipCardDefinition, accent: string): void {
+  const region = CARD_TEMPLATE.regions.illustration;
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(44, 176, 672, 472, 22);
+  ctx.roundRect(region.x, region.y, region.width, region.height, region.radius);
   ctx.clip();
   const artwork = getCardActionArtwork(definition.id);
   if (artwork) {
-    ctx.drawImage(artwork, 44, 176, 672, 472);
+    ctx.drawImage(artwork, region.x, region.y, region.width, region.height);
+  } else if (definition.id.startsWith('crew:')) {
+    drawCrewCardArtwork(ctx, definition.id.slice(5) as CrewId);
   } else {
     drawResearchIllustration(ctx, definition);
   }
@@ -220,12 +245,13 @@ function actionIllustration(ctx: CanvasRenderingContext2D, definition: ShipCardD
   ctx.strokeStyle = INK;
   ctx.lineWidth = 12;
   ctx.beginPath();
-  ctx.roundRect(44, 176, 672, 472, 22);
+  ctx.roundRect(region.x, region.y, region.width, region.height, region.radius);
   ctx.stroke();
+  const keyline = CARD_TEMPLATE.regions.illustrationKeyline;
   ctx.strokeStyle = accent;
   ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.roundRect(55, 187, 650, 450, 16);
+  ctx.roundRect(keyline.x, keyline.y, keyline.width, keyline.height, keyline.radius);
   ctx.stroke();
 }
 
@@ -287,7 +313,7 @@ function drawDepartmentEmblem(
     ctx.beginPath();
     ctx.arc(0, 0, 7, 0, Math.PI * 2);
     ctx.stroke();
-  } else {
+  } else if (department === 'command') {
     ctx.beginPath();
     ctx.arc(0, 0, 20, 0, Math.PI * 2);
     ctx.stroke();
@@ -301,6 +327,18 @@ function drawDepartmentEmblem(
     ctx.beginPath();
     ctx.arc(12, 8, 2.5, 0, Math.PI * 2);
     ctx.fill();
+  } else {
+    // Monochrome atom/data glyph: three orbital traces and a square data nucleus.
+    for (let orbit = 0; orbit < 3; orbit++) {
+      ctx.save();
+      ctx.rotate(orbit * Math.PI / 3);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 22, 8, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.fillRect(-4, -4, 8, 8);
+    ctx.fillRect(17, -3, 6, 6);
   }
   ctx.restore();
 }
@@ -319,106 +357,73 @@ function ellipsizeText(ctx: CanvasRenderingContext2D, text: string, maxWidth: nu
 }
 
 function fittedTitle(ctx: CanvasRenderingContext2D, title: string): string {
-  let size = 66;
-  while (size > 38) {
-    ctx.font = `900 ${size}px "Bebas Neue", ${FONT}`;
-    if (ctx.measureText(title).width <= 530) return title;
-    size -= 2;
+  const spec = CARD_TEMPLATE.typography.title;
+  let size = spec.max;
+  while (size > spec.min) {
+    ctx.font = `900 ${size}px ${CARD_TEMPLATE.typography.display}`;
+    if (ctx.measureText(title).width <= spec.maxWidth) return title;
+    size -= spec.step;
   }
-  ctx.font = `900 38px "Bebas Neue", ${FONT}`;
-  return ellipsizeText(ctx, title, 530);
+  ctx.font = `900 ${spec.min}px ${CARD_TEMPLATE.typography.display}`;
+  return ellipsizeText(ctx, title, spec.maxWidth);
 }
 
 function fittedFlavor(ctx: CanvasRenderingContext2D, flavor: string): string {
-  let size = 26;
-  while (size > 20) {
+  const spec = CARD_TEMPLATE.typography.flavor;
+  let size = spec.max;
+  while (size > spec.min) {
     ctx.font = `italic 700 ${size}px ${FONT}`;
-    if (ctx.measureText(flavor).width <= 610) return flavor;
+    if (ctx.measureText(flavor).width <= spec.maxWidth) return flavor;
     size -= 1;
   }
-  ctx.font = `italic 700 20px ${FONT}`;
-  return ellipsizeText(ctx, flavor, 610);
+  ctx.font = `italic 700 ${spec.min}px ${FONT}`;
+  return ellipsizeText(ctx, flavor, spec.maxWidth);
 }
 
 export function drawShipCardFace(definition: ShipCardDefinition, dimmed = false): HTMLCanvasElement {
-  const [canvas, ctx] = surface(760, 1080);
+  const [canvas, ctx] = surface(CARD_TEMPLATE.width, CARD_TEMPLATE.height);
   ctx.beginPath();
-  ctx.roundRect(0, 0, 760, 1080, 46);
+  ctx.roundRect(0, 0, CARD_TEMPLATE.width, CARD_TEMPLATE.height, CARD_TEMPLATE.outerRadius);
   ctx.clip();
   const identity = cardIdentity(definition);
   const style = rarityStyle(identity.rarity);
   const accent = style.accent;
-
-  // Flat stock and restrained rarity keylines follow the cutout kit without its former hatch overlay.
-  ctx.fillStyle = CARD_PALETTE.stock;
-  ctx.fillRect(0, 0, 760, 1080);
-  ctx.fillStyle = CARD_PALETTE.face;
-  ctx.fillRect(30, 150, 700, 880);
-  ctx.fillStyle = accent;
-  ctx.fillRect(0, 0, 760, 150);
-  ctx.fillStyle = CARD_PALETTE.bodyInk;
-  ctx.fillRect(0, 142, 760, 8);
-
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 18;
-  ctx.beginPath();
-  ctx.roundRect(10, 10, 740, 1060, 37);
-  ctx.stroke();
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.roundRect(29, 29, 702, 1022, 26);
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(7,21,29,.28)';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.roundRect(38, 38, 684, 1004, 21);
-  ctx.stroke();
+  drawCardTemplateChrome(ctx, accent);
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = style.titleInk;
   const title = fittedTitle(ctx, definition.title.toUpperCase());
-  ctx.fillText(title, 430, 79);
-  roundRect(ctx, 34, 31, 108, 108, 54, CARD_PALETTE.titlePanel, INK, 9);
+  ctx.fillText(title, CARD_TEMPLATE.typography.title.x, CARD_TEMPLATE.typography.title.y);
   ctx.fillStyle = INK;
-  ctx.font = `900 74px "Bebas Neue", ${FONT}`;
-  ctx.fillText(String(definition.cost), 88, 87);
-  ctx.font = `800 18px ${FONT}`;
-  ctx.fillText('ENERGY', 88, 126);
+  ctx.font = `900 ${CARD_TEMPLATE.typography.cost.size}px ${CARD_TEMPLATE.typography.display}`;
+  ctx.fillText(String(definition.cost), CARD_TEMPLATE.typography.cost.x, CARD_TEMPLATE.typography.cost.y);
+  ctx.font = `800 ${CARD_TEMPLATE.typography.cost.labelSize}px ${FONT}`;
+  ctx.fillText('ENERGY', CARD_TEMPLATE.typography.cost.x, CARD_TEMPLATE.typography.cost.labelY);
 
   actionIllustration(ctx, definition, accent);
-  roundRect(ctx, 44, 678, 672, 292, 24, CARD_PALETTE.titlePanel, INK, 10);
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.roundRect(56, 690, 648, 268, 16);
-  ctx.stroke();
-  ctx.fillStyle = accent;
-  ctx.fillRect(65, 704, 630, 7);
   const rules = effectText(definition);
-  const rulesSize = rules.length >= 3 ? 46 : 55;
+  const rulesSize = rules.length >= 3 ? CARD_TEMPLATE.typography.rules.manySize : CARD_TEMPLATE.typography.rules.twoSize;
   const lineHeight = rules.length >= 4 ? 49 : rules.length === 3 ? 56 : 66;
-  const startY = 798 - (rules.length - 1) * lineHeight / 2;
+  const startY = CARD_TEMPLATE.typography.rules.centerY - (rules.length - 1) * lineHeight / 2;
   ctx.fillStyle = CARD_PALETTE.bodyInk;
-  ctx.font = `900 ${rulesSize}px "Bebas Neue", ${FONT}`;
-  rules.forEach((rule, index) => ctx.fillText(rule, 380, startY + index * lineHeight));
+  ctx.font = `900 ${rulesSize}px ${CARD_TEMPLATE.typography.display}`;
+  rules.forEach((rule, index) => ctx.fillText(rule, CARD_TEMPLATE.typography.rules.centerX, startY + index * lineHeight));
   ctx.fillStyle = CARD_PALETTE.mutedInk;
   const flavor = fittedFlavor(ctx, definition.flavor);
-  ctx.fillText(flavor, 380, 938);
+  ctx.fillText(flavor, CARD_TEMPLATE.typography.flavor.x, CARD_TEMPLATE.typography.flavor.y);
 
-  roundRect(ctx, 44, 985, 672, 58, 14, CARD_PALETTE.footer, INK, 5);
   drawDepartmentEmblem(ctx, identity.department, 80, 1014, INK);
   ctx.textAlign = 'left';
   ctx.fillStyle = INK;
-  ctx.font = `900 27px "Bebas Neue", ${FONT}`;
-  ctx.fillText(DEPARTMENT_LABELS[identity.department].toUpperCase(), 112, 1015);
+  ctx.font = `900 ${CARD_TEMPLATE.typography.footer.departmentSize}px ${CARD_TEMPLATE.typography.display}`;
+  ctx.fillText(DEPARTMENT_LABELS[identity.department].toUpperCase(), 112, CARD_TEMPLATE.typography.footer.y);
   ctx.textAlign = 'right';
-  ctx.font = `900 25px "Bebas Neue", ${FONT}`;
-  ctx.fillText(style.label.toUpperCase(), 686, 1015);
+  ctx.font = `900 ${CARD_TEMPLATE.typography.footer.raritySize}px ${CARD_TEMPLATE.typography.display}`;
+  ctx.fillText(style.label.toUpperCase(), 686, CARD_TEMPLATE.typography.footer.y);
   if (dimmed) {
     ctx.fillStyle = 'rgba(3,10,14,.5)';
-    ctx.fillRect(0, 0, 760, 1080);
+    ctx.fillRect(0, 0, CARD_TEMPLATE.width, CARD_TEMPLATE.height);
   }
   return canvas;
 }

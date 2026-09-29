@@ -70,8 +70,6 @@ export function getEnemyShipArtwork(role: EnemyShip['role']): HTMLImageElement {
 }
 
 export function getCardActionArtwork(id: ShipCardId): HTMLImageElement | undefined {
-  if (id.startsWith('research:')) return undefined;
-  const image = requireArtwork().cards[id as ShipBaseCardId];
-  if (!image) throw new Error(`Missing ship card artwork: ${id}`);
-  return image;
+  if (id.startsWith('research:') || id.startsWith('crew:')) return undefined;
+  return requireArtwork().cards[id as ShipBaseCardId];
 }

@@ -25,10 +25,12 @@ import {
   type ShipActor,
   type ShipBattleEvent,
   type ShipBattleState,
+  type ShipCardDefinition,
   type ShipCardVisual,
-  type ShipScene,
 } from './types';
-import { drawBridgeArt, drawEnemyShipArt, drawPileTop, drawShipCardBack, drawShipCardFace } from './art';
+import { AWAY_LAYOUT, awayActorPose, type AwayBattleEvent, type AwayBattleState, type ExpeditionScene, type ResolvedPresentation } from './expedition-types';
+import { drawBridgeArt, drawEnemyShipArt, drawNavigationArt, drawPileTop, drawShipCardBack, drawShipCardFace } from './art';
+import { drawAwayBackdrop, drawAwayUnit } from './away-art';
 import { cardDefinition, previewCard } from './combat';
 import {
   AIM_RETICLE_SIZE,
@@ -73,6 +75,16 @@ type EnemyRig = {
   telemetry: HudSurface;
 };
 
+type AwayRig = {
+  id: string;
+  root: Entity;
+  texture: Texture;
+  material: StandardMaterial;
+  stateKey: string;
+};
+
+type ShipEffectStyle = 'pulse' | 'burst' | 'lance' | 'shield' | 'cell' | 'sweep' | 'crew' | 'research' | 'hostile';
+
 type AimPhase = 'hidden' | 'fading' | 'arriving' | 'settled';
 
 type CardRig = {
@@ -90,6 +102,7 @@ type CardRig = {
   flip: number;
   layer: number;
   following: boolean;
+  playbackHidden: boolean;
   targetX: number;
   targetY: number;
   previousTargetX: number;
@@ -152,6 +165,7 @@ type Waiter = { frame: number; finish: (completed: boolean) => void };
 type RecycleMotion = { root: Entity; startedAt: number; duration: number };
 
 type ActivePresentation = { token: number; finalState: ShipBattleState };
+type ActiveAwayPresentation = { token: number; finalState: AwayBattleState };
 
 function worldX(x: number): number {
   return (x - SHIP_DESIGN.width / 2) / WORLD_SCALE;
@@ -182,6 +196,22 @@ function cloneState(state: ShipBattleState): ShipBattleState {
     discard: state.discard.map((card) => ({ ...card })),
     exhaust: state.exhaust.map((card) => ({ ...card })),
   };
+}
+
+function cloneAwayState(state: AwayBattleState): AwayBattleState {
+  return { ...state, units: state.units.map((unit) => ({ ...unit })), order: [...state.order] };
+}
+
+function effectStyle(definition: ShipCardDefinition | undefined): ShipEffectStyle {
+  if (!definition) return 'hostile';
+  if (definition.id.startsWith('crew:')) return 'crew';
+  if (definition.id.startsWith('research:')) return 'research';
+  if (definition.id === 'pulse') return 'pulse';
+  if (definition.id === 'burst') return 'burst';
+  if (definition.id === 'lance') return 'lance';
+  if (definition.id === 'shield') return 'shield';
+  if (definition.id === 'cell') return 'cell';
+  return 'sweep';
 }
 
 function primitive(
@@ -263,7 +293,7 @@ function eventRecipient(event: ShipBattleEvent): string {
   return event.targetId ?? event.actorId;
 }
 
-export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
+export function createShipScene(canvas: HTMLCanvasElement): ExpeditionScene {
   const app = new Application(canvas, {
     graphicsDeviceOptions: { alpha: false, antialias: true, depth: true, stencil: false },
   });
@@ -276,17 +306,24 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
   const cards = new Map<string, CardRig>();
   const cardTextures = new Map<string, Texture>();
   const enemyRigs = new Map<string, EnemyRig>();
+  const awayRigs = new Map<string, AwayRig>();
   const flights: Flight[] = [];
   const impacts: Impact[] = [];
   const cardMotions: CardMotion[] = [];
   const waiters = new Set<Waiter>();
   let nextPlayerMuzzle = 0;
   let displayedState: ShipBattleState | null = null;
+  let displayedAwayState: AwayBattleState | null = null;
   let destroyed = false;
   let sequence = 0;
   let activePresentation: ActivePresentation | null = null;
+  let activeAwayPresentation: ActiveAwayPresentation | null = null;
   let sceneNow = performance.now();
   let motionReduced = false;
+  let effectsSetting: ResolvedPresentation['effects'] = 'full';
+  let paused = false;
+  let currentScreen: 'title' | 'map' | 'ship' | 'away' = 'ship';
+  let activeEffectStyle: ShipEffectStyle = 'hostile';
   let recycleMotion: RecycleMotion | null = null;
   let cssScale = 1;
   let playerTelemetry: HudSurface | null = null;
@@ -341,6 +378,32 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     false,
   );
   bridge.setLocalEulerAngles(90, 0, 0);
+
+  const navigationRoot = new Entity('Expedition_Navigation_Starfield', app);
+  app.root.addChild(navigationRoot);
+  const navigationTexture = ownTexture(textureFromCanvas(app, drawNavigationArt(), 'Clean expedition navigation starfield'));
+  const navigationMaterial = ownMaterial(textureMaterial(navigationTexture, 1));
+  navigationMaterial.useLighting = false;
+  navigationMaterial.specular.set(0, 0, 0);
+  navigationMaterial.clearCoat = 0;
+  navigationMaterial.update();
+  const navigationPlane = primitive(app, navigationRoot, 'Navigation_Starfield_Plane', 'plane', [0, 0, 0],
+    [SHIP_DESIGN.width / WORLD_SCALE, 1, SHIP_DESIGN.height / WORLD_SCALE], navigationMaterial, false);
+  navigationPlane.setLocalEulerAngles(90, 0, 0);
+  navigationRoot.enabled = false;
+
+  const awayRoot = new Entity('Away_Mission_Scenery_And_Actors', app);
+  app.root.addChild(awayRoot);
+  const awayBackdropTexture = ownTexture(textureFromCanvas(app, drawAwayBackdrop(), 'Authored planetary listening post'));
+  const awayBackdropMaterial = ownMaterial(textureMaterial(awayBackdropTexture, 1));
+  awayBackdropMaterial.useLighting = false;
+  awayBackdropMaterial.specular.set(0, 0, 0);
+  awayBackdropMaterial.clearCoat = 0;
+  awayBackdropMaterial.update();
+  const awayBackdrop = primitive(app, awayRoot, 'Planetary_Outpost_Backdrop', 'plane', [0, 0, 0],
+    [SHIP_DESIGN.width / WORLD_SCALE, 1, SHIP_DESIGN.height / WORLD_SCALE], awayBackdropMaterial, false);
+  awayBackdrop.setLocalEulerAngles(90, 0, 0);
+  awayRoot.enabled = false;
 
   // Deliberate cool key plus warm tabletop task light. Art remains emissive but cards retain depth.
   const keyLight = new Entity('Viewsceen_Cool_Key', app);
@@ -409,6 +472,26 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
   shieldProjectileMaterial.useLighting = false;
   shieldProjectileMaterial.blendType = BLEND_ADDITIVE;
   shieldProjectileMaterial.update();
+  const burstProjectileMaterial = ownMaterial(solidMaterial(new Color(1, .72, .25), new Color(1, .42, .08)));
+  burstProjectileMaterial.useLighting = false;
+  burstProjectileMaterial.blendType = BLEND_ADDITIVE;
+  burstProjectileMaterial.update();
+  const lanceProjectileMaterial = ownMaterial(solidMaterial(new Color(.96, .82, 1), new Color(.78, .35, 1)));
+  lanceProjectileMaterial.useLighting = false;
+  lanceProjectileMaterial.blendType = BLEND_ADDITIVE;
+  lanceProjectileMaterial.update();
+  const cellProjectileMaterial = ownMaterial(solidMaterial(new Color(1, .9, .28), new Color(1, .62, .08)));
+  cellProjectileMaterial.useLighting = false;
+  cellProjectileMaterial.blendType = BLEND_ADDITIVE;
+  cellProjectileMaterial.update();
+  const dataProjectileMaterial = ownMaterial(solidMaterial(new Color(.28, .86, 1), new Color(.08, .62, 1)));
+  dataProjectileMaterial.useLighting = false;
+  dataProjectileMaterial.blendType = BLEND_ADDITIVE;
+  dataProjectileMaterial.update();
+  const crewProjectileMaterial = ownMaterial(solidMaterial(new Color(.95, .79, .42), new Color(.72, .42, .15)));
+  crewProjectileMaterial.useLighting = false;
+  crewProjectileMaterial.blendType = BLEND_ADDITIVE;
+  crewProjectileMaterial.update();
   const impactMaterial = ownMaterial(solidMaterial(new Color(1, .44, .22, .72), new Color(1, .23, .07), true));
   impactMaterial.useLighting = false;
   impactMaterial.blendType = BLEND_ADDITIVE;
@@ -502,7 +585,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
   function enemyScreenPoint(id: string): { x: number; y: number } | null {
     const index = displayedState?.enemies.findIndex((enemy) => enemy.id === id) ?? -1;
     if (index < 0) return null;
-    const pose = enemyShipPose(index);
+    const pose = enemyShipPose(index, displayedState?.enemies.length ?? 1);
     return { x: pose.x, y: pose.y };
   }
 
@@ -568,8 +651,8 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     aimFadeFromOpacity = aimMaterial.opacity;
   }
 
-  function makeEnemy(enemy: EnemyShip, index: number): EnemyRig {
-    const pose = enemyShipPose(index);
+  function makeEnemy(enemy: EnemyShip, index: number, rosterCount: number): EnemyRig {
+    const pose = enemyShipPose(index, rosterCount);
     const texture = ownTexture(textureFromCanvas(app, drawEnemyShipArt(enemy.role), `${enemy.role} spacecraft cutout`));
     const material = ownMaterial(textureMaterial(texture, .18));
     material.specular = new Color(.22, .25, .28);
@@ -593,7 +676,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     const hudRoot = new Entity(`Enemy_Telemetry_${enemy.id}`, app);
     poseEntity(
       hudRoot,
-      SHIP_SCREEN.x + (index + .5) * SHIP_SCREEN.width / 3,
+      pose.x,
       SHIP_SCREEN.y + SHIP_SCREEN.height - 80,
       ENEMY_HUD_Z,
     );
@@ -636,21 +719,22 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     }
     displayedState.enemies.forEach((enemy, index) => {
       let rig = enemyRigs.get(enemy.id);
+      const rosterCount = displayedState!.enemies.length;
       if (!rig) {
-        rig = makeEnemy(enemy, index);
+        rig = makeEnemy(enemy, index, rosterCount);
         enemyRigs.set(enemy.id, rig);
       }
-      const pose = enemyShipPose(index);
+      const pose = enemyShipPose(index, rosterCount);
       const alive = enemy.hull > 0;
       poseEntity(rig.root, pose.x, pose.y, ENEMY_Z, pose.rotation);
       poseEntity(
         rig.hudRoot,
-        SHIP_SCREEN.x + (index + .5) * SHIP_SCREEN.width / 3,
+        pose.x,
         SHIP_SCREEN.y + SHIP_SCREEN.height - 80,
         ENEMY_HUD_Z,
       );
-      rig.root.enabled = alive;
-      rig.hudRoot.enabled = alive;
+      rig.root.enabled = currentScreen === 'ship' && alive;
+      rig.hudRoot.enabled = currentScreen === 'ship' && alive;
       const key = enemyHudTextureKey(enemy, cssScale);
       if (rig.telemetry.key !== key) {
         rig.telemetry.key = key;
@@ -662,6 +746,65 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     if (aimCurrentId) {
       const point = enemyScreenPoint(aimCurrentId);
       if (point) poseEntity(aimRoot, point.x, point.y, 1.56);
+    }
+  }
+
+  function awayUnitKey(unit: AwayBattleState['units'][number]): string {
+    return `${unit.id}|${unit.name}|${unit.side}|${unit.appearance}|${unit.crewId ?? ''}`;
+  }
+
+  function awayUnitPose(unit: AwayBattleState['units'][number]) {
+    const units = displayedAwayState?.units.filter((candidate) => candidate.side === unit.side) ?? [unit];
+    const index = Math.max(0, units.findIndex((candidate) => candidate.id === unit.id));
+    return awayActorPose(unit.side, index, units.length);
+  }
+
+  function makeAwayRig(unit: AwayBattleState['units'][number]): AwayRig {
+    const key = awayUnitKey(unit);
+    const texture = ownTexture(textureFromCanvas(app, drawAwayUnit(unit), `Away actor ${unit.name}`));
+    const material = ownMaterial(textureMaterial(texture, 1));
+    material.useLighting = false;
+    material.specular.set(0, 0, 0);
+    material.clearCoat = 0;
+    material.update();
+    const root = new Entity(`Away_${unit.side}_${unit.id}`, app);
+    const actor = primitive(app, root, 'Illustrated_Unit_Actor', 'plane', [0, 0, 0], [AWAY_LAYOUT.actorWidth / WORLD_SCALE, 1, AWAY_LAYOUT.actorHeight / WORLD_SCALE], material, false);
+    actor.setLocalEulerAngles(90, 0, 0);
+    const pose = awayUnitPose(unit);
+    poseEntity(root, pose.x, pose.y, 2.1);
+    awayRoot.addChild(root);
+    return { id: unit.id, root, texture, material, stateKey: key };
+  }
+
+  function syncAwayRigs(): void {
+    if (!displayedAwayState) {
+      for (const rig of awayRigs.values()) rig.root.enabled = false;
+      return;
+    }
+    const ids = new Set(displayedAwayState.units.map((unit) => unit.id));
+    for (const [id, rig] of awayRigs) {
+      if (ids.has(id)) continue;
+      rig.root.destroy();
+      rig.texture.destroy();
+      rig.material.destroy();
+      textures.delete(rig.texture);
+      materials.delete(rig.material);
+      awayRigs.delete(id);
+    }
+    for (const unit of displayedAwayState.units) {
+      let rig = awayRigs.get(unit.id);
+      if (!rig) {
+        rig = makeAwayRig(unit);
+        awayRigs.set(unit.id, rig);
+      }
+      const key = awayUnitKey(unit);
+      if (rig.stateKey !== key) {
+        rig.stateKey = key;
+        rig.texture.setSource(drawAwayUnit(unit));
+      }
+      const pose = awayUnitPose(unit);
+      poseEntity(rig.root, pose.x, pose.y, 2.1);
+      rig.root.enabled = unit.hp > 0;
     }
   }
 
@@ -789,6 +932,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       flip: 0,
       layer,
       following: Boolean(visual.held),
+      playbackHidden: false,
       targetX: visual.x,
       targetY: pose.y,
       previousTargetX: visual.x,
@@ -811,7 +955,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       rig.height = visual.height;
     }
     const pose = cardPose(visual, layer);
-    rig.root.enabled = true;
+    rig.root.enabled = !rig.playbackHidden;
     poseEntity(rig.root, visual.x, pose.y, pose.z, visual.rotation);
     rig.face.enabled = true;
     rig.back.enabled = true;
@@ -839,6 +983,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
   }
 
   function followCardVisual(rig: CardRig, layer: number): void {
+    rig.playbackHidden = false;
     const pose = cardPose(rig.visual, layer);
     rig.layer = layer;
     rig.targetX = rig.visual.x;
@@ -877,6 +1022,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
         rig = makeCard(visual, index);
         cards.set(card.uid, rig);
       } else {
+        rig.playbackHidden = false;
         rig.visual = visual;
         updateCardTexture(rig, visual);
         resetCardPose(rig, index);
@@ -890,13 +1036,62 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     syncPlayerTelemetry();
     syncEnemies();
     syncPiles();
+    applyScreenVisibility();
   }
 
-  function clearTransient(): void {
+  function adoptAwayState(state: AwayBattleState | null): void {
+    displayedAwayState = state ? cloneAwayState(state) : null;
+    syncAwayRigs();
+    applyScreenVisibility();
+  }
+
+  function applyScreenVisibility(): void {
+    const shipVisible = currentScreen === 'ship';
+    bridgeRoot.enabled = shipVisible;
+    navigationRoot.enabled = currentScreen === 'title' || currentScreen === 'map';
+    awayRoot.enabled = currentScreen === 'away';
+    pileRoot.enabled = shipVisible;
+    if (playerTelemetry) playerTelemetry.entity.enabled = shipVisible;
+    for (const [id, rig] of enemyRigs) {
+      const alive = displayedState?.enemies.find((enemy) => enemy.id === id)?.hull;
+      rig.root.enabled = shipVisible && Boolean(alive && alive > 0);
+      rig.hudRoot.enabled = shipVisible && Boolean(alive && alive > 0);
+    }
+    for (const rig of awayRigs.values()) {
+      const alive = displayedAwayState?.units.find((unit) => unit.id === rig.id)?.hp;
+      rig.root.enabled = currentScreen === 'away' && Boolean(alive && alive > 0);
+    }
+    for (const rig of cards.values()) rig.root.enabled = !rig.playbackHidden;
+    detailScrim.enabled = [...cards.values()].some((rig) => !rig.playbackHidden && rig.visual.detail);
+    if (!shipVisible) hideAimImmediately();
+  }
+
+  function clearDecorativeEffects(): void {
     for (const flight of flights) flight.root.destroy();
     flights.length = 0;
     for (const impact of impacts) impact.root.destroy();
     impacts.length = 0;
+  }
+
+  function finishMotionForReducedPreference(): void {
+    for (const motion of cardMotions) {
+      motion.rig.x = motion.toX;
+      motion.rig.y = motion.toY;
+      motion.rig.z = motion.toZ;
+      motion.rig.flip = motion.toFlip;
+      motion.rig.rotation = motion.toRotation;
+      motion.rig.scale = motion.toScale;
+      motion.rig.following = false;
+      renderCardPose(motion.rig);
+    }
+    cardMotions.length = 0;
+    recycleMotion?.root.destroy();
+    recycleMotion = null;
+    syncPiles();
+  }
+
+  function clearTransient(): void {
+    clearDecorativeEffects();
     cardMotions.length = 0;
     recycleMotion?.root.destroy();
     recycleMotion = null;
@@ -912,7 +1107,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
   }
 
   function waitDuration(duration: number, token: number): Promise<boolean> {
-    if (destroyed || token !== sequence || duration <= 0) return Promise.resolve(!destroyed && token === sequence);
+    if (destroyed || token !== sequence) return Promise.resolve(false);
     return new Promise((resolve) => {
       const startedAt = sceneNow;
       const waiter: Waiter = { frame: 0, finish: resolve };
@@ -922,7 +1117,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
           resolve(false);
           return;
         }
-        if (sceneNow - startedAt >= duration) {
+        if (!paused && (motionReduced || sceneNow - startedAt >= Math.max(0, duration))) {
           waiters.delete(waiter);
           resolve(true);
           return;
@@ -938,17 +1133,42 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     from: { x: number; y: number },
     to: { x: number; y: number },
     duration: number,
-    shield: boolean,
-    name = shield ? 'Shield_Energy_Transfer' : 'Focused_Weapon_Projectile',
+    style: ShipEffectStyle,
+    name = `${style}_Ordered_Effect`,
   ): void {
     const root = new Entity(name, app);
-    const beam = primitive(app, root, 'Luminous_Core', shield ? 'sphere' : 'box', [0, 0, 0], shield ? [.18, .18, .18] : [.38, .09, .09], shield ? shieldProjectileMaterial : projectileMaterial, false);
-    if (!shield) beam.setLocalEulerAngles(0, 0, Math.atan2(-(to.y - from.y), to.x - from.x) * 180 / Math.PI);
-    const scale = shield ? 1 : .8;
+    const angle = Math.atan2(-(to.y - from.y), to.x - from.x) * 180 / Math.PI;
+    const material = style === 'burst' ? burstProjectileMaterial
+      : style === 'lance' ? lanceProjectileMaterial
+        : style === 'cell' ? cellProjectileMaterial
+          : style === 'sweep' || style === 'research' ? dataProjectileMaterial
+            : style === 'crew' ? crewProjectileMaterial
+              : style === 'shield' ? shieldProjectileMaterial : projectileMaterial;
+    if (style === 'shield') {
+      primitive(app, root, 'Shield_Lattice_Core', 'sphere', [0, 0, 0], [.15, .15, .15], material, false);
+      for (let index = 0; index < 3; index++) {
+        const ring = primitive(app, root, `Shield_Lattice_Ring_${index + 1}`, 'cylinder', [0, 0, 0], [.28 + index * .08, .012, .28 + index * .08], material, false);
+        ring.setLocalEulerAngles(90, index * 60, 0);
+      }
+    } else if (style === 'cell') {
+      primitive(app, root, 'Positive_Energy_Cell', 'sphere', [0, 0, 0], [.22, .22, .22], material, false);
+      const rail = primitive(app, root, 'Cell_Charge_Rail', 'box', [0, 0, 0], [.58, .055, .055], material, false);
+      rail.setLocalEulerAngles(0, 0, angle);
+    } else if (style === 'sweep' || style === 'research') {
+      const beam = primitive(app, root, 'Radar_Data_Packet', 'box', [0, 0, 0], [.42, .07, .07], material, false);
+      beam.setLocalEulerAngles(0, 0, angle);
+      primitive(app, root, 'Radar_Data_Node', 'sphere', [-.22, 0, 0], [.09, .09, .09], material, false);
+    } else {
+      const size: [number, number, number] = style === 'lance' ? [1.15, .055, .055]
+        : style === 'burst' ? [.3, .065, .065] : style === 'crew' ? [.48, .11, .11] : [.44, .1, .1];
+      const beam = primitive(app, root, style === 'lance' ? 'Charged_Rail_Lance' : style === 'burst' ? 'Ordered_Burst_Shot' : style === 'pulse' ? 'Pulse_Bolt' : 'Effect_Core', 'box', [0, 0, 0], size, material, false);
+      beam.setLocalEulerAngles(0, 0, angle);
+    }
+    const scale = style === 'lance' ? 1 : style === 'burst' ? .78 : .9;
     poseEntity(root, from.x, from.y, 5.1);
     root.setLocalScale(scale, scale, 1);
     app.root.addChild(root);
-    flights.push({ root, startedAt: sceneNow, duration, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, z: 5.1, arc: shield ? 38 : 22, spin: shield ? 210 : 0, scale, approaching: false });
+    flights.push({ root, startedAt: sceneNow, duration, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, z: 5.1, arc: style === 'lance' ? 4 : style === 'burst' ? 14 : 26, spin: style === 'shield' ? 210 : 0, scale, approaching: false });
   }
 
   function spawnIncomingFlight(from: { x: number; y: number }, duration: number, shieldOnly: boolean): void {
@@ -1070,15 +1290,17 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     syncPlayerTelemetry();
     syncEnemies();
     syncPiles();
+    applyScreenVisibility();
   }
 
-  async function presentEvent(event: ShipBattleEvent, reducedMotion: boolean, token: number, onEvent?: (value: ShipBattleEvent) => void): Promise<boolean> {
+  async function presentEvent(event: ShipBattleEvent, token: number, onEvent?: (value: ShipBattleEvent) => void): Promise<boolean> {
     if (destroyed || token !== sequence) return false;
-    const duration = reducedMotion ? 0 : 210;
+    const duration = motionReduced ? 0 : 210;
     const recipientId = eventRecipient(event);
     const playerId = displayedState?.player.id;
 
     if (event.type === 'card' && event.card) {
+      activeEffectStyle = effectStyle(event.definition);
       const rig = cards.get(event.card.uid);
       if (rig) {
         // A committed play is no longer an unavailable hand card.
@@ -1090,22 +1312,23 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       const stage = targetId && !selfTarget
         ? enemyScreenPoint(targetId) ?? actorPoint(targetId)
         : { x: SHIP_SELF_DROP.x + SHIP_SELF_DROP.width / 2, y: SHIP_SELF_DROP.y + SHIP_SELF_DROP.height / 2 };
-      if (rig && !reducedMotion) {
+      if (rig && !motionReduced) {
         startCardMotion(rig, stage.x, stage.y, rig.visual.rotation * .2, selfTarget ? .38 : .62, 125);
       }
-      if (!(await waitDuration(reducedMotion ? 0 : 125, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 125, token)) || destroyed || token !== sequence) return false;
       applyEventSnapshot(event);
       onEvent?.(event);
-      if (!(await waitDuration(reducedMotion ? 0 : 55, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 55, token)) || destroyed || token !== sequence) return false;
       return true;
     }
 
     if (event.type === 'intent') {
-      if (!reducedMotion) {
+      activeEffectStyle = 'hostile';
+      if (!motionReduced) {
         const enemy = enemyRigs.get(event.actorId);
         enemy?.root.setLocalScale(1.08, 1.08, 1);
       }
-      if (!(await waitDuration(reducedMotion ? 0 : 110, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 110, token)) || destroyed || token !== sequence) return false;
       const enemy = enemyRigs.get(event.actorId);
       enemy?.root.setLocalScale(1, 1, 1);
       onEvent?.(event);
@@ -1113,8 +1336,8 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     }
 
     if (event.type === 'damage' || event.type === 'shield' || event.type === 'energy') {
-      const shieldEffect = event.type !== 'damage';
-      const showEffect = event.type !== 'energy' || (event.amount ?? 0) > 0;
+      const shieldEffect = event.type === 'shield';
+      const shouldDecorate = (): boolean => !motionReduced && effectsSetting !== 'off' && (event.type !== 'energy' || (event.amount ?? 0) > 0);
       const playerRecipient = recipientId === playerId;
       const incomingDamage = event.type === 'damage' && playerRecipient && event.actorId !== playerId;
       const playerDamage = event.type === 'damage' && event.actorId === playerId && !playerRecipient;
@@ -1135,37 +1358,45 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
         recipient = VIEWSCREEN_CENTER;
         flightName = event.type === 'shield' ? 'Viewscreen_Player_Shield_Transfer' : 'Viewscreen_Player_Energy_Transfer';
       }
-      if (!reducedMotion && showEffect) {
+      if (shouldDecorate()) {
         if (incomingDamage) spawnIncomingFlight(source, duration, shieldOnly);
-        else spawnFlight(source, recipient, duration, shieldEffect, flightName);
+        else spawnFlight(source, recipient, duration, shieldEffect ? 'shield' : activeEffectStyle, flightName);
       }
       if (!(await waitDuration(duration, token)) || destroyed || token !== sequence) return false;
-      if (!reducedMotion && showEffect) {
+      if (shouldDecorate()) {
         if (incomingDamage) spawnViewscreenImpact(shieldOnly, 190);
         else if (playerRecipient && shieldEffect) spawnViewscreenImpact(true, 190);
-        else spawnImpact(recipient, shieldEffect, 190);
+        else spawnImpact(recipient, shieldEffect, effectsSetting === 'subtle' ? 110 : 190);
       }
       applyEventSnapshot(event);
       onEvent?.(event);
-      return waitDuration(reducedMotion ? 0 : 95, token);
+      return waitDuration(motionReduced ? 0 : 95, token);
     }
 
     if ((event.type === 'discard' || event.type === 'exhaust') && event.card) {
       const rig = cards.get(event.card.uid);
       const pile = event.type === 'discard' ? SHIP_PILES.discard : SHIP_PILES.exhaust;
-      if (rig && !reducedMotion) {
+      if (rig && !motionReduced) {
         const layer = Math.min(3, Math.floor((displayedState?.[event.type].length ?? 0) / 3));
         const rotation = (event.type === 'discard' ? -5 : 4) - layer * .7;
         startCardMotion(rig, pile.x + layer * 2, pile.y - layer * 3, rotation, 130 / rig.width, 150, 2.22 + layer * .018, 180);
       }
-      if (!(await waitDuration(reducedMotion ? 0 : 150, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 150, token)) || destroyed || token !== sequence) return false;
       applyEventSnapshot(event);
-      if (rig) rig.root.enabled = false;
+      if (rig) {
+        rig.playbackHidden = true;
+        rig.root.enabled = false;
+      }
       onEvent?.(event);
       return true;
     }
 
     if (event.type === 'draw' && event.card && displayedState) {
+      if (!motionReduced && effectsSetting !== 'off' && (activeEffectStyle === 'sweep' || activeEffectStyle === 'research' || activeEffectStyle === 'crew')) {
+        const nextIndex = Math.max(0, displayedState.hand.length);
+        const destination = shipHandPoses(nextIndex + 1)[nextIndex] ?? { x: 960, y: 1134 };
+        spawnFlight(SHIP_PILES.draw, destination, 260, activeEffectStyle, activeEffectStyle === 'sweep' ? 'Tactical_Sweep_Radar_Data_Return' : 'Ordered_Draw_Data_Return');
+      }
       // Only this event's identity is used; later draws remain anonymous in the pile.
       const view = cloneState(displayedState);
       view.draw = view.draw.filter((card) => card.uid !== event.card!.uid);
@@ -1195,17 +1426,17 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
           updateCardTexture(rig, visual);
         }
         if (!rig) return;
-        if (reducedMotion) resetCardPose(rig, index);
+        if (motionReduced) resetCardPose(rig, index);
         else startCardMotion(rig, visual.x, visual.y, visual.rotation, 1, 300, CARD_Z + index * .004, 0, card.uid === event.card!.uid ? 100 : 0);
       });
-      if (!(await waitDuration(reducedMotion ? 0 : 300, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 300, token)) || destroyed || token !== sequence) return false;
       applyEventSnapshot(event);
       onEvent?.(event);
       return true;
     }
 
     if (event.type === 'recycle') {
-      if (!reducedMotion) {
+      if (!motionReduced) {
         const root = new Entity('Recycling_Anonymous_Card_Stack', app);
         const layers = Math.min(4, 1 + Math.floor(Math.max(0, (event.amount ?? 1) - 1) / 3));
         for (let layer = 0; layer < layers; layer++) {
@@ -1217,7 +1448,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
         recycleMotion = { root, startedAt: sceneNow, duration: 320 };
         for (const entity of pileSurfaces.get('discard') ?? []) entity.enabled = false;
       }
-      if (!(await waitDuration(reducedMotion ? 0 : 320, token)) || destroyed || token !== sequence) return false;
+      if (!(await waitDuration(motionReduced ? 0 : 320, token)) || destroyed || token !== sequence) return false;
       recycleMotion?.root.destroy();
       recycleMotion = null;
       applyEventSnapshot(event);
@@ -1227,11 +1458,55 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
 
     applyEventSnapshot(event);
     onEvent?.(event);
-    return waitDuration(reducedMotion ? 0 : 35, token);
+    return waitDuration(motionReduced ? 0 : 35, token);
+  }
+
+  function awayPoint(id: string): { x: number; y: number } {
+    const unit = displayedAwayState?.units.find((candidate) => candidate.id === id);
+    return unit ? awayUnitPose(unit) : { x: SHIP_DESIGN.width / 2, y: 820 };
+  }
+
+  function applyAwayEventSnapshot(event: AwayBattleEvent): void {
+    if (!displayedAwayState) return;
+    const target = displayedAwayState.units.find((unit) => unit.id === (event.targetId ?? event.actorId));
+    if (target && typeof event.hp === 'number') target.hp = event.hp;
+    if (target && typeof event.guard === 'number') target.guard = event.guard;
+    if (typeof event.round === 'number') displayedAwayState.round = event.round;
+    if (event.type === 'victory' || event.type === 'defeat') displayedAwayState.phase = event.type;
+    syncAwayRigs();
+    applyScreenVisibility();
+  }
+
+  async function presentAwayEvent(event: AwayBattleEvent, token: number, onEvent?: (value: AwayBattleEvent) => void): Promise<boolean> {
+    if (destroyed || token !== sequence) return false;
+    const actorRig = awayRigs.get(event.actorId);
+    if (event.type === 'action') {
+      if (!motionReduced) actorRig?.root.setLocalScale(1.08, 1.08, 1);
+      if (!(await waitDuration(motionReduced ? 0 : 100, token)) || destroyed || token !== sequence) return false;
+      actorRig?.root.setLocalScale(1, 1, 1);
+      onEvent?.(event);
+      return true;
+    }
+    if (event.type === 'damage' || event.type === 'guard' || event.type === 'heal') {
+      const source = awayPoint(event.actorId);
+      const destination = awayPoint(event.targetId ?? event.actorId);
+      const style: ShipEffectStyle = event.type === 'guard' ? 'shield' : event.type === 'heal' ? 'crew' : 'pulse';
+      const shouldDecorate = (): boolean => !motionReduced && effectsSetting !== 'off';
+      if (shouldDecorate()) spawnFlight(source, destination, effectsSetting === 'subtle' ? 120 : 190, style, `Away_${event.type}_Actual_Effect`);
+      if (!(await waitDuration(motionReduced ? 0 : effectsSetting === 'subtle' ? 120 : 190, token)) || destroyed || token !== sequence) return false;
+      if (shouldDecorate()) spawnImpact(destination, event.type !== 'damage', effectsSetting === 'subtle' ? 100 : 170);
+      applyAwayEventSnapshot(event);
+      onEvent?.(event);
+      return waitDuration(motionReduced ? 0 : 70, token);
+    }
+    if (!(await waitDuration(motionReduced ? 0 : 35, token)) || destroyed || token !== sequence) return false;
+    applyAwayEventSnapshot(event);
+    onEvent?.(event);
+    return true;
   }
 
   function update(dt: number): void {
-    if (destroyed) return;
+    if (destroyed || paused) return;
     const delta = Math.max(0, Math.min(dt, .05));
     sceneNow += delta * 1000;
     if (delta > 0) {
@@ -1366,12 +1641,16 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
     clearTransient();
     hideAimImmediately();
     for (const rig of enemyRigs.values()) rig.root.setLocalScale(1, 1, 1);
+    for (const rig of awayRigs.values()) rig.root.setLocalScale(1, 1, 1);
     for (const stack of pileSurfaces.values()) {
       for (const entity of stack) entity.setLocalScale(1, 1, 1);
     }
     let finalToAdopt: ShipBattleState | null = null;
+    let awayFinalToAdopt: AwayBattleState | null = null;
     if (adoptFinal && activePresentation) finalToAdopt = activePresentation.finalState;
+    if (adoptFinal && activeAwayPresentation) awayFinalToAdopt = activeAwayPresentation.finalState;
     activePresentation = null;
+    activeAwayPresentation = null;
     if (finalToAdopt && !destroyed) {
       adoptState(finalToAdopt);
       settleCardsAgainst(finalToAdopt);
@@ -1379,10 +1658,53 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       let layer = 0;
       for (const rig of cards.values()) resetCardPose(rig, layer++);
     }
+    if (awayFinalToAdopt && !destroyed) adoptAwayState(awayFinalToAdopt);
+    detailScrim.enabled = false;
+    if (!destroyed) applyScreenVisibility();
+  }
+
+  function clearScreenCards(): void {
+    cardMotions.length = 0;
+    for (const rig of cards.values()) {
+      rig.root.destroy();
+      rig.material.destroy();
+      materials.delete(rig.material);
+    }
+    cards.clear();
     detailScrim.enabled = false;
   }
 
   return {
+    setScreen(screen: 'title' | 'map' | 'ship' | 'away'): void {
+      if (destroyed || screen === currentScreen) return;
+      cancelPresentation(true, true);
+      clearScreenCards();
+      currentScreen = screen;
+      applyScreenVisibility();
+    },
+
+    setPresentation(settings: ResolvedPresentation): void {
+      if (destroyed) return;
+      motionReduced = settings.reducedMotion;
+      effectsSetting = settings.effects;
+      if (settings.effects === 'off' || settings.reducedMotion) clearDecorativeEffects();
+      if (settings.reducedMotion) {
+        finishMotionForReducedPreference();
+        for (const rig of enemyRigs.values()) rig.root.setLocalScale(1, 1, 1);
+        for (const rig of awayRigs.values()) rig.root.setLocalScale(1, 1, 1);
+      }
+    },
+
+    setPaused(value: boolean): void {
+      if (!destroyed) paused = value;
+    },
+
+    setAwayState(state: AwayBattleState | null): void {
+      if (destroyed) return;
+      if (activeAwayPresentation || activePresentation) cancelPresentation(true, true, false);
+      adoptAwayState(state);
+    },
+
     resize(cssWidth: number, cssHeight: number): void {
       if (destroyed) return;
       const width = Math.max(1, Math.round(cssWidth));
@@ -1394,6 +1716,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
         syncPlayerTelemetry();
         syncEnemies();
       }
+      applyScreenVisibility();
     },
 
     setState(state: ShipBattleState): void {
@@ -1427,6 +1750,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
           rig = makeCard(visual, layer);
           cards.set(visual.uid, rig);
         } else {
+          rig.playbackHidden = false;
           const follow = visual.held || rig.visual.held || rig.following;
           if (visual.held && !rig.visual.held) rig.previousTargetX = visual.x;
           rig.visual = visual;
@@ -1435,6 +1759,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
           else resetCardPose(rig, layer);
         }
       });
+      applyScreenVisibility();
     },
 
     async present(events: readonly ShipBattleEvent[], finalState: ShipBattleState, options: { reducedMotion: boolean; onEvent?: (event: ShipBattleEvent) => void }): Promise<void> {
@@ -1445,7 +1770,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       activePresentation = { token, finalState: cloneState(finalState) };
       try {
         for (const event of events) {
-          if (!(await presentEvent(event, options.reducedMotion, token, options.onEvent)) || destroyed || token !== sequence) return;
+          if (!(await presentEvent(event, token, options.onEvent)) || destroyed || token !== sequence) return;
         }
       } finally {
         if (!destroyed && token === sequence) {
@@ -1454,6 +1779,25 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
           clearTransient();
           settleCardsAgainst(finalState);
           detailScrim.enabled = false;
+        }
+      }
+    },
+
+    async presentAway(events: readonly AwayBattleEvent[], finalState: AwayBattleState, options: { reducedMotion: boolean; onEvent?: (event: AwayBattleEvent) => void }): Promise<void> {
+      if (destroyed) return;
+      cancelPresentation(true, true, false);
+      motionReduced = options.reducedMotion;
+      const token = sequence;
+      activeAwayPresentation = { token, finalState: cloneAwayState(finalState) };
+      try {
+        for (const event of events) {
+          if (!(await presentAwayEvent(event, token, options.onEvent)) || destroyed || token !== sequence) return;
+        }
+      } finally {
+        if (!destroyed && token === sequence) {
+          adoptAwayState(finalState);
+          activeAwayPresentation = null;
+          clearTransient();
         }
       }
     },
@@ -1471,6 +1815,7 @@ export function createShipScene(canvas: HTMLCanvasElement): ShipScene {
       clearTransient();
       cards.clear();
       enemyRigs.clear();
+      awayRigs.clear();
       cardTextures.clear();
       for (const material of materials) material.destroy();
       materials.clear();
