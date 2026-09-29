@@ -60,8 +60,9 @@ function independentCommand(command: ExpeditionCommand): ExpeditionCommand {
     copy = { type: 'battle', command: action.type === 'end-turn' ? { type: 'end-turn' } : { type: 'play', uid: action.uid, ...(action.targetId === undefined ? {} : { targetId: action.targetId }) } };
     Object.freeze(copy.command);
   } else if (command.type === 'deploy' || command.type === 'diplomacy') {
-    copy = { type: command.type, crewIds: [...command.crewIds] };
-    Object.freeze(copy.crewIds);
+    const crewIds = [...command.crewIds];
+    Object.freeze(crewIds);
+    copy = { type: command.type, crewIds };
   } else if (command.type === 'salvage') {
     copy = { type: 'salvage', choice: { ...command.choice } };
     Object.freeze(copy.choice);
