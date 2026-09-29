@@ -237,7 +237,7 @@ function summarize(records: BattleRecord[]) {
   };
 }
 async function fingerprint(seeds: number[]) {
-  const paths = ['src/ship/types.ts', 'src/ship/combat.ts', 'src/game/random.ts', 'scripts/ship-balance.ts', 'scripts/ship-policy.ts'];
+  const paths = ['src/ship/types.ts', 'src/ship/combat.ts', 'src/ship/expedition-content.ts', 'src/game/random.ts', 'scripts/ship-balance.ts', 'scripts/ship-policy.ts'];
   const files = Object.fromEntries(await Promise.all(paths.map(async path => [path, digest(await readFile(new URL(path, ROOT), 'utf8'))])));
   return { algorithm: 'sha256', files, study: digest(JSON.stringify({ files, seeds, limits: LIMITS, policies: POLICIES })) };
 }
