@@ -102,3 +102,9 @@ Away units are rendered actors, with clear native stats/log/accessibility. Crew 
 Jev recommended specialist gameplay, interaction and rendering owners, Sonic for fixed mechanical work, and Main for contracts/integration. Its recommendations are advisory. Work is isolated on feature branches; implementation agents skip builds/tests/formatters during concurrent edits. Main reviews, integrates, runs build/regressions and exercises the actual browser surface.
 
 Preserve the existing full world and ship studies. Add complete real-command expedition/crew/away coverage and fresh source fingerprints; do not shrink seeds or candidate families. Exercise native first launch, confirmation, preferences, touch/keyboard/focus, save/resume, one/duplicate/three-enemy battles, exact-card salvage/upgrades, recruitment, finite services, both diplomacy and autobattle, defeat and explicit relay completion. Screenshots judge readability; canonical states and native actions prove behavior. No synthetic victories or saved QA fixtures left as user progress.
+
+## Initial domain proof
+
+A seed-2 expedition completed 62 real accepted commands, including 21 away-unit actions, two planet missions, recruitment of all four crew, service access, the three-ship blockade and explicit relay transmission. It finished at 44 hull. Every committed state was serialized, replay-loaded through the reducers and compared exactly with its source state. This is a domain integration smoke, not browser or balance evidence.
+
+Away actor geometry and native telemetry share `AWAY_LAYOUT` and `awayActorPose` in `expedition-types.ts`. The renderer owns actor artwork; native panels own visible name/HP/Guard. The log occupies the upper region rather than covering actor feet. Physical faces explicitly supplied by `setCards` are legal on map/reward/service screens too; changing screens clears prior card ownership.
