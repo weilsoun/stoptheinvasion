@@ -1,10 +1,12 @@
 import { randomStep } from '../game/random';
+import { CREW_CARDS, EXPEDITION_RULES, upgradeShipCard } from './expedition-content';
 import type {
   EnemyShip,
   ShipActor,
   ShipBaseCardId,
   ShipBattleEvent,
   ShipBattleState,
+  ShipBattleSetup,
   ShipCard,
   ShipCardDefinition,
   ShipCardId,
@@ -54,6 +56,11 @@ export const SHIP_CARDS: Readonly<Record<ShipBaseCardId, ShipCardDefinition>> = 
   burst: definition('burst', 'Twin Burst', 1, 'attack', [{ kind: 'damage', amount: 5 }, { kind: 'damage', amount: 5 }], 'Two impacts, one firing solution.'),
 });
 
+export const SHIP_CARD_CATALOG: Readonly<Record<string, ShipCardDefinition>> = Object.freeze({
+  ...SHIP_CARDS,
+  ...CREW_CARDS,
+});
+
 const CORSAIR_INTENTS: readonly ShipIntent[] = Object.freeze([
   Object.freeze({ title: 'Raking Fire', effects: Object.freeze([{ kind: 'damage' as const, amount: 6 }]) }),
   Object.freeze({ title: 'Cutthroat Volley', effects: Object.freeze([{ kind: 'damage' as const, amount: 9 }]) }),
@@ -95,6 +102,17 @@ const CARD_KEYS: Readonly<Record<string, true>> = Object.freeze({
 });
 const EFFECT_KEYS: Readonly<Record<string, true>> = Object.freeze({ kind: true, amount: true });
 const LOADOUT_KEYS: Readonly<Record<string, true>> = Object.freeze({ deck: true, cards: true });
+const SETUP_KEYS: Readonly<Record<string, true>> = Object.freeze({ hull: true, deck: true, enemies: true });
+const PERSISTENT_CARD_KEYS: Readonly<Record<string, true>> = Object.freeze({ uid: true, id: true, upgradeLevel: true });
+const ENEMY_SPEC_KEYS: Readonly<Record<string, true>> = Object.freeze({
+  id: true,
+  name: true,
+  role: true,
+  hull: true,
+  shield: true,
+  recharge: true,
+});
+const INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const EFFECT_LIMITS: Readonly<Record<ShipEffect['kind'], number>> = Object.freeze({
   damage: 24,
   shield: 12,
@@ -124,7 +142,7 @@ function immutableResearchDefinition(value: unknown): ShipCardDefinition {
   if (typeof card.id !== 'string' || !RESEARCH_ID.test(card.id)) {
     failLoadout('research card ids must be safe lowercase identifiers no longer than 57 characters.');
   }
-  if (hasOwn(SHIP_CARDS, card.id)) failLoadout('shipped card definitions cannot be overridden.');
+  if (hasOwn(SHIP_CARD_CATALOG, card.id)) failLoadout('shipped card definitions cannot be overridden.');
   if (typeof card.title !== 'string' || card.title.trim().length === 0) failLoadout('card title must be nonempty.');
   if (typeof card.flavor !== 'string' || card.flavor.trim().length === 0) failLoadout('card flavor must be nonempty.');
   if (typeof card.cost !== 'number' || !Number.isFinite(card.cost) || !Number.isInteger(card.cost) || card.cost < 0 || card.cost > 3) {
@@ -176,7 +194,7 @@ function prepareLoadout(loadout: ShipLoadout | undefined): {
   deck: readonly ShipCardId[];
   catalog: Readonly<Record<string, ShipCardDefinition>>;
 } {
-  if (loadout === undefined) return { deck: SHIP_DECK, catalog: SHIP_CARDS };
+  if (loadout === undefined) return { deck: SHIP_DECK, catalog: SHIP_CARD_CATALOG };
   if (!loadout || typeof loadout !== 'object' || Array.isArray(loadout)) failLoadout('loadout must be an object.');
   if (!hasOnlyKeys(loadout, LOADOUT_KEYS) || !hasOwn(loadout, 'deck')) {
     failLoadout('loadout must contain only deck and optional cards.');
@@ -194,12 +212,96 @@ function prepareLoadout(loadout: ShipLoadout | undefined): {
     if (hasOwn(additions, card.id)) failLoadout(`duplicate definition for ${card.id}.`);
     additions[card.id] = card;
   }
-  const catalog: Readonly<Record<string, ShipCardDefinition>> = Object.freeze({ ...SHIP_CARDS, ...additions });
+  const catalog: Readonly<Record<string, ShipCardDefinition>> = Object.freeze({ ...SHIP_CARD_CATALOG, ...additions });
   const deck = Array.from(loadout.deck, (id) => {
     if (typeof id !== 'string' || !hasOwn(catalog, id)) failLoadout(`deck contains unknown card ${String(id)}.`);
     return id as ShipCardId;
   });
   return { deck: Object.freeze(deck), catalog };
+}
+
+function failSetup(message: string): never {
+  throw new TypeError(`Invalid ship battle setup: ${message}`);
+}
+
+function prepareSetup(setup: ShipBattleSetup | undefined): {
+  hull: number;
+  deck: readonly ShipCard[];
+  enemies: readonly {
+    id: string;
+    name: string;
+    role: EnemyShip['role'];
+    hull: number;
+    shield: number;
+    recharge: number;
+  }[];
+} | undefined {
+  if (setup === undefined) return undefined;
+  if (!setup || typeof setup !== 'object' || Array.isArray(setup)) failSetup('setup must be an object.');
+  if (!hasOnlyKeys(setup, SETUP_KEYS) || !hasOwn(setup, 'hull') || !hasOwn(setup, 'deck') || !hasOwn(setup, 'enemies')) {
+    failSetup('setup must contain only hull, deck, and enemies.');
+  }
+  if (!Number.isInteger(setup.hull) || setup.hull < 1 || setup.hull > SHIP_RULES.playerHull) {
+    failSetup(`hull must be a living integer from 1 through ${SHIP_RULES.playerHull}.`);
+  }
+  if (!Array.isArray(setup.deck) || setup.deck.length < EXPEDITION_RULES.minDeck || setup.deck.length > EXPEDITION_RULES.maxDeck) {
+    failSetup(`deck must contain ${EXPEDITION_RULES.minDeck} through ${EXPEDITION_RULES.maxDeck} cards.`);
+  }
+
+  const cardIds = new Set<string>();
+  const deck = Array.from(setup.deck, (value): ShipCard => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) failSetup('deck cards must be objects.');
+    const card = value as Record<PropertyKey, unknown>;
+    if (!hasOnlyKeys(card, PERSISTENT_CARD_KEYS) || !hasOwn(card, 'uid') || !hasOwn(card, 'id')) {
+      failSetup('deck cards must contain only uid, id, and optional upgradeLevel.');
+    }
+    if (typeof card.uid !== 'string' || !INSTANCE_ID.test(card.uid)) failSetup('card uid is invalid.');
+    if (cardIds.has(card.uid)) failSetup(`duplicate card uid ${card.uid}.`);
+    if (typeof card.id !== 'string' || !hasOwn(SHIP_CARD_CATALOG, card.id)) failSetup(`deck contains unknown card ${String(card.id)}.`);
+    const upgradeLevel = hasOwn(card, 'upgradeLevel') ? card.upgradeLevel : 0;
+    if (!Number.isInteger(upgradeLevel) || (upgradeLevel as number) < 0 || (upgradeLevel as number) > EXPEDITION_RULES.maxUpgrade) {
+      failSetup(`card ${card.uid} has an invalid upgrade level.`);
+    }
+    cardIds.add(card.uid);
+    return {
+      uid: card.uid,
+      id: card.id as ShipCardId,
+      ...(hasOwn(card, 'upgradeLevel') ? { upgradeLevel: upgradeLevel as number } : {}),
+    };
+  });
+
+  if (!Array.isArray(setup.enemies) || setup.enemies.length < 1 || setup.enemies.length > 3) {
+    failSetup('setup must contain one through three enemies.');
+  }
+  const enemyIds = new Set<string>();
+  const enemies = Array.from(setup.enemies, (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) failSetup('enemy instances must be objects.');
+    const enemy = value as Record<PropertyKey, unknown>;
+    if (!hasOnlyKeys(enemy, ENEMY_SPEC_KEYS)
+      || !['id', 'name', 'role', 'hull', 'shield', 'recharge'].every((key) => hasOwn(enemy, key))) {
+      failSetup('enemy instances must contain exactly id, name, role, hull, shield, and recharge.');
+    }
+    if (typeof enemy.id !== 'string' || !INSTANCE_ID.test(enemy.id) || enemy.id === 'player') failSetup('enemy id is invalid.');
+    if (enemyIds.has(enemy.id)) failSetup(`duplicate enemy id ${enemy.id}.`);
+    if (typeof enemy.name !== 'string' || enemy.name.trim().length === 0) failSetup('enemy name is invalid.');
+    if (enemy.role !== 'corsair' && enemy.role !== 'needle' && enemy.role !== 'bulwark') failSetup('enemy role is invalid.');
+    for (const [key, minimum] of [['hull', 1], ['shield', 0], ['recharge', 0]] as const) {
+      if (!Number.isSafeInteger(enemy[key]) || (enemy[key] as number) < minimum) {
+        failSetup(`enemy ${key} is invalid.`);
+      }
+    }
+    enemyIds.add(enemy.id);
+    return {
+      id: enemy.id,
+      name: enemy.name,
+      role: enemy.role,
+      hull: enemy.hull as number,
+      shield: enemy.shield as number,
+      recharge: enemy.recharge as number,
+    };
+  });
+
+  return { hull: setup.hull, deck, enemies };
 }
 
 function copyIntent(source: ShipIntent): ShipIntent {
@@ -248,7 +350,7 @@ function drawCards(state: ShipBattleState, count: number, events?: ShipBattleEve
     const card = state.draw.shift();
     if (!card) return;
     state.hand.push(card);
-    events?.push({ type: 'draw', actorId: state.player.id, targetId: state.player.id, card: copyCard(card), amount: 1, text: `${cardDefinition(card.id, state.catalog).title} was drawn.` });
+    events?.push({ type: 'draw', actorId: state.player.id, targetId: state.player.id, card: copyCard(card), amount: 1, text: `${definitionForCard(state, card).title} was drawn.` });
   }
 }
 
@@ -264,12 +366,39 @@ function makeEnemy(
   return { id, name, role, hull, maxHull: hull, shield, maxShield: shield, recharge, actionIndex: 0, sequence: sequence.map(copyIntent) };
 }
 
-export function createBattle(seed = 1, loadout?: ShipLoadout): ShipBattleState {
+const ROLE_INTENTS: Readonly<Record<EnemyShip['role'], readonly ShipIntent[]>> = Object.freeze({
+  corsair: CORSAIR_INTENTS,
+  needle: NEEDLE_INTENTS,
+  bulwark: BULWARK_INTENTS,
+});
+
+export function createBattle(seed = 1, loadout?: ShipLoadout, setup?: ShipBattleSetup): ShipBattleState {
   if (!Number.isFinite(seed) || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new TypeError('Battle seed must be a finite uint32 integer.');
   }
+  if (loadout !== undefined && setup !== undefined) {
+    throw new TypeError('A ship battle setup and research loadout are mutually exclusive.');
+  }
+  const preparedSetup = prepareSetup(setup);
   const prepared = prepareLoadout(loadout);
-  const cards = prepared.deck.map((id, index) => ({ uid: `ship-${String(index + 1).padStart(2, '0')}-${id}`, id }));
+  const cards = preparedSetup
+    ? preparedSetup.deck.map(copyCard)
+    : prepared.deck.map((id, index) => ({ uid: `ship-${String(index + 1).padStart(2, '0')}-${id}`, id }));
+  const enemies = preparedSetup
+    ? preparedSetup.enemies.map((enemy) => makeEnemy(
+      enemy.id,
+      enemy.name,
+      enemy.role,
+      enemy.hull,
+      enemy.shield,
+      enemy.recharge,
+      ROLE_INTENTS[enemy.role],
+    ))
+    : [
+      makeEnemy('corsair', 'Sable Corsair', 'corsair', 28, 6, 1, CORSAIR_INTENTS),
+      makeEnemy('needle', 'Needle Drone', 'needle', 18, 3, 1, NEEDLE_INTENTS),
+      makeEnemy('bulwark', 'Bulwark Tug', 'bulwark', 38, 10, 2, BULWARK_INTENTS),
+    ];
   const state: ShipBattleState = {
     seed,
     rng: seed,
@@ -279,17 +408,13 @@ export function createBattle(seed = 1, loadout?: ShipLoadout): ShipBattleState {
     player: {
       id: 'player',
       name: 'Kestrel',
-      hull: SHIP_RULES.playerHull,
+      hull: preparedSetup?.hull ?? SHIP_RULES.playerHull,
       maxHull: SHIP_RULES.playerHull,
       shield: SHIP_RULES.playerShield,
       maxShield: SHIP_RULES.playerShield,
       recharge: SHIP_RULES.playerRecharge,
     },
-    enemies: [
-      makeEnemy('corsair', 'Sable Corsair', 'corsair', 28, 6, 1, CORSAIR_INTENTS),
-      makeEnemy('needle', 'Needle Drone', 'needle', 18, 3, 1, NEEDLE_INTENTS),
-      makeEnemy('bulwark', 'Bulwark Tug', 'bulwark', 38, 10, 2, BULWARK_INTENTS),
-    ],
+    enemies,
     energy: SHIP_RULES.maxEnergy,
     maxEnergy: SHIP_RULES.maxEnergy,
     coilsAvailable: true,
@@ -305,10 +430,14 @@ export function createBattle(seed = 1, loadout?: ShipLoadout): ShipBattleState {
 
 export function cardDefinition(
   id: ShipCardId,
-  catalog: Readonly<Record<string, ShipCardDefinition>> = SHIP_CARDS,
+  catalog: Readonly<Record<string, ShipCardDefinition>> = SHIP_CARD_CATALOG,
 ): ShipCardDefinition {
   if (!hasOwn(catalog, id)) throw new TypeError(`Unknown ship card: ${id}`);
   return catalog[id]!;
+}
+
+export function definitionForCard(state: ShipBattleState, card: ShipCard): ShipCardDefinition {
+  return upgradeShipCard(cardDefinition(card.id, state.catalog), card.upgradeLevel ?? 0);
 }
 
 export function livingEnemies(state: ShipBattleState): EnemyShip[] {
@@ -330,7 +459,7 @@ function hasShieldEffect(card: ShipCardDefinition): boolean {
 export function previewCard(state: ShipBattleState, uid: string): ShipCardDefinition | undefined {
   const card = handCard(state, uid);
   if (!card) return undefined;
-  const preview = copyDefinition(cardDefinition(card.id, state.catalog));
+  const preview = copyDefinition(definitionForCard(state, card));
   if (state.coilsAvailable && hasShieldEffect(preview)) {
     const index = preview.effects.findIndex((effect) => effect.kind === 'shield');
     const effects = preview.effects.map(copyEffect);
@@ -343,7 +472,7 @@ export function previewCard(state: ShipBattleState, uid: string): ShipCardDefini
 export function legalTargets(state: ShipBattleState, uid: string): string[] {
   const card = handCard(state, uid);
   if (!card || state.phase !== 'player') return [];
-  const definition = cardDefinition(card.id, state.catalog);
+  const definition = definitionForCard(state, card);
   return definition.kind === 'attack' ? livingEnemies(state).map((enemy) => enemy.id) : [state.player.id];
 }
 
@@ -426,7 +555,7 @@ function playCard(state: ShipBattleState, command: Extract<ShipCommand, { type: 
   const index = state.hand.findIndex((card) => card.uid === command.uid);
   if (index < 0) return 'That card is not in hand.';
   const card = state.hand[index];
-  const base = cardDefinition(card.id, state.catalog);
+  const base = definitionForCard(state, card);
   if (state.energy < base.cost) return 'Not enough energy.';
 
   let target: ShipActor;
@@ -466,7 +595,7 @@ function playCard(state: ShipBattleState, command: Extract<ShipCommand, { type: 
 function discardHand(state: ShipBattleState, events: ShipBattleEvent[]): void {
   for (const card of state.hand.splice(0)) {
     state.discard.push(card);
-    events.push({ type: 'discard', actorId: state.player.id, card: copyCard(card), text: `${cardDefinition(card.id, state.catalog).title} was discarded at end of turn.` });
+    events.push({ type: 'discard', actorId: state.player.id, card: copyCard(card), text: `${definitionForCard(state, card).title} was discarded at end of turn.` });
   }
 }
 
