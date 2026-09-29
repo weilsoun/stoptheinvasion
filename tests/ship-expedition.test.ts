@@ -97,6 +97,7 @@ describe('expedition command boundaries', () => {
     const depot = createExpedition(3);
     depot.nodeId = 'orion-depot';
     depot.phase = 'depot';
+    depot.scrap = EXPEDITION_RULES.upgradeCost;
     rejectAtomically(depot, { type: 'service', option: 'upgrade', target: 'missing-card' });
 
     const planet = planetFixture('nacre');
@@ -242,6 +243,28 @@ describe('away settlement and expedition completion', () => {
     expect(state).toEqual(settled);
   });
 
+  test('clamps lethal evacuation settlement at zero hull for equal and smaller reserves', () => {
+    for (const hullBefore of [EXPEDITION_RULES.evacuationHullLoss, EXPEDITION_RULES.evacuationHullLoss - 1]) {
+      const state = planetFixture('boreal');
+      state.hull = hullBefore;
+      accept(state, { type: 'deploy', crewIds: ['vale'] });
+      resolveAway(state);
+      expect(state.away?.phase).toBe('defeat');
+      expect(state.hull).toBe(hullBefore);
+      expect(state.reward).toBeNull();
+
+      const settlement = accept(state, { type: 'finish-away' });
+      expect(settlement.message).toContain(`Emergency evacuation cost ${hullBefore} hull.`);
+      expect(state.hull).toBe(0);
+      expect(state.phase).toBe('defeat');
+      expect(state.away).toBeNull();
+      expect(state.reward).toBeNull();
+      const settled = structuredClone(state);
+      expect(dispatchExpedition(state, { type: 'finish-away' }).ok).toBe(false);
+      expect(state).toEqual(settled);
+    }
+  });
+
   test('requires travel to the Far Relay and a separate explicit transmission', () => {
     const beforeExit = createExpedition(12);
     beforeExit.nodeId = 'relay-blockade';
@@ -300,6 +323,10 @@ describe('expedition save replay', () => {
     expect(deserializeExpedition(JSON.stringify({ ...envelope, version: 2 }))).toMatchObject({ ok: false });
     expect(deserializeExpedition(JSON.stringify({ ...envelope, commands: Array.from({ length: EXPEDITION_RULES.saveMaxCommands + 1 }, () => ({ type: 'complete' })) }))).toMatchObject({ ok: false });
     expect(deserializeExpedition(JSON.stringify({ ...envelope, checksum: envelope.checksum === '00000000' ? 'ffffffff' : '00000000' }))).toMatchObject({ ok: false });
-    expect(deserializeExpedition(JSON.stringify({ ...envelope, commands: [{ type: 'travel', nodeId: 'cold-beacon', extra: true }] }))).toMatchObject({ ok: false });
+    const progressed = createExpedition(20);
+    accept(progressed, { type: 'travel', nodeId: 'cold-beacon' });
+    const progressedEnvelope = JSON.parse(serializeExpedition(progressed)) as typeof envelope;
+    const travel = progressedEnvelope.commands[0] as Record<string, unknown>;
+    expect(deserializeExpedition(JSON.stringify({ ...progressedEnvelope, commands: [{ ...travel, extra: true }] }))).toMatchObject({ ok: false });
   });
 });
