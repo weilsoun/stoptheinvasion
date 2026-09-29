@@ -1,5 +1,7 @@
 export type ShipBaseCardId = 'pulse' | 'shield' | 'lance' | 'cell' | 'sweep' | 'burst';
-export type ShipCardId = ShipBaseCardId | `research:${string}`;
+export type CrewId = 'vale' | 'iona' | 'rex' | 'sen';
+export type ShipCrewCardId = `crew:${CrewId}`;
+export type ShipCardId = ShipBaseCardId | ShipCrewCardId | `research:${string}`;
 export type ShipEffect = { kind: 'damage' | 'shield' | 'draw' | 'energy'; amount: number };
 export interface ShipCardDefinition {
   id: ShipCardId;
@@ -10,7 +12,7 @@ export interface ShipCardDefinition {
   exhaust?: boolean;
   flavor: string;
 }
-export interface ShipCard { uid: string; id: ShipCardId }
+export interface ShipCard { uid: string; id: ShipCardId; upgradeLevel?: number }
 export interface ShipLoadout {
   deck: readonly ShipCardId[];
   cards?: readonly ShipCardDefinition[];
@@ -32,6 +34,20 @@ export interface EnemyShip extends ShipActor {
   role: 'corsair' | 'needle' | 'bulwark';
   actionIndex: number;
   sequence: readonly ShipIntent[];
+}
+export interface ShipEnemySpec {
+  id: string;
+  name: string;
+  role: EnemyShip['role'];
+  hull: number;
+  shield: number;
+  recharge: number;
+}
+/** Authored expedition setup; mutually exclusive with a research loadout. */
+export interface ShipBattleSetup {
+  hull: number;
+  deck: readonly ShipCard[];
+  enemies: readonly ShipEnemySpec[];
 }
 export interface ShipBattleState {
   seed: number;
@@ -101,6 +117,6 @@ export function shipHandPoses(count: number): ShipPose[] {
     return { x: 960 + offset * pitch, y: 1134 + Math.abs(offset) * 12, width: 247, height: 351, rotation: offset * 3 };
   });
 }
-export function enemyShipPose(index: number): ShipPose {
-  return { x: SHIP_SCREEN.x + (index + .5) * SHIP_SCREEN.width / 3, y: 410, width: 420, height: 276, rotation: 0 };
+export function enemyShipPose(index: number, count = 3): ShipPose {
+  return { x: SHIP_SCREEN.x + (index + .5) * SHIP_SCREEN.width / count, y: 410, width: 420, height: 276, rotation: 0 };
 }
