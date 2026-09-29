@@ -66,7 +66,8 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
   let savedRun: ExpeditionState | null = null;
   let invalidSave: string | null = null;
   let invalidSaveError = '';
-  let storageError = loadedPresentation.error;
+  let expeditionStorageError = '';
+  let presentationStorageError = loadedPresentation.error;
   let overlay: Overlay = null;
   let overlayParent: Overlay = null;
   let overlayOrigin: HTMLElement | null = null;
@@ -82,7 +83,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
   let selectedSalvage: { kind: 'card'; cardId: ShipBaseCardId } | { kind: 'crew'; crewId: CrewId } | null = null;
   let displayedAway: ExpeditionState['away'] = null;
   let awayLog: string[] = [];
-  let message = storageError;
+  let message = presentationStorageError;
   const resumeWaiters = new Set<() => void>();
 
   root.className = 'kestrel-shell';
@@ -102,9 +103,14 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     requestAnimationFrame(() => { if (!destroyed) live.textContent = text; });
   }
 
+  function combinedStorageError(): string {
+    return [expeditionStorageError, presentationStorageError].filter(Boolean).join(' ');
+  }
+
   function renderStorageWarning(): void {
-    storageWarning.hidden = !storageError;
-    storageWarning.textContent = storageError;
+    const error = combinedStorageError();
+    storageWarning.hidden = !error;
+    storageWarning.textContent = error;
   }
 
   function readSave(): void {
@@ -121,7 +127,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
         invalidSaveError = result.error;
       }
     } catch {
-      storageError = 'Expedition storage is unavailable. Progress remains available in this tab; allow website storage before closing it.';
+      expeditionStorageError = 'Expedition storage is unavailable. Progress remains available in this tab; allow website storage before closing it.';
       renderStorageWarning();
     }
   }
@@ -133,10 +139,10 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
       localStorage.setItem(EXPEDITION_SAVE_KEY, serializeExpedition(run));
       invalidSave = null;
       invalidSaveError = '';
-      storageError = '';
+      expeditionStorageError = '';
     } catch {
-      storageError = 'The committed expedition is only saved in this tab. Keep it open and allow website storage before closing it.';
-      announce(storageError);
+      expeditionStorageError = 'The committed expedition is only saved in this tab. Keep it open and allow website storage before closing it.';
+      announce(expeditionStorageError);
     }
     renderStorageWarning();
   }
@@ -471,11 +477,13 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
 
   function settingsMarkup(): string {
     const fullscreenSupported = typeof document.documentElement.requestFullscreen === 'function';
+    const storageError = combinedStorageError();
     return `<p class="eyebrow">Presentation</p><h2 id="overlay-title">Settings</h2>${storageError ? `<p class="storage-inline" role="alert">${escapeHtml(storageError)}</p>` : ''}<fieldset><legend>Motion</legend>${(['system', 'reduced', 'full'] as const).map(value => `<label><input type="radio" name="motion" value="${value}" ${settings.motion === value ? 'checked' : ''}> ${value === 'system' ? 'System preference' : value[0]!.toUpperCase() + value.slice(1)}</label>`).join('')}</fieldset><fieldset><legend>Effects</legend>${(['full', 'subtle', 'off'] as const).map(value => `<label><input type="radio" name="effects" value="${value}" ${settings.effects === value ? 'checked' : ''}> ${value[0]!.toUpperCase() + value.slice(1)}</label>`).join('')}</fieldset><button data-action="fullscreen" ${fullscreenSupported ? '' : 'disabled'}>${document.fullscreenElement ? 'Exit fullscreen' : 'Enter fullscreen'}</button>${fullscreenSupported ? '' : '<p>This browser does not offer native fullscreen here.</p>'}<button data-action="reset-settings">Reset defaults</button><button class="primary" data-action="close-overlay" data-focus-key="overlay-close">Done</button>`;
   }
 
   function renderOverlay(): void {
     overlayLayer.innerHTML = '';
+    surface.inert = overlay !== null;
     if (!overlay) {
       setPaused();
       wakePresentation();
@@ -578,7 +586,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
       return;
     }
     if (action === 'start') {
-      if (savedRun || invalidSave !== null || storageError) openOverlay('confirm-new');
+      if (savedRun || invalidSave !== null || expeditionStorageError) openOverlay('confirm-new');
       else startRun(freshSeed());
       return;
     }
@@ -669,7 +677,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     if (input.name === 'motion' && (input.value === 'system' || input.value === 'reduced' || input.value === 'full')) settings.motion = input.value;
     else if (input.name === 'effects' && (input.value === 'full' || input.value === 'subtle' || input.value === 'off')) settings.effects = input.value;
     else return;
-    storageError = savePresentationSettings(settings);
+    presentationStorageError = savePresentationSettings(settings);
     renderStorageWarning();
     applyPresentation();
     renderOverlay();
@@ -694,7 +702,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     if (target?.dataset.action === 'fullscreen') { void fullscreen(); return; }
     if (target?.dataset.action === 'reset-settings') {
       settings = { ...DEFAULT_PRESENTATION };
-      storageError = savePresentationSettings(settings);
+      presentationStorageError = savePresentationSettings(settings);
       renderStorageWarning();
       applyPresentation();
       renderOverlay();
