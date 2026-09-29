@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-label="A work hand pulls a physical claw hammer back through its matching receipt">
+  <defs>
+    <pattern id="reclaim-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="4" fill="#70516F"/>
+    </pattern>
+    <clipPath id="reclaim-screen"><path d="M760 416h255v231H760z"/></clipPath>
+  </defs>
+  <rect width="1200" height="960" fill="#F1E6C8"/>
+  <g transform="translate(90 72) scale(.85)">
+
+  <!-- the matching punched receipt remains at the point the tool was recovered from -->
+  <path d="M747 133h300v641l-44-25-48 25-49-25-49 25-48-25-62 29V594l49-38-49-43z" fill="#F1E6C8" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <circle cx="897" cy="222" r="34" fill="#F1E6C8" stroke="#172324" stroke-width="17"/>
+  <path d="M798 318h198M798 378h143M798 694h178" fill="none" stroke="#477B78" stroke-width="17" stroke-linecap="round"/>
+  <path d="M835 349v72M892 349v72" stroke="#70516F" stroke-width="11" stroke-linecap="round"/>
+  <g clip-path="url(#reclaim-screen)"><rect x="746" y="405" width="290" height="255" fill="url(#reclaim-dots)"/></g>
+  <!-- matching tool-shaped registration cut: face, eye, and fork -->
+  <path d="M766 506h116l42-31 100 15-8 48-89 5-40 38H766" fill="#F1E6C8" stroke="#172324" stroke-width="13" stroke-linejoin="round"/>
+
+  <!-- one decisive pull back toward the hand -->
+  <path d="M741 460C585 425 426 469 278 591" fill="none" stroke="#70516F" stroke-width="25" stroke-linecap="round" stroke-dasharray="1 42"/>
+  <path d="M329 525l-96 104 139 6" fill="none" stroke="#70516F" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- physical claw hammer in profile, separated from the receipt silhouette -->
+  <path d="M731 474L363 690l67 112 370-218z" fill="#D86532" stroke="#172324" stroke-width="25" stroke-linejoin="round"/>
+  <path d="M431 735l248-146" stroke="#F1E6C8" stroke-width="11" stroke-linecap="round"/>
+  <path d="M694 449l72-43 136 20 13 82-119 14-63 58-63-106z" fill="#477B78" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <ellipse cx="798" cy="468" rx="36" ry="24" transform="rotate(-8 798 468)" fill="#172324"/>
+  <ellipse cx="798" cy="468" rx="19" ry="11" transform="rotate(-8 798 468)" fill="#D86532"/>
+  <!-- striking face to left of eye -->
+  <path d="M591 437l114-67 61 102-115 68z" fill="#477B78" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M622 426l87-51" stroke="#F1E6C8" stroke-width="13" stroke-linecap="round"/>
+  <!-- curved split claw to right -->
+  <path d="M899 427l121 18c43 6 86-7 117-36l30-28-62 14c-29 7-59 4-87-7l-111-44z" fill="#477B78" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M1021 444l43-35M1058 445l42-39" fill="none" stroke="#172324" stroke-width="15" stroke-linecap="round"/>
+
+  <!-- neutral work hand grips the rubbed handle end -->
+  <path d="M73 758c44-91 111-151 202-179l101-31c43-13 88 11 101 54 12 40-9 82-48 98l-66 27 53 13c33 8 53 41 45 74-8 31-39 51-71 44l-105-23-76 87H52z" fill="#D86532" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M246 626c47 3 89 23 126 59M211 681c43 2 80 17 112 44M163 738c39 1 73 14 101 38" fill="none" stroke="#172324" stroke-width="10" stroke-linecap="round"/>
+  <path d="M96 750c25-45 58-80 100-107" fill="none" stroke="#F1E6C8" stroke-width="27" stroke-linecap="round"/>
+  <path d="M752 591l-38 12M946 587l-28 41 47 26" fill="none" stroke="#D86532" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

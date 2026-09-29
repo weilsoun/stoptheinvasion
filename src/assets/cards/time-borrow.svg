@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-label="A delivery carton arrives before its delayed shadow">
+  <defs>
+    <pattern id="borrow-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="4" fill="#70516F"/>
+    </pattern>
+    <clipPath id="borrow-shadow">
+      <path d="M176 595l378-177 233 173-382 201z"/>
+    </clipPath>
+  </defs>
+  <rect width="1200" height="960" fill="#F1E6C8"/>
+  <g transform="translate(90 72) scale(.85)">
+
+  <!-- future shadow arrives late, structurally matching the carton -->
+  <path d="M162 593l376-176 235 174-380 202z" fill="#70516F" opacity=".2" stroke="#70516F" stroke-width="22" stroke-linejoin="round"/>
+  <g clip-path="url(#borrow-shadow)">
+    <rect x="140" y="390" width="660" height="430" fill="url(#borrow-dots)"/>
+  </g>
+  <path d="M227 516l260-120 171 126M390 793l-4-238 272-133" fill="none" stroke="#70516F" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M183 672c-62 15-102 41-121 80M239 744c-68 26-99 58-105 96" fill="none" stroke="#70516F" stroke-width="19" stroke-linecap="round"/>
+
+  <!-- delivered carton ahead and to the right -->
+  <path d="M561 315l333-118 244 164-336 132z" fill="#F1E6C8" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M561 315l241 178v323L557 637z" fill="#D86532" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M802 493l336-132-6 325-330 130z" fill="#477B78" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M711 262l244 161 79-31-237-165z" fill="#D86532" stroke="#172324" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M679 402l122 91v149l-122-88z" fill="#F1E6C8" stroke="#172324" stroke-width="17" stroke-linejoin="round"/>
+  <path d="M836 526l180-70v102l-180 70z" fill="#F1E6C8" stroke="#172324" stroke-width="17" stroke-linejoin="round"/>
+  <path d="M592 347l166 122M833 487l260-103M832 772l221-87" fill="none" stroke="#F1E6C8" stroke-width="11" stroke-linecap="round"/>
+  <!-- deliberate bright-edge contour break -->
+  <path d="M604 297l181-64" fill="none" stroke="#F1E6C8" stroke-width="31" stroke-linecap="round"/>
+
+  <!-- hand-truck anatomy grounds this as delivery rather than a generic box -->
+  <path d="M1044 165l-38 588c-3 44-39 78-83 78H780" fill="none" stroke="#172324" stroke-width="27" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1006 190l68-1" stroke="#D86532" stroke-width="32" stroke-linecap="round"/>
+  <circle cx="910" cy="826" r="72" fill="#172324"/>
+  <circle cx="910" cy="826" r="35" fill="#D86532"/>
+  <path d="M760 830h156" stroke="#172324" stroke-width="24" stroke-linecap="round"/>
+
+  <!-- the borrowed lead is a single decisive motion -->
+  <path d="M302 262c115-77 238-105 368-84" fill="none" stroke="#D86532" stroke-width="26" stroke-linecap="round"/>
+  <path d="M618 127l77 56-87 44" fill="none" stroke="#D86532" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

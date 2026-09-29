@@ -1,44 +1,84 @@
-import { createScene } from './view/scene';
-import { mountGame, type GamePort } from './ui';
-import { preloadCardArt } from './view/art';
-import type { ScenePort } from './view/types';
-import './style.css';
+import { createShipScene } from './ship/scene';
+import { mountShipCombat } from './ship/ui';
+import { SHIP_DESIGN, type ShipGamePort, type ShipScene } from './ship/types';
+import { registerShipApp } from './ship/pwa';
+import { preloadShipArtwork } from './ship/assets';
+import './ship/style.css';
 
 const shell = document.querySelector<HTMLElement>('#game-shell')!;
 const stage = document.querySelector<HTMLElement>('#game-stage')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#arena')!;
 const hud = document.querySelector<HTMLElement>('#hud')!;
 
-function resize(): void {
-  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
-  shell.style.width = `${1920 * scale}px`;
-  shell.style.height = `${1080 * scale}px`;
-  stage.style.transform = `scale(${scale})`;
-}
-resize();
-window.addEventListener('resize', resize);
-
-let scene: ScenePort | undefined;
-let game: GamePort | undefined;
+let scene: ShipScene | undefined;
+let game: ShipGamePort | undefined;
 let disposed = false;
-window.addEventListener('pagehide', () => {
+let releaseApp: (() => void) | undefined;
+
+stage.style.setProperty('--ship-design-width', `${SHIP_DESIGN.width}px`);
+stage.style.setProperty('--ship-design-height', `${SHIP_DESIGN.height}px`);
+
+function resize(): void {
+  const bodyStyle = getComputedStyle(document.body);
+  const viewport = window.visualViewport;
+  // Pinch zoom must magnify the board, not trigger a compensating shrink.
+  const viewportWidth = viewport?.scale === 1 ? Math.min(window.innerWidth, viewport.width) : window.innerWidth;
+  const viewportHeight = viewport?.scale === 1 ? Math.min(window.innerHeight, viewport.height) : window.innerHeight;
+  const width = Math.max(1, viewportWidth - parseFloat(bodyStyle.paddingLeft) - parseFloat(bodyStyle.paddingRight));
+  const height = Math.max(1, viewportHeight - parseFloat(bodyStyle.paddingTop) - parseFloat(bodyStyle.paddingBottom));
+  const scale = Math.min(width / SHIP_DESIGN.width, height / SHIP_DESIGN.height);
+  shell.style.width = `${SHIP_DESIGN.width * scale}px`;
+  shell.style.height = `${SHIP_DESIGN.height * scale}px`;
+  stage.style.setProperty('--ship-scale', String(scale));
+  stage.style.transform = `scale(${scale})`;
+  scene?.resize(SHIP_DESIGN.width * scale, SHIP_DESIGN.height * scale);
+}
+
+function dispose(): void {
+  if (disposed) return;
   disposed = true;
+  releaseApp?.();
   game?.destroy();
   scene?.destroy();
   window.removeEventListener('resize', resize);
-}, { once: true });
+  window.visualViewport?.removeEventListener('resize', resize);
+  window.removeEventListener('pageshow', resize);
+  window.removeEventListener('pagehide', onPageHide);
+}
+
+function onPageHide(event: PageTransitionEvent): void {
+  // Safari can restore this exact document from its back-forward cache.
+  if (!event.persisted) dispose();
+}
+
+resize();
+window.addEventListener('resize', resize);
+window.visualViewport?.addEventListener('resize', resize);
+window.addEventListener('pageshow', resize);
+window.addEventListener('pagehide', onPageHide);
+import.meta.hot?.dispose(dispose);
 
 async function start(): Promise<void> {
   try {
-    await preloadCardArt();
+    await Promise.all([
+      Promise.allSettled([
+        document.fonts.load('700 24px "Barlow Condensed"'),
+        document.fonts.load('24px "Bebas Neue"'),
+      ]),
+      preloadShipArtwork(),
+    ]);
     if (disposed) return;
-    scene = createScene(canvas);
-    game = mountGame(hud, scene);
+    scene = createShipScene(canvas);
+    resize();
+    game = mountShipCombat(hud, scene);
+    releaseApp = registerShipApp();
   } catch (error) {
+    game?.destroy();
     scene?.destroy();
     if (disposed) return;
-    console.error('Unable to load the combat arena', error);
-    hud.innerHTML = '<section class="startup-error"><h1>Could not open the arena</h1><p>Check your connection and that browser hardware acceleration is enabled, then reload.</p><button onclick="location.reload()">Try again</button></section>';
+    console.error('Unable to open the bridge', error);
+    hud.innerHTML = '<section class="startup-error"><h1>Could not open the bridge</h1><p>Check your connection and browser hardware acceleration, then reload.</p><button type="button" id="retry-start">Try again</button></section>';
+    hud.querySelector('#retry-start')?.addEventListener('click', () => location.reload(), { once: true });
   }
 }
 void start();

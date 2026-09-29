@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-label="A coat-check receipt is clipped and saved for later">
+  <defs>
+    <pattern id="retain-dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="3.8" fill="#70516F"/>
+    </pattern>
+    <clipPath id="retain-half">
+      <path d="M746 479l204 88-39 132-210-83z"/>
+    </clipPath>
+  </defs>
+  <rect width="1200" height="960" fill="#F1E6C8"/>
+  <g transform="translate(90 72) scale(.85)">
+
+  <!-- ordinary coat silhouette: neutral owner, no character identity -->
+  <path d="M153 707l80-391 172-82 106 86 105-86 172 82 82 391-171 35-40-176 25 269H338l24-269-39 176z" fill="#477B78" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M406 238c6 72 43 111 105 119 62-8 99-47 105-119l-105 83z" fill="#F1E6C8" stroke="#172324" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M468 354l-53 274M554 354l53 274M383 674h255" fill="none" stroke="#172324" stroke-width="10" stroke-linecap="round"/>
+  <path d="M257 346c-34 137-52 249-54 336" fill="none" stroke="#F1E6C8" stroke-width="20" stroke-linecap="round"/>
+
+  <!-- punched coat-check receipt, enlarged as the saved object -->
+  <path d="M671 171l313 45-77 542-50-23-57 18-47-34-58 17-52-38z" fill="#F1E6C8" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <circle cx="825" cy="277" r="35" fill="#F1E6C8" stroke="#172324" stroke-width="18"/>
+  <path d="M730 379l169 24M714 463l168 24M701 553l109 16" fill="none" stroke="#477B78" stroke-width="17" stroke-linecap="round"/>
+  <path d="M777 416l-23 159M839 425l-23 158" fill="none" stroke="#70516F" stroke-width="12" stroke-linecap="round"/>
+  <g clip-path="url(#retain-half)">
+    <rect x="690" y="462" width="280" height="250" fill="url(#retain-dots)"/>
+  </g>
+
+  <!-- mechanical coat-check clip and retaining loop -->
+  <path d="M742 141c-5-57 23-98 78-111 62-14 116 22 128 79 9 44-11 80-55 109" fill="none" stroke="#D86532" stroke-width="28" stroke-linecap="round"/>
+  <path d="M765 177l119 17-11 76-119-17z" fill="#D86532" stroke="#172324" stroke-width="20" stroke-linejoin="round"/>
+  <circle cx="817" cy="223" r="18" fill="#F1E6C8" stroke="#172324" stroke-width="10"/>
+  <path d="M673 234l63 9" stroke="#F1E6C8" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- practical repair strip joins receipt to coat -->
+  <path d="M584 515l126-62 53 102-127 62z" fill="#D86532" stroke="#172324" stroke-width="17" stroke-linejoin="round"/>
+  <path d="M615 531l112-54M632 569l112-54" stroke="#F1E6C8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M931 694l35 41M673 675l-42 34" stroke="#70516F" stroke-width="18" stroke-linecap="round"/>
+  </g>
+</svg>

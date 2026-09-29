@@ -3,15 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#111a1c" />
-    <meta name="description" content="Ordinary people versus time-bending aliens possessing the staff. A tactical card combat laboratory in MOREMART." />
-    <title>MOREMART — Combat Laboratory</title>
+    <meta name="theme-color" content="#101d27" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Kestrel" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/kestrel-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/kestrel-180.png" />
+    <meta name="description" content="Command the Kestrel from the bridge. Play ship-system cards, manage regenerating shields and outmaneuver three enemy vessels in a turn-based card battle." />
+    <title>Kestrel — Bridge Combat</title>
   </head>
   <body>
-    <main id="game-shell" aria-label="MOREMART combat laboratory">
+    <main id="game-shell" aria-label="Kestrel spaceship card combat">
       <div id="game-stage">
-        <canvas id="arena" aria-label="Moremart combat arena"></canvas>
-        <div id="hud"></div>
+        <canvas id="arena" aria-label="Bridge viewscreen, enemy spacecraft and physical cards"></canvas>
+        <div id="hud"><p role="status">Establishing bridge link…</p></div>
       </div>
     </main>
     <script type="module" src="/src/main.ts"></script>

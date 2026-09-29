@@ -1,1846 +1,1619 @@
-import { attachModifier, availableEnergy, canAttachModifier, createCombat, moveCard, playSurge, previewPlacement, queueCard, removeCard, removeModifier, resolveTurn, turnEnd, turnLength, upgradeLevel, visibleEnd } from './game/combat';
+import { availableEnergy, effectiveCard, legalTargets, nearbyObjects, rewindTargets, visibleEnemies, visibleObjects } from './game/combat';
 import { CARDS } from './game/content';
+import { applyForecast, forecastCard, forecastEvents, forecastTimeline, type CardForecast } from './game/forecast';
+import { TOOLKITS, chooseRunOption, createRun, deserializeRun, dispatchRun, runOptions, serializeRun, type RunOption, type RunState, type ToolkitId } from './game/run';
+import { TERMS, cardTerms } from './game/terms';
+import type { CardDefinition, CardInstance, Direction, TimelineCard, WorldCommand, WorldEvent, WorldState } from './game/types';
 import { applyUpgrade } from './game/upgrades';
-import type { ActorId, Attachment, CardDefinition, CardInstance, EnemyAction, ModifierTarget, PlayerAction, QueueSlot } from './game/types';
 import { mountGamepad } from './gamepad';
-import { ACTOR_CENTERS, ACTOR_HUD, CARD_WORKSPACE, HAND_TOP, type CardVisual, type ScenePort } from './view/types';
+import { drawWorldPortrait } from './view/pixel-art';
+import { CARD_MOTION, CARD_WORKSPACE, HAND_TOP, NOW_X, type CardVisual, type ScenePort } from './view/types';
 
-type Selection = { kind: 'hand'; uid: string } | { kind: 'queue'; slot: number } | null;
-type PendingPlacement = { uid: string; target: ActorId };
-type CardDetail = {
-  uid: string;
-  cardUid: string;
-  definition: CardDefinition;
-  source: 'hand' | 'queue' | 'enemy' | 'attachment' | 'history' | 'future';
-  slot: number | null;
-  target: ActorId | null;
-  upgradeLevel?: number;
-  returnFocus: string;
-};
-type Drag = {
-  kind: 'hand' | 'queue' | 'attachment';
-  uid: string;
-  slot?: number;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  x: number;
-  y: number;
-  moved: boolean;
-  capture: HTMLElement;
-  pose: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>;
-  destination: number | null;
-  preview: QueueSlot[] | null;
-  attachmentTarget: ModifierTarget | null;
-};
-type Mode = 'dealing' | 'planning' | 'surging' | 'resolving' | 'ended';
-export interface GamePort {
-  destroy(): void;
-}
+export interface GamePort { destroy(): void }
 
-const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
+type ReducedMotionPreference = 'system' | 'on' | 'off';
+interface Preferences { reducedMotion: ReducedMotionPreference; afterimages: boolean; zoom: number }
+interface DragState { uid: string; pointerId: number; startX: number; startY: number; x: number; y: number; moved: boolean }
+interface ChoiceState { page: number; selected: string | null }
+type PileKind = 'draw' | 'discard' | 'exhaust';
+
 const DESIGN_WIDTH = 1920;
 const DESIGN_HEIGHT = 1080;
-const LOG_LIMIT = 7;
-const QUEUE_CARD_WIDTH = 150;
-const QUEUE_CARD_HEIGHT = 210;
-const QUEUE_CARD_Y = 356;
-const QUEUE_CARD_GAP = 16;
-const QUEUE_HIT_TOP = QUEUE_CARD_Y - 76;
-const QUEUE_HIT_BOTTOM = QUEUE_CARD_Y + QUEUE_CARD_HEIGHT + 42;
-const TRACK_CENTER_X = CARD_WORKSPACE.x + CARD_WORKSPACE.width / 2;
-const ZOOM_LEVELS = [.65, 1, 1.25];
-const ZOOM_STEP = .35;
-const HAND_BOTTOM = 1008;
-const HOVER_WIDTH = 280;
-const HOVER_HEIGHT = 392;
-const HOVER_Y = HAND_BOTTOM - HOVER_HEIGHT;
-const ATTACHMENT_SCALE = .9;
-const ATTACHMENT_GAP = 8;
-const CARD_ATTACHMENT_PEEK = 28;
-const BRACKET_CARD_Y = -65;
-const DETAIL = { x: 720, y: 180, width: 480, height: 672 };
-const DRAW_PILE = { x: 26, y: 844, width: 96, height: 134, rotation: 0, flip: 180 };
-const DISCARD_PILE = { x: 1027, y: 844, width: 96, height: 134, rotation: 0, flip: 0 };
-const escapeHtml = (value: string | number) => String(value).replace(/[&<>'"]/g, (character) => HTML_ESCAPES[character]);
-const STATUS_ICONS = {
-  block: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 20 5v6c0 5-3.4 8.7-8 11-4.6-2.3-8-6-8-11V5z"/></svg>',
-  exposed: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 1v5m0 12v5M1 12h5m12 0h5"/><circle cx="12" cy="12" r="2"/></svg>',
-  ringing: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.5-2v-5a4.5 4.5 0 0 0-9 0v5z"/><path d="M10 20h4"/></svg>',
+const SAVE_KEY = 'stoptheinvasion.world.v2';
+const LEGACY_SAVE_KEY = 'stoptheinvasion.last-customer.v1';
+const PREFERENCES_KEY = 'stoptheinvasion.presentation.v1';
+const DEFAULT_PREFERENCES: Preferences = { reducedMotion: 'system', afterimages: true, zoom: 1 };
+const ZOOM_LEVELS = [.65, 1, 1.25] as const;
+const TIMELINE_GAP = 164;
+const TIMELINE_CARD = { width: 136, height: 190, centerY: 715, bottom: 860 } as const;
+const TIMELINE_STACK_LIMIT = 3;
+
+function stackOffset(height: number, index: number): number {
+  const peek = Math.min(22, (TIMELINE_CARD.bottom - TIMELINE_CARD.centerY - height / 2) / (TIMELINE_STACK_LIMIT - 1));
+  return Math.min(index, TIMELINE_STACK_LIMIT - 1) * peek;
+}
+const HAND_CARD = { width: 125, height: 175, y: 890 } as const;
+const CHOICE_PAGE_SIZE = 6;
+const DRAG_THRESHOLD = 10;
+const PILE_PAGE_SIZE = 6;
+const PILE_POSES: Record<PileKind, { x: number; y: number }> = {
+  draw: { x: 67, y: 1019 },
+  discard: { x: 1755, y: 1019 },
+  exhaust: { x: 1853, y: 1019 },
 };
 
-const attachmentCardPose = (
-  host: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>,
-  index: number,
-  count: number,
-  behindHost = false,
-) => {
-  const width = host.width * ATTACHMENT_SCALE;
-  const height = host.height * ATTACHMENT_SCALE;
-  const peek = CARD_ATTACHMENT_PEEK * host.height / QUEUE_CARD_HEIGHT;
-  return {
-    x: behindHost
-      ? host.x + (host.width - width) / 2
-      : host.x + host.width / 2 + (index - (count - 1) / 2) * (width + ATTACHMENT_GAP) - width / 2,
-    y: behindHost ? host.y - peek * (index + 1) : host.y + host.height + ATTACHMENT_GAP,
-    width,
-    height,
-    rotation: host.rotation,
-  };
-};
+const escapeHtml = (value: string | number) => String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]!);
 
+function freshSeed(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0];
+}
 
-function cardLayout(hand: CardInstance[]): Map<string, CardVisual> {
-  const count = hand.length;
-  const width = count > 6 ? 148 : 172;
-  const height = Math.round(width * 1.4);
-  const gap = count < 2 ? 0 : Math.min(width - 18, 720 / (count - 1));
-  const span = gap * Math.max(0, count - 1);
-  const left = TRACK_CENTER_X - span / 2 - width / 2;
-  const middle = (count - 1) / 2;
-  return new Map(hand.map((card, index) => {
-    const offset = index - middle;
-    return [card.uid, {
+function loadPreferences(): Preferences {
+  try {
+    const value = JSON.parse(localStorage.getItem(PREFERENCES_KEY) ?? 'null') as Partial<Preferences> | null;
+    const reducedMotion = value?.reducedMotion;
+    const zoom = Number(value?.zoom);
+    return {
+      reducedMotion: reducedMotion === 'on' || reducedMotion === 'off' || reducedMotion === 'system' ? reducedMotion : 'system',
+      afterimages: value?.afterimages !== false,
+      zoom: ZOOM_LEVELS.includes(zoom as typeof ZOOM_LEVELS[number]) ? zoom : 1,
+    };
+  } catch {
+    return { ...DEFAULT_PREFERENCES };
+  }
+}
+
+function handLayout(cards: CardInstance[]): Map<string, CardVisual> {
+  const result = new Map<string, CardVisual>();
+  const gap = Math.min(142, cards.length > 1 ? 760 / (cards.length - 1) : 0);
+  const left = NOW_X - (gap * (cards.length - 1) + HAND_CARD.width) / 2;
+  const fanRise = cards.length > 1 ? Math.min(5, 30 / (cards.length - 1)) : 0;
+  cards.forEach((card, index) => {
+    const offset = index - (cards.length - 1) / 2;
+    result.set(card.uid, {
       uid: card.uid,
       definition: CARDS[card.definitionId],
-      x: Math.round(left + index * gap),
-      y: Math.round(HAND_BOTTOM - height - 12 - middle * 5 + Math.abs(offset) * 5),
-      width,
-      height,
-      rotation: offset * 2.3,
+      x: left + index * gap,
+      y: HAND_CARD.y + Math.abs(offset) * fanRise,
+      width: HAND_CARD.width,
+      height: HAND_CARD.height,
+      rotation: offset * 2.5,
       hovered: false,
       dimmed: false,
-      upgradeLevel: 0,
       queued: false,
-      target: null,
       dragged: false,
       locked: false,
+      upgradeLevel: 0,
+      target: null,
       targets: [],
-      clip: CARD_WORKSPACE,
-    }];
-  }));
+      clip: { x: 0, y: HAND_TOP, width: DESIGN_WIDTH, height: DESIGN_HEIGHT - HAND_TOP },
+    });
+  });
+  return result;
+}
+
+function presentationSnapshot(world: WorldState): WorldState {
+  return {
+    ...world,
+    player: { ...world.player, position: { ...world.player.position } },
+    enemies: world.enemies.map((enemy) => ({ ...enemy, position: { ...enemy.position } })),
+    hand: world.hand.map((card) => ({ ...card })),
+    drawPile: world.drawPile.map((card) => ({ ...card })),
+    discardPile: world.discardPile.map((card) => ({ ...card })),
+    exhaustPile: world.exhaustPile.map((card) => ({ ...card })),
+    grades: { ...world.grades },
+    retainedUids: [...world.retainedUids],
+    echoUsed: [...world.echoUsed],
+    usedObjectIds: [...world.usedObjectIds],
+    completedEncounters: [...world.completedEncounters],
+    pendingRewards: [...world.pendingRewards],
+    rewardIds: [...world.rewardIds],
+    exhaustedByRewind: [...world.exhaustedByRewind],
+    log: [...world.log],
+  };
+}
+
+function statusMarkup(label: string, value: number | boolean, className: string): string {
+  if (!value) return '';
+  return `<span class="status-chip ${className}">${escapeHtml(label)}${typeof value === 'number' ? ` ${value}` : ''}</span>`;
 }
 
 export function mountGame(root: HTMLElement, scene: ScenePort): GamePort {
-  let state = createCombat();
-  let mode: Mode = 'dealing';
-  let selection: Selection = null;
-  let pending: PendingPlacement | null = null;
-  let drag: Drag | null = null;
-  let hoveredUid: string | null = null;
-  let hoveredQueueSlot: number | null = null;
-  let inspector: 'draw' | 'discard' | null = null;
-  let detail: CardDetail | null = null;
-  let menuOpen = false;
-  let focusAfterRender: string | null = null;
-  let menuReturnFocus = '.menu-trigger';
-  let notice = 'Place actions directly. Attachments target a compatible card or timing position.';
+  let run: RunState | null = null;
   let destroyed = false;
-  let sequence = 0;
-  let firingCard: CardVisual | null = null;
-  let hiddenHistoryPosition: number | null = null;
-  const completedCards = new Set<string>();
-  let detailSerial = 0;
-  const discardedCards = new Set<string>();
-  const inFlight = new Map<string, CardVisual>();
-  const attachmentExitOrigins = new Map<string, Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'>>();
-  const lingeringAttachments = new Map<string, CardVisual>();
-  const timers = new Map<number, () => void>();
-  const listeners = new AbortController();
-  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const healthFeedback = new Map<ActorId, { value: number; from: number; changedAt: number; hitAt: number }>();
-  let zoom = 1;
-  let cameraPosition = Math.round(state.position + (turnLength(state) - 1) / 2);
-  let cameraFollowing = true;
-  let pan: { pointerId: number; x: number; camera: number; capture: HTMLElement } | null = null;
-  let navigationSequence = 0;
-  let navigationTarget: number | null = null;
-  let wheelSnapTimer: number | undefined;
+  let mode: 'title' | 'toolkit' | 'world' | 'options' = 'title';
+  let optionsReturn: 'title' | 'world' = 'title';
+  let menuOpen = false;
+  let dictionaryOpen = false;
+  let stackTick: number | null = null;
+  let selectedUid: string | null = null;
+  let selectedTarget: string | null = null;
+  let selectedSource: string | null = null;
+  let detail: { definition: CardDefinition; grade: number; label: string; locked: boolean; returnFocus: string; forecast?: CardForecast } | null = null;
+  let hoverUid: string | null = null;
+  let drag: DragState | null = null;
+  let choice: ChoiceState = { page: 0, selected: null };
+  let pileOpen: PileKind | null = null;
+  let pilePage = 0;
+  let pileReturnFocus: PileKind | null = null;
+  let worldRevision = 0;
+  let forecastCache: { revision: number; timeline: TimelineCard[]; cards: Map<string, CardForecast | null>; resolved: Map<TimelineCard, CardForecast> } = { revision: -1, timeline: [], cards: new Map(), resolved: new Map() };
+  let replacement: 'new' | 'restart' | null = null;
+  let timelinePan: { pointerId: number; startX: number; startOffset: number } | null = null;
+  let timelineOffset = 0;
+  let timelineSnapTimer = 0;
+  let playing = false;
+  let presentationPaused = false;
+  let playbackToken = 0;
+  let prefs = loadPreferences();
+  let visuals = new Map<string, CardVisual>();
+  const controller = new AbortController();
+  const media = matchMedia('(prefers-reduced-motion: reduce)');
+  const portrait = drawWorldPortrait('bob').toDataURL();
 
   root.className = 'game-hud';
-  root.setAttribute('aria-label', 'MOREMART combat controls');
-  root.style.setProperty('--hover-width', `${HOVER_WIDTH}px`);
-  root.style.setProperty('--hover-height', `${HOVER_HEIGHT}px`);
-  root.style.setProperty('--hover-y', `${HOVER_Y}px`);
+  root.innerHTML = '<main></main><div class="live-region sr-only" aria-live="polite"></div>';
+  const main = root.querySelector('main')!;
+  const live = root.querySelector<HTMLElement>('.live-region')!;
 
-  const playerAction = (slot: number): PlayerAction | null => {
-    const action = state.queue[slot];
-    return action?.kind === 'player' ? action : null;
+  const reducedMotion = () => prefs.reducedMotion === 'on' || (prefs.reducedMotion === 'system' && media.matches);
+  const blocked = () => destroyed || playing || presentationPaused || replacement !== null || drag !== null || timelinePan !== null || menuOpen || dictionaryOpen || detail !== null || pileOpen !== null || stackTick !== null || root.dataset.rewind === 'open' || mode !== 'world' || !run || run.world.phase !== 'playing';
+  let announcementFrame = 0;
+  const clearAnnouncement = () => {
+    cancelAnimationFrame(announcementFrame);
+    announcementFrame = 0;
+    live.textContent = '';
   };
-
-  const candidates = (card: CardInstance): ActorId[] => {
-    const definition = CARDS[card.definitionId];
-    return (Object.keys(state.actors) as ActorId[]).filter((actorId) => {
-      const actor = state.actors[actorId];
-      return actor.hp > 0 && (definition.target === 'self' ? actorId === card.owner : actorId !== card.owner);
+  const announce = (message: string) => {
+    clearAnnouncement();
+    announcementFrame = requestAnimationFrame(() => {
+      announcementFrame = 0;
+      if (!destroyed) live.textContent = message;
     });
   };
+  const savePreferences = () => localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
+  const pauseScene = () => scene.setPresentation({ reducedMotion: reducedMotion(), paused: presentationPaused || replacement !== null || menuOpen || dictionaryOpen || detail !== null || pileOpen !== null || stackTick !== null || root.dataset.rewind === 'open' || mode !== 'world' });
 
-  const isAttachment = (definition: CardDefinition) => Boolean(definition.modifier || definition.bracket);
-  const targetChoices = (card: CardInstance): ActorId[] =>
-    isAttachment(CARDS[card.definitionId]) ? [] : candidates(card).length > 1 ? candidates(card) : [];
-
-  const handCard = (uid: string) => state.hand.find((card) => card.uid === uid) ?? null;
-  const canAfford = (card: CardInstance) => CARDS[card.definitionId].cost <= availableEnergy(state, card.owner);
-  const queuedCard = (uid: string) => state.queue.find((slot): slot is PlayerAction => slot?.kind === 'player' && slot.card.uid === uid)?.card ?? null;
-  const stride = () => (QUEUE_CARD_WIDTH + QUEUE_CARD_GAP) * zoom;
-  const queueCardX = (position: number) => TRACK_CENTER_X + (cameraPosition - position) * stride() - QUEUE_CARD_WIDTH * zoom / 2;
-  const queueSlotX = (position: number) => queueCardX(position) - QUEUE_CARD_GAP * zoom / 2;
-  const queueCardPose = (position: number) => ({
-    x: queueCardX(position),
-    y: QUEUE_CARD_Y + QUEUE_CARD_HEIGHT * (1 - zoom) / 2,
-    width: QUEUE_CARD_WIDTH * zoom,
-    height: QUEUE_CARD_HEIGHT * zoom,
-    rotation: 0,
-  });
-  const bracketCenterX = () => (queueCardX(state.position) + queueCardX(turnEnd(state) - 1) + QUEUE_CARD_WIDTH * zoom) / 2;
-  const onscreen = (position: number) => {
-    const x = queueCardX(position);
-    return x + QUEUE_CARD_WIDTH * zoom > CARD_WORKSPACE.x - 40
-      && x < CARD_WORKSPACE.x + CARD_WORKSPACE.width + 40;
-  };
-  const currentQueue = () => drag?.preview ?? state.queue;
-  const presentedSlot = (position: number): QueueSlot => {
-    const slot = currentQueue()[position] ?? null;
-    if (!slot) return null;
-    const uid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
-    return completedCards.has(uid) || firingCard?.uid === uid ? null : slot;
-  };
-  const visiblePositions = () => {
-    const positions = new Set<number>();
-    for (const entry of state.history) {
-      if (entry.position !== hiddenHistoryPosition && onscreen(entry.position)) positions.add(entry.position);
+  function persist(): void {
+    if (!run) return;
+    try {
+      localStorage.setItem(SAVE_KEY, serializeRun(run));
+    } catch {
+      announce('Save unavailable.');
     }
-    for (let position = state.position; position < visibleEnd(state); position++) {
-      if (onscreen(position)) positions.add(position);
+  }
+
+  function savedRun(): RunState | null {
+    try {
+      const text = localStorage.getItem(SAVE_KEY);
+      return text ? deserializeRun(text) : null;
+    } catch {
+      return null;
     }
-    return [...positions].sort((a, b) => a - b);
-  };
-  const enemyDefinition = (action: EnemyAction): CardDefinition => {
-    const kind = action.effects[0]?.kind;
-    return {
-      id: `intent:${action.actor}:${action.name}:${action.effects.map(({ kind: effectKind, amount, recipient }) => `${effectKind}-${amount}-${recipient}`).join(':')}`,
-      name: action.name,
-      cost: 0,
-      type: kind === 'damage' ? 'attack' : 'skill',
-      target: action.target === action.actor ? 'self' : 'enemy',
-      description: action.description,
-      flavor: kind === 'heal' ? 'Restores the acting card owner.' : 'Targets the opposing actor.',
-      icon: kind === 'heal' ? 'shield' : kind === 'exposed' ? 'tape' : 'boot',
-      effects: action.effects,
-      scaling: action.scaling,
-    };
-  };
+  }
 
-  const modifierSource = (): CardInstance | null => {
-    const uid = drag?.kind === 'hand' ? drag.uid : pending?.uid ?? (selection?.kind === 'hand' ? selection.uid : null);
-    const card = uid ? handCard(uid) : null;
-    return card && isAttachment(CARDS[card.definitionId]) ? card : null;
-  };
-  const attachmentAllowed = (target: ModifierTarget): boolean => {
-    const source = modifierSource();
-    return Boolean(source && canAttachModifier(state, source.uid, target));
-  };
-  const handDisabled = (card: CardInstance): boolean => {
-    const modifier = modifierSource();
-    return mode !== 'planning' || (modifier && modifier.uid !== card.uid
-      ? !attachmentAllowed({ kind: 'card', uid: card.uid })
-      : !canAfford(card));
-  };
-  const attachmentClass = (target: ModifierTarget): string =>
-    modifierSource() ? (attachmentAllowed(target) ? ' attachment-valid' : ' attachment-invalid') : '';
-  const cardAttachments = (uid: string) => state.attachments.filter(({ target }) => target.kind === 'card' && target.uid === uid);
-  const positionAttachments = (slot: number) => state.attachments.filter(({ target }) => target.kind === 'slot' && target.slot === slot);
-  const bracketAttachments = () => state.attachments.filter(({ target }) => target.kind === 'bracket');
-  const attachedCard = (uid: string) => state.attachments.find(({ card }) => card.uid === uid)?.card ?? null;
-  const attachmentDescription = (definition: CardDefinition) => {
-    if (!definition.modifier) return `${definition.bracket?.positions ?? 0} positions, ${definition.bracket?.scouting ?? 0} scouting`;
-    const levels = definition.modifier.levels;
-    return `${levels > 0 ? 'Upgrade' : 'Downgrade'} by ${Math.abs(levels)} level${Math.abs(levels) === 1 ? '' : 's'}`;
-  };
-  const attachmentTabsMarkup = (attachments: Attachment[], hostName: string, pose: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>, slotX: number, behindHost = false) => attachments.map(({ card, target }, index, all) => {
-    const definition = CARDS[card.definitionId];
-    const mini = attachmentCardPose(pose, index, all.length, behindHost);
-    const binding = target.kind === 'card' ? `card ${hostName}` : target.kind === 'slot' ? `position ${target.slot}` : 'current turn bracket';
-    const hitHeight = behindHost ? CARD_ATTACHMENT_PEEK * pose.height / QUEUE_CARD_HEIGHT : mini.height;
-    return `<button class="attachment-tab ${target.kind}" style="--tab-x:${mini.x - slotX}px;--tab-y:${mini.y - (QUEUE_CARD_Y - 6)}px;--tab-w:${mini.width}px;--tab-h:${hitHeight}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}"
-      aria-label="Inspect ${escapeHtml(definition.name)}, ${escapeHtml(attachmentDescription(definition))}, bound to ${escapeHtml(binding)}. Drag to return it to hand and refund its energy." title="${escapeHtml(definition.name)}, bound to ${escapeHtml(binding)}"></button>`;
-  }).join('');
-  const handAttachmentTabsMarkup = (hostUid: string, hostName: string) => cardAttachments(hostUid).map(({ card }, index) => {
-    const definition = CARDS[card.definitionId];
-    const top = -CARD_ATTACHMENT_PEEK / QUEUE_CARD_HEIGHT * 100 * (index + 1);
-    return `<button class="attachment-tab card hand-attachment" style="--mini-top:${top}%" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}"
-      aria-label="Inspect ${escapeHtml(definition.name)}, ${escapeHtml(attachmentDescription(definition))}, bound to card ${escapeHtml(hostName)}. Drag to return it to hand and refund its energy." title="${escapeHtml(definition.name)}, bound to card ${escapeHtml(hostName)}"></button>`;
-  }).join('');
+  function cardDefinition(uid: string): CardDefinition | null {
+    const card = run?.world.hand.find((candidate) => candidate.uid === uid);
+    return card ? CARDS[card.definitionId] ?? null : null;
+  }
 
-
-  const draggedPosition = (held: Drag) => ({
-    x: held.x - held.pose.width / 2,
-    y: held.y - held.pose.height / 2,
-  });
-
-  const visualCards = (): CardVisual[] => {
-    const hand = cardLayout(state.hand);
-    const heldUid = drag?.uid ?? null;
-    const modifier = modifierSource();
-    for (const [uid, visual] of hand) {
-      if (uid === heldUid || inFlight.has(uid)) {
-        hand.delete(uid);
-        continue;
-      }
-      const card = handCard(uid)!;
-      const isSource = modifier?.uid === uid;
-      visual.targets = targetChoices(card);
-      visual.target = pending?.uid === uid ? pending.target : null;
-      visual.upgradeLevel = upgradeLevel(state, uid, null);
-      visual.hovered = uid === hoveredUid && (!modifier || !isSource && attachmentAllowed({ kind: 'card', uid }));
-      visual.dimmed = handDisabled(card) || Boolean(pending && !modifier && pending.uid !== uid);
-      if (visual.hovered) {
-        const center = visual.x + visual.width / 2;
-        visual.width = HOVER_WIDTH;
-        visual.height = HOVER_HEIGHT;
-        visual.x = Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - visual.width, center - visual.width / 2)));
-        visual.y = HOVER_Y;
-      }
+  function designPoint(event: Pick<MouseEvent, 'clientX' | 'clientY'>): { x: number; y: number } {
+    const rect = root.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) * DESIGN_WIDTH / rect.width, y: (event.clientY - rect.top) * DESIGN_HEIGHT / rect.height };
+  }
+  function futureTimeline(): TimelineCard[] {
+    if (!run) return [];
+    if (forecastCache.revision !== worldRevision) {
+      forecastCache = { revision: worldRevision, timeline: forecastTimeline(run.world), cards: new Map(), resolved: new Map() };
     }
+    return forecastCache.timeline;
+  }
 
-    const queued: CardVisual[] = [];
-    const attachmentVisuals = (
-      host: Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation'>,
-      attachments: Attachment[],
-      hostUid?: string,
-      behindHost = false,
-      uidPrefix = '',
-      clipped = true,
-    ) => attachments
-      .filter(({ card }) => (drag?.kind !== 'attachment' || card.uid !== drag.uid) && !lingeringAttachments.has(card.uid))
-      .map(({ card, target }, index, all) => ({
-        uid: `${uidPrefix}${card.uid}`,
-        definition: CARDS[card.definitionId],
-        ...attachmentCardPose(host, index, all.length, behindHost),
-        hovered: false,
-        dimmed: Boolean(uidPrefix),
-        upgradeLevel: 0,
-        queued: true,
-        dragged: false,
-        locked: false,
-        target: null,
-        targets: [],
-        underCard: target.kind === 'card' ? hostUid : undefined,
-        flip: 0,
-        clip: clipped ? CARD_WORKSPACE : undefined,
-      } satisfies CardVisual));
-    const pushHost = (host: CardVisual, slot?: number, clipped = true) => {
-      const bound = cardAttachments(host.uid);
-      const fixed = slot === undefined ? [] : positionAttachments(slot);
-      queued.push(...attachmentVisuals(host, bound, host.uid, true, '', clipped).reverse(), ...attachmentVisuals(host, fixed, undefined, false, '', clipped).reverse(), host);
-    };
-    for (const entry of state.history) {
-      if (!entry.action || entry.position === hiddenHistoryPosition || !onscreen(entry.position)) continue;
-      const action = entry.action;
-      const sourceUid = action.kind === 'enemy' ? action.uid : action.card.uid;
-      const uid = `history:${entry.position}:${sourceUid}`;
-      const definition = action.kind === 'enemy' ? enemyDefinition(action) : entry.definition ?? CARDS[action.card.definitionId];
-      const pose = queueCardPose(entry.position);
-      queued.push(
-        ...attachmentVisuals(pose, entry.attachments, uid, true, `history:${entry.position}:`).reverse(),
-        {
-          uid,
-          definition,
-          ...pose,
-          hovered: mode === 'planning' && !modifier && hoveredQueueSlot === entry.position,
-          dimmed: true,
-          upgradeLevel: entry.upgradeLevel,
-          queued: true,
-          dragged: false,
-          locked: action.kind === 'enemy',
-          target: action.target,
-          targets: [],
-          flip: 0,
-          clip: CARD_WORKSPACE,
-        },
-      );
+  function cachedCardForecast(uid: string, targetId?: string, sourceId?: string): CardForecast | null {
+    if (!run) return null;
+    if (forecastCache.revision !== worldRevision) futureTimeline();
+    const key = `${uid}|${targetId ?? ''}|${sourceId ?? ''}`;
+    if (!forecastCache.cards.has(key)) forecastCache.cards.set(key, forecastCard(run.world, uid, targetId, sourceId));
+    return forecastCache.cards.get(key) ?? null;
+  }
+
+  function cachedTimelineForecast(card: TimelineCard | undefined): CardForecast | undefined {
+    if (!card?.definition || card.kind === 'item') return;
+    if (forecastCache.revision !== worldRevision) futureTimeline();
+    let projection = forecastCache.resolved.get(card);
+    if (!projection) {
+      projection = forecastEvents(card.definition, card.events, card.canceled === true);
+      forecastCache.resolved.set(card, projection);
     }
-    for (const position of visiblePositions()) {
-      if (position < state.position || historyAt(position)) continue;
-      const slot = presentedSlot(position);
-      if (!slot) {
-        if (position < turnEnd(state)) queued.push(...attachmentVisuals(queueCardPose(position), positionAttachments(position)));
-        continue;
-      }
-      const isEnemy = slot.kind === 'enemy';
-      const uid = isEnemy ? slot.uid : slot.card.uid;
-      const pose = queueCardPose(position);
-      if (uid === heldUid || inFlight.has(uid)) {
-        queued.push(...attachmentVisuals(pose, positionAttachments(position)));
-        continue;
-      }
-      pushHost({
-        uid,
-        definition: isEnemy ? enemyDefinition(slot) : CARDS[slot.card.definitionId],
-        ...pose,
-        hovered: mode === 'planning' && !modifier && hoveredQueueSlot === position,
-        dimmed: mode !== 'planning' || position >= turnEnd(state) || Boolean(modifier && !attachmentAllowed({ kind: 'card', uid })),
-        upgradeLevel: upgradeLevel(state, uid, position),
-        queued: true,
-        dragged: false,
-        locked: isEnemy || position >= turnEnd(state),
-        target: slot.target,
-        targets: isEnemy ? [] : targetChoices(slot.card),
-        flip: 0,
-        clip: CARD_WORKSPACE,
-      }, position);
+    return projection;
+  }
+
+  function displayedDescription(definition: CardDefinition, grade: number, forecast?: CardForecast): string {
+    const graded = applyUpgrade(definition, grade);
+    return forecast ? applyForecast(graded, forecast).description : graded.description;
+  }
+
+
+  function allTimelineCards(): TimelineCard[] {
+    if (!run) return [];
+    const past = prefs.afterimages || timelineOffset < 0 ? run.world.history.flatMap((entry) => entry.cards) : [];
+    const future = futureTimeline();
+    return [...past, ...future];
+  }
+
+  function timelineGroups(): Map<number, TimelineCard[]> {
+    const groups = new Map<number, TimelineCard[]>();
+    for (const card of allTimelineCards()) {
+      if (!card.definition) continue;
+      const group = groups.get(card.tick) ?? [];
+      group.push(card);
+      groups.set(card.tick, group);
     }
-    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
-    for (const host of attachmentVisuals(bracketPose, bracketAttachments(), undefined, false)) {
-      host.upgradeLevel = upgradeLevel(state, host.uid, null);
-      queued.push(...attachmentVisuals(host, cardAttachments(host.uid), host.uid, true).reverse(), host);
-    }
-    if (firingCard) pushHost(firingCard, undefined, false);
-    const hands: CardVisual[] = [];
-    for (const visual of hand.values()) {
-      hands.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true).reverse(), visual);
-    }
+    return groups;
+  }
 
+  function choiceOptions(): RunOption[] {
+    if (!run) return [];
+    return runOptions(run);
+  }
 
-    if (drag) {
-      const card = handCard(drag.uid) ?? queuedCard(drag.uid) ?? attachedCard(drag.uid);
-      if (card) {
-        const action = state.queue.find((slot): slot is PlayerAction => slot?.kind === 'player' && slot.card.uid === heldUid);
-        const proposedSlot = drag.destination ?? (drag.kind === 'queue' ? drag.slot! : null);
-        const visual: CardVisual = {
-          uid: drag.uid,
-          definition: CARDS[card.definitionId],
-          ...draggedPosition(drag),
-          width: drag.pose.width,
-          height: drag.pose.height,
-          rotation: 0,
-          hovered: true,
-          dimmed: false,
-          upgradeLevel: upgradeLevel(state, drag.uid, proposedSlot),
-          queued: drag.kind === 'queue',
-          dragged: true,
-          locked: false,
-          target: action?.target ?? null,
-          targets: drag.kind === 'attachment' ? [] : targetChoices(card),
-          flip: 0,
-          clip: undefined,
-        };
-        if (drag.kind === 'queue') pushHost(visual, undefined, false);
-        else queued.push(...attachmentVisuals(visual, cardAttachments(visual.uid), visual.uid, true, '', false).reverse(), visual);
-      }
-    }
+  function optionDefinition(option: RunOption): CardDefinition | null {
+    const cardId = option.cardId ?? (option.uid ? run?.world.deck.find((card) => card.uid === option.uid)?.definitionId : undefined);
+    return cardId ? CARDS[cardId] ?? null : null;
+  }
 
-    const pileCards = (cards: CardInstance[], pose: typeof DRAW_PILE, faceDown: boolean) =>
-      cards.slice(-3).map((card, index, visible): CardVisual => ({
-        uid: card.uid,
-        definition: CARDS[card.definitionId],
-        x: pose.x + index * 3,
-        y: pose.y - index * 3,
-        width: pose.width,
-        height: pose.height,
-        rotation: index - (visible.length - 1) / 2,
-        hovered: false,
-        dimmed: false,
-        upgradeLevel: 0,
-        queued: false,
-        dragged: false,
-        locked: false,
-        target: null,
-        targets: [],
-        flip: faceDown ? 180 : 0,
-        clip: CARD_WORKSPACE,
-      })).filter((visual) => !inFlight.has(visual.uid));
-    const physical = [
-      ...pileCards(state.drawPile, DRAW_PILE, true),
-      ...pileCards(state.discardPile, DISCARD_PILE, true),
-      ...queued,
-      ...hands,
-      ...lingeringAttachments.values(),
-      ...inFlight.values(),
-    ];
-    if (detail) physical.push({
-      uid: detail.uid,
-      definition: detail.definition,
-      ...DETAIL,
-      rotation: 0,
-      hovered: true,
-      dimmed: false,
-      upgradeLevel: detail.upgradeLevel ?? (detail.slot === null ? upgradeLevel(state, detail.cardUid, null) : upgradeLevel(state, detail.cardUid, detail.slot)),
-      queued: false,
-      dragged: false,
-      locked: detail.source === 'enemy' || detail.source === 'future'
-        || detail.source === 'history' && state.history.find((entry) => entry.position === detail?.slot)?.action?.kind === 'enemy',
-      target: detail.target,
-      targets: [],
-      detail: true,
-      flip: 0,
-      clip: undefined,
-    });
-    return physical.sort((a, b) => Number(a.hovered || a.dragged || a.detail) - Number(b.hovered || b.dragged || b.detail));
-  };
+  function cardsInPile(kind: PileKind, world = run!.world): CardInstance[] {
+    if (kind === 'draw') return world.drawPile;
+    if (kind === 'discard') return world.discardPile;
+    return world.exhaustPile;
+  }
 
-  const pileMarkup = (kind: 'draw' | 'discard', cards: CardInstance[]) => {
-    const label = kind === 'draw' ? 'Draw pile' : 'Discard pile';
-    return `<button class="pile-button pile-${kind}" data-action="inspect" data-pile="${kind}" aria-label="Inspect ${label}, ${cards.length} cards"><b>${cards.length}</b><span>${label}</span></button>`;
-  };
+  function pileInspectionCards(kind: PileKind): CardInstance[] {
+    const cards = cardsInPile(kind);
+    return kind === 'draw'
+      ? [...cards].sort((a, b) => CARDS[a.definitionId].name.localeCompare(CARDS[b.definitionId].name) || a.uid.localeCompare(b.uid))
+      : cards;
+  }
 
-  const actorMarkup = (actorId: ActorId) => {
-    const actor = state.actors[actorId];
-    const now = performance.now();
-    const value = Math.max(0, Math.min(1, actor.hp / actor.maxHp));
-    const health = healthFeedback.get(actorId) ?? { value, from: value, changedAt: now - 1000, hitAt: now - 1000 };
-    if (health.value !== value) {
-      health.from = health.value;
-      health.value = value;
-      health.changedAt = now;
-    }
-    healthFeedback.set(actorId, health);
-    // Resume the same impact across HUD replacements instead of restarting its animations.
-    const age = now - health.changedAt;
-    const changing = !reduceMotion && health.from !== value && age < 700;
-    const hit = !reduceMotion && now - health.hitAt < 280;
-    const healthClass = `${changing ? ' hp-changing' : ''}${changing && health.from > value ? ' hp-damaged' : ''}${hit ? ' hp-hit' : ''}`;
-    const healthStyle = `--hp:${value};--hp-from:${health.from};--health-age:-${age}ms;--hit-age:-${now - health.hitAt}ms`;
-    const ringingStatus = actor.ringing && actor.ringingNextTurn
-      ? 'Ringing: limited to one action this turn and next turn.'
-      : actor.ringing
-        ? 'Ringing: limited to one action this turn.'
-        : actor.ringingNextTurn
-          ? 'Ringing pending: will be limited to one action next turn.'
-          : '';
-    const ringing = ringingStatus
-      ? `<span class="actor-stat ringing-stat${actor.ringing ? '' : ' pending'}" role="img" aria-label="${ringingStatus}" title="${ringingStatus}">${STATUS_ICONS.ringing}</span>`
-      : '';
-    const hud = ACTOR_HUD[actorId];
-    return `<section class="actor-target ${actorId === 'bob' ? 'actor-bob' : 'actor-guard'}" style="--actor-x:${hud.x}px;--actor-y:${hud.y}px;--actor-width:${hud.width}px"
-      aria-label="${escapeHtml(actor.name)}. ${actor.hp} of ${actor.maxHp} health, ${actor.block} block, ${actor.exposed} exposed${ringingStatus ? `, ${ringingStatus}` : ''}">
-      <span class="actor-name">${escapeHtml(actor.name)}</span>
-      <span class="hp-line${healthClass}" style="${healthStyle}"><span class="hp-trail" aria-hidden="true"></span><span class="hp-fill" aria-hidden="true"></span><b>${actor.hp}</b> / ${actor.maxHp} HP</span>
-      <span class="actor-status"><span class="actor-stat block-stat" role="img" aria-label="Block: ${actor.block}" title="Block: ${actor.block}">${STATUS_ICONS.block}<b>${actor.block}</b></span><span class="actor-stat exposed-stat" role="img" aria-label="Exposed: ${actor.exposed}" title="Exposed: ${actor.exposed}">${STATUS_ICONS.exposed}<b>${actor.exposed}</b></span>${ringing}</span>
-    </section>`;
-  };
-
-  const returnFocusSelector = (element: Element | null): string => {
-    const hand = element?.closest<HTMLElement>('[data-hand-card]');
-    if (hand?.dataset.handCard) return `[data-hand-card="${CSS.escape(hand.dataset.handCard)}"]`;
-    const card = element?.closest<HTMLElement>('[data-card-uid]');
-    if (card?.dataset.cardUid) return `[data-card-uid="${CSS.escape(card.dataset.cardUid)}"]`;
-    const action = element?.closest<HTMLElement>('[data-action]')?.dataset.action;
-    if (action) return `[data-action="${CSS.escape(action)}"]`;
-    const pile = element?.closest<HTMLElement>('.pile-button[data-pile]');
-    if (pile?.dataset.pile) return `.pile-button[data-pile="${CSS.escape(pile.dataset.pile)}"]`;
-    if (element?.closest('.resolve')) return '.resolve';
-    if (element?.closest('.actor-bob, .actor-guard')) return '.menu-trigger';
-    return '.menu-trigger';
-  };
-
-  const historyAt = (position: number) => position === hiddenHistoryPosition ? null : state.history.find((entry) => entry.position === position) ?? null;
-  const slotMarkup = (position: number) => {
-    const history = historyAt(position);
-    const future = !history && position >= turnEnd(state);
-    const slot = history?.action ?? presentedSlot(position);
-    const active = state.activeSlot === position ? ' active' : '';
-    const region = history ? ' history' : future ? ' future' : ' current';
-    const pose = queueCardPose(position);
-    const slotX = queueSlotX(position);
-    const style = `style="--slot-x:${slotX}px;--slot-y:${QUEUE_CARD_Y - 6}px;--slot-z:${Math.max(1, position)};--slot-w:${stride()}px;--card-x:${pose.x - slotX}px;--card-y:${pose.y - (QUEUE_CARD_Y - 6)}px;--card-w:${pose.width}px;--card-h:${pose.height}px"`;
-    const guide = '<span class="slot-guide" aria-hidden="true"></span>';
-    const target = { kind: 'slot', slot: position } as const;
-    const editable = !history && !future && mode === 'planning';
-    const fixedAttachments = editable ? positionAttachments(position) : [];
-    const regionLabel = history ? `Past turn ${history.turn}` : future ? 'Scouted future' : 'Current turn';
-    if (!slot) {
-      const fixedCards = editable ? attachmentTabsMarkup(fixedAttachments, '', pose, slotX) : '';
-      return `<div class="queue-slot empty${region}${active}${pending && editable ? ' pending-destination' : ''}${editable ? attachmentClass(target) : ''}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" role="button" tabindex="${editable && Boolean(selection || pending) ? 0 : -1}" aria-label="${regionLabel}, position ${position}, ${history ? 'empty history' : future ? 'no scouted action' : 'open position'}" ${style}>
-        ${guide}${fixedCards}</div>`;
-    }
-    const sourceUid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
-    const renderUid = history ? `history:${position}:${sourceUid}` : sourceUid;
-    const cardTarget = { kind: 'card', uid: sourceUid } as const;
-    const canTarget = editable && attachmentAllowed(cardTarget);
-    const definition = slot.kind === 'enemy' ? enemyDefinition(slot) : history?.definition ?? CARDS[slot.card.definitionId];
-    const cardTabs = editable
-      ? attachmentTabsMarkup(cardAttachments(sourceUid), definition.name, pose, slotX, true) + attachmentTabsMarkup(fixedAttachments, '', pose, slotX)
-      : '';
-    const level = history?.upgradeLevel ?? upgradeLevel(state, sourceUid, position);
-    const effective = applyUpgrade(definition, level);
-    const targetName = slot.target === null ? 'missing target' : slot.target === (slot.kind === 'enemy' ? slot.actor : slot.card.owner) ? 'self' : 'opponent';
-    const cardLabel = `${slot.kind === 'enemy' ? 'Enemy' : 'Player'} card ${effective.name}, cost ${effective.cost}, target ${targetName}. ${effective.description}`;
-    return `<div class="queue-slot ${slot.kind}${editable && slot.kind === 'player' ? ' queue-card' : slot.kind === 'enemy' ? ' locked' : ''}${region}${active}" data-slot="${position}" data-region="${history ? 'history' : future ? 'future' : 'current'}" ${style}>
-      ${guide}${cardTabs}<div class="queue-card-body${editable ? attachmentClass(cardTarget) : ''}" data-card-uid="${escapeHtml(renderUid)}" role="button" tabindex="${mode === 'planning' && (!modifierSource() || canTarget) ? 0 : -1}"
-        aria-label="Inspect position ${position}, ${regionLabel}, ${escapeHtml(cardLabel)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}"></div>
-      </div>`;
-  };
-  const bracketMarkup = () => {
-    const startX = queueSlotX(state.position);
-    const endX = queueSlotX(turnEnd(state) - 1);
-    const left = Math.min(startX, endX);
-    const width = Math.abs(startX - endX) + stride();
-    const attachments = bracketAttachments();
-    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
-    const chips = attachments.map(({ card }, index) => {
-      const definition = CARDS[card.definitionId];
-      const mini = attachmentCardPose(bracketPose, index, attachments.length);
-      const level = upgradeLevel(state, card.uid, null);
-      const effective = applyUpgrade(definition, level);
-      const nested = cardAttachments(card.uid).map(({ card: child }, childIndex, children) => {
-        const childDefinition = CARDS[child.definitionId];
-        const childPose = attachmentCardPose(mini, childIndex, children.length, true);
-        const hitHeight = CARD_ATTACHMENT_PEEK * mini.height / QUEUE_CARD_HEIGHT;
-        return `<button class="bracket-upgrade attachment-tab card${attachmentClass({ kind: 'card', uid: child.uid })}" style="--tab-x:${childPose.x}px;--tab-y:${childPose.y}px;--tab-w:${childPose.width}px;--tab-h:${hitHeight}px" data-card="${escapeHtml(child.uid)}" data-card-uid="${escapeHtml(child.uid)}" aria-label="Inspect ${escapeHtml(childDefinition.name)}, ${escapeHtml(attachmentDescription(childDefinition))}, bound to card ${escapeHtml(definition.name)}. Drag to return it to hand and refund its energy."></button>`;
-      }).join('');
-      const target = { kind: 'card', uid: card.uid } as const;
-      return `${nested}<button class="bracket-attachment attachment-tab bracket${attachmentClass(target)}" style="--tab-x:${mini.x}px;--tab-y:${mini.y}px;--tab-w:${mini.width}px;--tab-h:${mini.height}px" data-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" aria-label="Inspect ${escapeHtml(effective.name)}, ${escapeHtml(effective.description)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}, attached to current turn bracket. Drag to refund."></button>`;
-    }).join('');
-    return `<div class="turn-bracket${attachmentClass({ kind: 'bracket' })}" data-bracket-target role="button" tabindex="${modifierSource() && attachmentAllowed({ kind: 'bracket' }) ? 0 : -1}" aria-label="Current turn bracket, positions ${state.position} through ${turnEnd(state) - 1}. Attach selected bracket card." style="--bracket-left:${left}px;--bracket-width:${width}px">
-      <span>TURN ${state.turn} · ${turnLength(state)} POSITIONS</span></div>${chips}`;
-  };
-  const overviewMarkup = () => {
-    const visible = visibleEnd(state);
-    const viewRadius = CARD_WORKSPACE.width / (2 * stride());
-    const domainSpan = Math.max(visible + turnLength(state), Math.ceil(cameraPosition + .5 + viewRadius));
-    const edge = (position: number) => (domainSpan - Math.max(0, Math.min(domainSpan, position))) / domainSpan * 100;
-    const viewLow = Math.max(0, cameraPosition + .5 - viewRadius);
-    const viewHigh = Math.min(domainSpan, cameraPosition + .5 + viewRadius);
-    const bins = new Set<number>();
-    const mark = (position: number) => bins.add(Math.max(0, Math.min(255, Math.floor(edge(position + .5) * 2.56))));
-    for (const entry of state.history) if (entry.action && entry.position !== hiddenHistoryPosition) mark(entry.position);
-    for (let position = state.position; position < visible; position++) {
-      if (presentedSlot(position)) mark(position);
-    }
-    const ticks = [...bins].map((bin) => `<span class="timeline-overview-tick" style="--tick-left:${bin / 2.56}%"></span>`).join('');
-    const turnLeft = edge(turnEnd(state));
-    const turnRight = edge(state.position);
-    const viewLeft = edge(viewHigh);
-    const viewRight = edge(viewLow);
-    return `<div class="timeline-overview" role="img" aria-label="Queue overview. View centered on position ${Math.round(cameraPosition)}. Current turn positions ${state.position} through ${turnEnd(state) - 1}. Higher positions are left." title="Queue overview: higher positions are left">
-      <span class="timeline-overview-turn" style="--overview-left:${turnLeft}%;--overview-width:${Math.max(0, turnRight - turnLeft)}%"></span>
-      <span class="timeline-overview-ticks" aria-hidden="true">${ticks}</span>
-      <span class="timeline-overview-view" style="--overview-left:${viewLeft}%;--overview-width:${Math.max(0, viewRight - viewLeft)}%"></span>
-    </div>`;
-  };
-  const queueMarkup = () => {
-    const positions = visiblePositions();
-    const fogEdge = queueSlotX(visibleEnd(state)) + stride();
-    return `<div class="timeline-track" data-pan-surface aria-hidden="true"></div>
-      ${overviewMarkup()}
-      ${state.history.length ? `<div class="history-region" style="--history-left:${queueSlotX(state.position - 1)}px"></div>` : ''}
-      <div class="future-fog" style="--fog-edge:${fogEdge}px"><span>UNSCOUTED</span></div>
-      ${bracketMarkup()}${positions.map(slotMarkup).join('')}`;
-  };
-
-  const handMarkup = () => {
-    const layout = cardLayout(state.hand);
-    const modifier = modifierSource();
-    return state.hand.filter((card) => !inFlight.has(card.uid)).map((card) => {
-      const visual = layout.get(card.uid)!;
-      const definition = CARDS[card.definitionId];
-      const selected = selection?.kind === 'hand' && selection.uid === card.uid || pending?.uid === card.uid;
-      const cardTarget = { kind: 'card', uid: card.uid } as const;
-      const classes = `hand-hit${selected ? ' selected' : ''}${modifier?.uid === card.uid ? ' modifier-source' : attachmentClass(cardTarget)}`;
-      const level = upgradeLevel(state, card.uid, null);
-      const effective = applyUpgrade(definition, level);
-      return `<div class="${classes}" data-hand-card="${escapeHtml(card.uid)}" data-card-uid="${escapeHtml(card.uid)}" role="button" aria-disabled="${mode !== 'planning' || Boolean(modifier && modifier.uid !== card.uid && !attachmentAllowed(cardTarget))}" tabindex="${mode === 'planning' && (!modifier || modifier.uid === card.uid || attachmentAllowed(cardTarget)) ? 0 : -1}"
-        style="--x:${visual.x}px;--y:${visual.y}px;--w:${visual.width}px;--h:${visual.height}px;--r:${visual.rotation}deg;--raised-x:${Math.round(Math.max(CARD_WORKSPACE.x, Math.min(CARD_WORKSPACE.x + CARD_WORKSPACE.width - HOVER_WIDTH, visual.x + visual.width / 2 - HOVER_WIDTH / 2)))}px" aria-label="Inspect ${escapeHtml(effective.name)}, ${effective.cost} energy, ${escapeHtml(effective.description)}${level ? `, upgrade level ${level > 0 ? '+' : ''}${level}` : ''}">
-        ${handAttachmentTabsMarkup(card.uid, definition.name)}
-      </div>`;
-    }).join('');
-  };
-
-  const inspectorMarkup = () => {
-    if (!inspector) return '';
-    const cards = inspector === 'draw' ? state.drawPile : state.discardPile;
-    const title = inspector === 'draw' ? 'Draw pile' : 'Discard pile';
-    const rows = cards.length
-      ? cards.map((card, index) => `<li><span>${String(index + 1).padStart(2, '0')}</span><b>${escapeHtml(CARDS[card.definitionId].name)}</b><small>${CARDS[card.definitionId].cost} energy</small></li>`).join('')
-      : '<li class="pile-empty">No cards here.</li>';
-    return `<div class="inspector-shade"><section class="pile-inspector" role="dialog" aria-modal="true" aria-labelledby="pile-title"><header><h2 id="pile-title">${title}</h2><button data-action="close-inspector" aria-label="Close pile inspector">Close</button></header><ol>${rows}</ol></section></div>`;
-  };
-
-  const detailMarkup = () => {
-    if (!detail) return '';
-    const sourceCard = detail.source === 'hand' ? handCard(detail.cardUid) : null;
-    const level = detail.upgradeLevel ?? upgradeLevel(state, detail.cardUid, detail.slot);
-    let actions = '';
-    if (sourceCard) {
-      actions = `<button data-action="${detail.definition.surge ? 'detail-surge' : 'detail-play'}" ${canAfford(sourceCard) ? '' : 'disabled'}>${detail.definition.surge ? 'Surge now' : isAttachment(detail.definition) ? 'Attach' : 'Queue card'}</button>`;
-    } else if (detail.source === 'queue') {
-      actions = '<button data-action="detail-move">Move card</button>';
-    } else if (detail.source === 'attachment') {
-      actions = '<button class="detail-refund" data-action="detail-refund">Refund attachment</button>';
-    }
-    const bound = mode === 'planning' && detail.source !== 'history' && detail.source !== 'future'
-      ? cardAttachments(detail.cardUid)
-      : [];
-    const boundControls = bound.length ? `<section class="detail-bound-controls" aria-label="Cards attached to ${escapeHtml(detail.definition.name)}">
-      <b>Attached modifiers</b>${bound.map(({ card }) => {
-        const definition = CARDS[card.definitionId];
-        return `<div><button data-action="detail-bound-inspect" data-card="${escapeHtml(card.uid)}">Inspect ${escapeHtml(definition.name)}</button><button class="detail-refund" data-action="detail-bound-refund" data-card="${escapeHtml(card.uid)}" aria-label="Refund ${escapeHtml(definition.name)}">Refund</button></div>`;
-      }).join('')}</section>` : '';
-    const effective = applyUpgrade(detail.definition, level);
-    return `<div class="card-detail-shade"><section class="card-detail-controls" role="dialog" aria-modal="true" aria-labelledby="card-detail-title" aria-describedby="card-detail-description">
-      <h2 id="card-detail-title" class="sr-only">${escapeHtml(effective.name)}</h2>
-      <p id="card-detail-description" class="sr-only">${effective.cost} energy. ${escapeHtml(effective.description)}${level ? ` ${detail.source === 'history' ? 'Recorded upgrade level' : 'Upgrade level'} ${level > 0 ? '+' : ''}${level}${detail.source === 'history' ? '.' : ' this turn.'}` : ''}${detail.source === 'queue' ? ' Press Delete to return this card to hand.' : ''}</p>
-      ${boundControls}${actions}<button class="detail-close" data-action="close-card-detail">Close</button>
-    </section></div>`;
-  };
-
-  const menuMarkup = () => menuOpen ? `<div class="menu-shade"><section class="game-menu" role="dialog" aria-modal="true" aria-labelledby="menu-title" aria-describedby="menu-lore menu-note menu-controls">
-    <span class="eyebrow">GAME MENU</span><h2 id="menu-title">Take a breather</h2>
-    <p id="menu-lore">Time-bending aliens are possessing ordinary people. This guard still wants your receipt.</p>
-    <p id="menu-note">Combat does not pause while this menu is open.</p>
-    <p id="menu-controls" class="gamepad-guide">Controller: hold Select + D-pad to browse, Select + L1/R1 to zoom, Start for menu.${window.isSecureContext ? '' : ' Controller input requires HTTPS or localhost.'}</p>
-    <div class="menu-actions"><button class="primary" data-action="close-menu">Return to game</button><button class="menu-restart" data-action="restart">Restart encounter</button></div>
-  </section></div>` : '';
-
-  const outcomeMarkup = () => {
-    if (menuOpen || mode !== 'ended' || state.phase !== 'victory' && state.phase !== 'defeat') return '';
-    const victory = state.phase === 'victory';
-    return `<div class="outcome-shade"><section class="outcome ${victory ? 'victory' : 'defeat'}" role="dialog" aria-modal="true" aria-labelledby="outcome-title"><span class="stamp">${victory ? 'AISLE SECURED' : 'SHIFT ENDED'}</span><h2 id="outcome-title">${victory ? 'Victory!' : 'Defeat'}</h2><p>${victory ? 'Bob survives another unreasonable customer interaction.' : 'The alien-possessed guard wins this round. Reset the aisle and try a new plan.'}</p><button class="primary" data-action="restart">Replay encounter</button></section></div>`;
-  };
-
-  const missingTargets = () => state.queue.slice(state.position, turnEnd(state)).filter((slot) => slot?.kind === 'player' && slot.target === null).length;
-  const resolveReason = () => {
-    if (pending) return isAttachment(CARDS[handCard(pending.uid)?.definitionId ?? ''])
-      ? 'Choose a compatible card, current position, or turn bracket. Escape cancels.'
-      : 'Choose a current-turn position; insertion shifts player cards. Escape cancels.';
-    const missing = missingTargets();
-    return missing ? `${missing} queued card${missing === 1 ? ' needs' : 's need'} a target.` : '';
-  };
-  const cancelNavigation = (settle = false) => {
-    if (settle) cameraPosition = Math.max(0, Math.round(navigationTarget ?? cameraPosition));
-    navigationSequence++;
-    navigationTarget = null;
-    window.clearTimeout(wheelSnapTimer);
-    wheelSnapTimer = undefined;
-  };
-  const updateTimelineView = () => {
-    if (destroyed) return;
-    const timeline = root.querySelector<HTMLElement>('.timeline');
-    if (!timeline) return;
-    const focus = timeline.contains(document.activeElement) ? returnFocusSelector(document.activeElement) : null;
-    timeline.innerHTML = queueMarkup();
-    scene.setCards(visualCards());
-    if (focus) timeline.querySelector<HTMLElement>(focus)?.focus({ preventScroll: true });
-    const back = root.querySelector<HTMLButtonElement>('[data-action="timeline-right"]');
-    if (back) back.disabled = mode !== 'planning' || (navigationTarget ?? cameraPosition) <= 0;
-  };
-  const slideTimeline = async (destination: number) => {
-    if (destroyed || mode !== 'planning' || detail || inspector || menuOpen || drag || pan) return;
-    cancelNavigation();
-    const run = navigationSequence;
-    const target = Math.max(0, Math.round(destination));
-    const origin = cameraPosition;
-    const started = performance.now();
-    navigationTarget = target;
-    cameraFollowing = false;
-    while (!destroyed && run === navigationSequence && mode === 'planning' && !detail && !inspector && !menuOpen && !drag && !pan) {
-      const progress = reduceMotion || origin === target ? 1 : Math.min(1, (performance.now() - started) / 180);
-      cameraPosition = progress === 1 ? target : origin + (target - origin) * (1 - (1 - progress) ** 3);
-      updateTimelineView();
-      if (progress === 1) {
-        navigationTarget = null;
-        return;
-      }
-      await wait(16);
-    }
-  };
-  const scheduleNavigationSnap = (delay: number) => {
-    window.clearTimeout(wheelSnapTimer);
-    wheelSnapTimer = window.setTimeout(() => {
-      wheelSnapTimer = undefined;
-      void slideTimeline(Math.round(cameraPosition));
-    }, delay);
-  };
-  const returnToTurn = () => {
-    cancelNavigation();
-    cameraPosition = Math.round(state.position + (turnLength(state) - 1) / 2);
-    cameraFollowing = true;
-  };
-  const changeZoom = (next: number) => {
-    cancelNavigation(true);
-    if (root.contains(document.activeElement)) focusAfterRender = returnFocusSelector(document.activeElement);
-    zoom = ZOOM_LEVELS.reduce((nearest, level) => Math.abs(level - next) < Math.abs(nearest - next) ? level : nearest);
-    render();
-  };
-
-  const render = () => {
-    if (destroyed) return;
-    const focusedMenuAction = menuOpen ? root.querySelector<HTMLElement>('.game-menu button:focus')?.dataset.action : null;
-    const bob = state.actors.bob;
-    const energy = availableEnergy(state, 'bob');
-    const commitments = Math.max(0, bob.energy + bob.surgeEnergy - energy);
-    const energyText = `${energy} spendable energy: ${bob.energy} stored plus ${bob.surgeEnergy} Surge, minus ${commitments} committed`;
-    const log = state.log.slice(-LOG_LIMIT);
-    const blocked = resolveReason();
-    const modifier = modifierSource();
-    const showGuides = Boolean(selection || pending || drag);
-    root.classList.toggle('resolving', mode === 'resolving');
-    root.classList.toggle('surging', mode === 'surging');
-    root.classList.toggle('detail-open', Boolean(detail));
-    root.innerHTML = `<div class="hud-controls" aria-label="Turn and menu"><div class="turn-badge"><small>TURN</small><b>${state.turn}</b></div><button class="menu-trigger" data-action="open-menu" aria-haspopup="dialog">Menu</button></div>
-      <main>${actorMarkup('bob')}${actorMarkup('guard')}
-        <section class="timeline${pending ? ' pending-placement' : ''}${showGuides ? ' show-guides' : ''}${modifier ? ' attachment-targeting' : ''}" aria-label="Persistent encounter timeline. History is right, future is left, resolving right to left">${queueMarkup()}</section>
-        <nav class="timeline-controls ink-panel" aria-label="Timeline view controls">
-          <button class="timeline-step" data-action="timeline-left" aria-label="Scroll one position toward the future" title="One position left (future)" ${mode !== 'planning' ? 'disabled' : ''}>←</button>
-          <button class="timeline-step" data-action="timeline-right" aria-label="Scroll one position toward history" title="One position right (history)" ${mode !== 'planning' || cameraPosition <= 0 ? 'disabled' : ''}>→</button>
-          <button data-action="zoom-out" aria-label="Zoom timeline out" title="Zoom out (minus)">−</button>
-          <button data-action="zoom-reset" aria-label="Reset timeline zoom" title="Reset zoom (zero)">${Math.round(zoom * 100)}%</button>
-          <button data-action="zoom-in" aria-label="Zoom timeline in" title="Zoom in (plus)">+</button>
-          <button class="return-turn" data-action="return-turn">Return to turn</button>
-        </nav>
-        <section class="piles" aria-label="Card piles">${pileMarkup('draw', state.drawPile)}${pileMarkup('discard', state.discardPile)}</section>
-        <section class="combat-log ink-panel" aria-label="Combat log"><h2>FIELD NOTES</h2><ol>${log.length ? log.map((line) => `<li>${escapeHtml(line)}</li>`).join('') : '<li>The aisle is quiet. For now.</li>'}</ol></section>
-        <button class="resolve primary" data-action="resolve" aria-describedby="resolve-reason" ${mode !== 'planning' || state.phase !== 'planning' || blocked ? 'disabled' : ''}>Resolve Turn${mode === 'dealing' ? '<span>Dealing cards</span>' : blocked ? `<span>${escapeHtml(blocked)}</span>` : ''}</button>
-        <div id="resolve-reason" class="notice ${blocked || /cannot|need|invalid|occupied|locked/i.test(notice) ? 'warning' : ''}" role="status" aria-live="polite">${escapeHtml(notice)}</div>
-        <div class="hand-zone${modifier ? ' attachment-targeting' : ''}" aria-label="Player hand">${handMarkup()}</div>
-        <section class="energy-bar ink-panel" data-surge-target role="meter" aria-label="Player energy" aria-valuemin="0" aria-valuemax="${Math.max(8, energy)}" aria-valuenow="${energy}" aria-valuetext="${escapeHtml(energyText)}" title="${escapeHtml(energyText)}">
-          <span class="energy-bubbles" aria-hidden="true">${Array.from({ length: 8 }, (_, index) => `<span class="energy-bubble ${index < energy ? 'available' : 'empty'}"></span>`).join('')}</span>
-          ${energy > 8 ? `<b class="energy-overflow" aria-hidden="true">+${energy - 8}</b>` : ''}
-        </section>
-      </main>${detailMarkup()}${inspectorMarkup()}${outcomeMarkup()}${menuMarkup()}`;
-    scene.setState(state);
-    scene.setCards(visualCards());
-    const focusTarget = focusAfterRender ?? (detail ? '.card-detail-controls [data-action="close-card-detail"]' : menuOpen ? `.game-menu [data-action="${focusedMenuAction ?? 'close-menu'}"]` : inspector ? '.pile-inspector button' : mode === 'ended' ? '.outcome button' : null);
-    focusAfterRender = null;
-    if (focusTarget) root.querySelector<HTMLElement>(focusTarget)?.focus({ preventScroll: true });
-  };
-
-  const feedback = (ok: boolean, success: string, reason?: string) => {
-    notice = ok ? success : (reason || 'That interaction is not valid right now.');
-    if (ok) {
-      selection = null;
-      pending = null;
-      if (cameraFollowing) returnToTurn();
-    }
-    detail = null;
-    render();
-  };
-
-  const clearCapture = () => {
-    if (!drag) return;
-    if (drag.capture.hasPointerCapture?.(drag.pointerId)) drag.capture.releasePointerCapture(drag.pointerId);
-    root.classList.remove('physical-drag', 'surge-drag');
-    drag = null;
-  };
-
-  const clearInteraction = (message?: string) => {
-    cancelNavigation(true);
-    if (pan) {
-      if (pan.capture.hasPointerCapture?.(pan.pointerId)) pan.capture.releasePointerCapture(pan.pointerId);
-      pan = null;
-      root.classList.remove('timeline-panning');
-    }
-    clearCapture();
-    selection = null;
-    pending = null;
-    hoveredUid = null;
-    hoveredQueueSlot = null;
-    scene.setTarget(null);
-    root.querySelectorAll('.drop-hover,.drop-valid,.drop-invalid').forEach((element) => element.classList.remove('drop-hover', 'drop-valid', 'drop-invalid'));
-    if (message) notice = message;
-  };
-
-
-  const placeHandCard = (uid: string, target: ActorId | null, slot: number) => {
-    const card = handCard(uid);
-    if (!card) return;
-    if (isAttachment(CARDS[card.definitionId])) {
-      notice = 'Attachments do not take a timeline position. Choose a compatible card, position, or bracket.';
-      render();
+  function buildVisuals(): void {
+    visuals = new Map();
+    if (!run) {
+      scene.setCards([]);
       return;
     }
-    const resolvedTarget = target ?? candidates(card)[0] ?? null;
-    const result = queueCard(state, uid, resolvedTarget, slot);
-    feedback(result.ok, `${CARDS[card.definitionId].name} inserted at position ${slot}.`, result.reason);
-  };
-
-  const attachTo = (target: ModifierTarget, uid?: string) => {
-    const source = uid ? handCard(uid) : modifierSource();
-    if (!source) return;
-    const definition = CARDS[source.definitionId];
-    const result = attachModifier(state, source.uid, target);
-    const binding = target.kind === 'card' ? 'card' : target.kind === 'slot' ? `position ${target.slot}` : 'current turn bracket';
-    feedback(result.ok, `${definition.name} attached to ${binding}; it expires at turn end.`, result.reason);
-  };
-
-  const wait = (milliseconds: number) => new Promise<void>((resolve) => {
-    const timer = window.setTimeout(() => { timers.delete(timer); resolve(); }, milliseconds);
-    timers.set(timer, resolve);
-  });
-
-  const clearPlayback = () => {
-    cancelNavigation();
-    for (const [timer, finish] of timers) {
-      clearTimeout(timer);
-      finish();
-    }
-    timers.clear();
-    firingCard = null;
-    hiddenHistoryPosition = null;
-    completedCards.clear();
-    discardedCards.clear();
-    inFlight.clear();
-    attachmentExitOrigins.clear();
-    lingeringAttachments.clear();
-    healthFeedback.clear();
-  };
-  const toggleMenu = () => {
-    if (menuOpen) {
-      menuOpen = false;
-      focusAfterRender = menuReturnFocus;
-      render();
-      return;
-    }
-    if (mode === 'surging') {
-      sequence++;
-      clearPlayback();
-      mode = state.phase === 'planning' ? 'planning' : 'ended';
-    }
-    menuReturnFocus = mode === 'ended' ? '.outcome button' : '.menu-trigger';
-    clearInteraction();
-    detail = null;
-    inspector = null;
-    menuOpen = true;
-    render();
-  };
-
-  const animateDraws = async (cards: CardInstance[], run: number) => {
-    if (!cards.length) return;
-    for (const card of cards) {
-      inFlight.set(card.uid, {
-        uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
-        hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
-        locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
-      });
-    }
-    render();
-    const layout = cardLayout(state.hand);
-    for (const card of cards) {
-      if (destroyed || run !== sequence) return;
-      const destination = layout.get(card.uid);
-      if (!destination) continue;
-      inFlight.set(card.uid, { ...destination, flip: 0, locked: false, clip: undefined });
-      scene.setCards(visualCards());
-      await wait(reduceMotion ? 0 : 55);
-      if (destroyed || run !== sequence) return;
-    }
-    await wait(reduceMotion ? 0 : 320);
-    if (destroyed || run !== sequence) return;
-    for (const card of cards) inFlight.delete(card.uid);
-    render();
-  };
-
-  const animateDiscards = async (
-    cards: CardInstance[],
-    origins: Map<string, Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'>>,
-    run: number,
-  ) => {
-    if (!cards.length) return;
-    for (const card of cards) {
-      const origin = origins.get(card.uid) ?? DRAW_PILE;
-      inFlight.set(card.uid, {
-        uid: card.uid, definition: CARDS[card.definitionId], ...origin,
-        hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
-        locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
-      });
-    }
-    render();
-    for (const card of cards) {
-      if (destroyed || run !== sequence) return;
-      const flight = inFlight.get(card.uid)!;
-      inFlight.set(card.uid, { ...flight, ...DISCARD_PILE, rotation: 0, flip: 180 });
-      scene.setCards(visualCards());
-      await wait(reduceMotion ? 0 : 45);
-      if (destroyed || run !== sequence) return;
-    }
-    await wait(reduceMotion ? 0 : 335);
-    if (destroyed || run !== sequence) return;
-    for (const card of cards) {
-      inFlight.delete(card.uid);
-      discardedCards.add(card.uid);
-    }
-    render();
-  };
-  const activateSurge = async (uid: string) => {
-    if (mode !== 'planning' || state.phase !== 'planning') return;
-    const card = handCard(uid);
-    if (!card || !CARDS[card.definitionId].surge) return;
-    const origins = new Map<string, Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'>>();
-    const sourcePose = scene.getCardPose(uid) ?? cardLayout(state.hand).get(uid);
-    if (sourcePose) origins.set(uid, sourcePose);
-    for (const { card: attached } of cardAttachments(uid)) {
-      const pose = scene.getCardPose(attached.uid);
-      if (pose) origins.set(attached.uid, pose);
-    }
-    const result = playSurge(state, uid);
-    if (!result.ok) {
-      feedback(false, '', result.reason);
-      return;
-    }
-    const cards = result.events.flatMap((event) => event.kind === 'discard' ? event.cards ?? [] : []);
-    const run = ++sequence;
-    mode = 'surging';
-    clearInteraction();
-    detail = null;
-    notice = result.events.map((event) => event.message).join(' ');
-    const animation = animateDiscards(cards, origins, run);
-    for (const event of result.events) scene.playEvent(event);
-    await animation;
-    if (destroyed || run !== sequence) return;
-    for (const discarded of cards) discardedCards.delete(discarded.uid);
-    mode = 'planning';
-    notice = result.events.map((event) => event.message).join(' ');
-    render();
-  };
-
-  const dealOpeningHand = async () => {
-    const run = ++sequence;
-    mode = 'dealing';
-    notice = 'Dealing opening hand…';
-    await animateDraws([...state.hand], run);
-    if (destroyed || run !== sequence) return;
-    mode = 'planning';
-    notice = 'Opening hand ready. Inspect a card or drag it to the timeline.';
-    render();
-  };
-
-  const playResolution = async () => {
-    if (mode !== 'planning' || state.phase !== 'planning') return;
-    const blocked = resolveReason();
-    if (blocked) { notice = blocked; render(); return; }
-    const run = ++sequence;
-    const steps = resolveTurn(state);
-    mode = 'resolving';
-    clearInteraction();
-    detail = null;
-    notice = 'Resolving turn…';
-    cameraFollowing = true;
-    cameraPosition = state.position;
-    render();
-    const advanceTrack = async (destination: number) => {
-      const origin = cameraPosition;
-      const started = performance.now();
-      while (!destroyed && run === sequence) {
-        const progress = reduceMotion ? 1 : Math.min(1, (performance.now() - started) / 180);
-        cameraPosition = origin + (destination - origin) * progress;
-        render();
-        if (progress === 1) return;
-        await wait(16);
-      }
-    };
-    for (const step of steps) {
-      if (destroyed || run !== sequence) return;
-      const before = state;
-      const action = step.events.find((event) => event.kind === 'action');
-      const consumed = step.events.find((event) => event.slot !== undefined)?.slot;
-      if (consumed !== undefined) cameraPosition = consumed;
-      let firedUid: string | null = null;
-      let firedPlayer = false;
-      let firedAttachments: CardInstance[] = [];
-      if (action && action.slot !== undefined && action.target) {
-        const slot = step.state.queue[action.slot]!;
-        firedUid = slot.kind === 'enemy' ? slot.uid : slot.card.uid;
-        firedPlayer = slot.kind === 'player';
-        firedAttachments = state.attachments.filter(({ target }) => target.kind === 'card' && target.uid === firedUid).map(({ card }) => card);
-        const card = visualCards().find((visual) => visual.uid === firedUid)!;
-        firingCard = {
-          ...card,
-          x: card.x - card.width * .175,
-          y: card.y - card.height * .175 - 80,
-          width: card.width * 1.35,
-          height: card.height * 1.35,
-          rotation: 0,
-          hovered: true,
-          dimmed: false,
-          queued: false,
-          dragged: false,
-          flip: 0,
-          clip: undefined,
-        };
-        notice = `Firing position ${action.slot} at ${state.actors[action.target].name}.`;
-        render();
-        await wait(reduceMotion ? 0 : 150);
-        if (destroyed || run !== sequence) return;
-        const targetCenter = ACTOR_CENTERS[action.target];
-        firingCard = {
-          ...firingCard,
-          x: targetCenter.x - firingCard.width / 2,
-          y: targetCenter.y - firingCard.height / 2,
-        };
-        scene.setCards(visualCards());
-        await wait(reduceMotion ? 0 : 360);
-        if (destroyed || run !== sequence) return;
-        if (!firedPlayer) {
-          for (const card of firedAttachments) {
-            const pose = scene.getCardPose(card.uid);
-            if (pose) attachmentExitOrigins.set(card.uid, pose);
-          }
-        }
-      }
-
-      const drawn = step.events.flatMap((event) => event.kind === 'draw' ? event.cards ?? [] : []);
-      const newlyDiscarded = step.events.flatMap((event) => event.kind === 'discard' ? event.cards ?? [] : [])
-        .filter((card) => !discardedCards.has(card.uid));
-      const discardOrigins = new Map<string, Pick<CardVisual, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flip'>>();
-      if (newlyDiscarded.length) {
-        const previousHand = cardLayout(before.hand);
-        for (const card of newlyDiscarded) {
-          const attachment = before.attachments.find((entry) => entry.card.uid === card.uid);
-          const boundPose = attachment?.target.kind === 'card'
-            ? scene.getCardPose(attachment.target.uid) ?? previousHand.get(attachment.target.uid)
-            : attachment?.target.kind === 'slot' ? queueCardPose(attachment.target.slot) : null;
-          discardOrigins.set(card.uid, attachmentExitOrigins.get(card.uid) ?? scene.getCardPose(card.uid)
-            ?? boundPose ?? previousHand.get(card.uid) ?? DRAW_PILE);
-        }
-      }
-      for (const card of drawn) {
-        inFlight.set(card.uid, {
-          uid: card.uid, definition: CARDS[card.definitionId], ...DRAW_PILE, rotation: 0,
-          hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
-          locked: false, target: null, targets: [], flip: 180, snap: true, clip: undefined,
+    if (run.world.phase === 'reward' || run.world.phase === 'service') {
+      const options = choiceOptions();
+      const cardOptions = options.filter((option) => optionDefinition(option));
+      const page = cardOptions.slice(choice.page * CHOICE_PAGE_SIZE, (choice.page + 1) * CHOICE_PAGE_SIZE);
+      page.forEach((option, index) => {
+        const definition = optionDefinition(option)!;
+        const columns = page.length > 3 ? 3 : page.length;
+        const row = Math.floor(index / 3);
+        const column = index % 3;
+        const baseX = NOW_X + (column - (columns - 1) / 2) * (run!.world.phase === 'service' ? 540 : 300) - 110;
+        const refine = option.id.startsWith('service:refine:') && option.uid;
+        const x = baseX + (refine ? 116 : 0);
+        visuals.set(`choice:${option.id}`, {
+          uid: `choice:${option.id}`, definition, x, y: 250 + row * 340, width: 220, height: 308,
+          rotation: 0, hovered: false, dimmed: choice.selected !== null && choice.selected !== option.id,
+          queued: false, dragged: false, locked: false, upgradeLevel: 0, target: null, targets: [], detail: true,
         });
-      }
-      for (const card of newlyDiscarded) {
-        const origin = discardOrigins.get(card.uid) ?? DRAW_PILE;
-        lingeringAttachments.delete(card.uid);
-        inFlight.set(card.uid, {
-          uid: card.uid, definition: CARDS[card.definitionId], ...origin,
-          hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
-          locked: false, target: null, targets: [], flip: origin.flip ?? 0, clip: undefined,
-        });
-      }
-      hiddenHistoryPosition = firingCard && action?.slot !== undefined ? action.slot : null;
-      state = step.state;
-      for (const event of step.events) {
-        if (event.target && (event.kind === 'damage' || event.kind === 'ringing' || event.kind === 'exposed' && (event.amount ?? 0) > 0)) {
-          const health = healthFeedback.get(event.target);
-          if (health) health.hitAt = performance.now();
-        }
-      }
-      notice = step.events.length ? step.events.map((event) => event.message).join(' ') : 'Advancing the timeline.';
-      render();
-      for (const event of step.events) scene.playEvent(event);
-      if (firingCard && firedUid) {
-        await wait(reduceMotion ? 0 : 130);
-        if (destroyed || run !== sequence) return;
-        if (!firedPlayer) {
-          for (const card of firedAttachments) {
-            const pose = attachmentExitOrigins.get(card.uid);
-            if (!pose) continue;
-            lingeringAttachments.set(card.uid, {
-              uid: card.uid, definition: CARDS[card.definitionId], ...pose,
-              hovered: false, dimmed: false, upgradeLevel: 0, queued: false, dragged: false,
-              locked: false, target: null, targets: [], flip: pose.flip ?? 0, clip: undefined,
+        if (refine) {
+          const original = run!.world.deck.find((card) => card.uid === option.uid);
+          if (original) {
+            visuals.set(`choice-original:${option.id}`, {
+              uid: `choice-original:${option.id}`, definition: CARDS[original.definitionId], x: baseX - 116, y: 250 + row * 340,
+              width: 220, height: 308, rotation: 0, hovered: false, dimmed: true, queued: false, dragged: false,
+              locked: false, upgradeLevel: 0, target: null, targets: [], detail: true,
             });
           }
         }
-        firingCard = firedPlayer
-          ? { ...firingCard, ...DISCARD_PILE, rotation: 0, flip: 180 }
-          : { ...firingCard, x: DESIGN_WIDTH + firingCard.width, flip: 180 };
-        scene.setCards(visualCards());
-        await wait(reduceMotion ? 0 : 380);
-        if (destroyed || run !== sequence) return;
-        completedCards.add(firedUid);
-        if (firedPlayer) {
-          discardedCards.add(firedUid);
-          for (const card of firedAttachments) discardedCards.add(card.uid);
-        }
-        firingCard = null;
-        hiddenHistoryPosition = null;
-        render();
-      }
-      if (newlyDiscarded.length) {
-        await animateDiscards(newlyDiscarded, discardOrigins, run);
-        if (destroyed || run !== sequence) return;
-      }
-      if (drawn.length) {
-        await animateDraws(drawn, run);
-        if (destroyed || run !== sequence) return;
-      }
-      if (consumed !== undefined) {
-        await advanceTrack(consumed + 1);
-        if (destroyed || run !== sequence) return;
-      }
-      if (step.state.activeSlot === null) completedCards.clear();
-    }
-    if (state.phase === 'planning') returnToTurn();
-    mode = state.phase === 'planning' ? 'planning' : 'ended';
-    discardedCards.clear();
-    if (mode === 'ended') menuOpen = false;
-    notice = state.phase === 'planning' ? `Turn ${state.turn}: arrange positions ${state.position}–${turnEnd(state) - 1}.` : (state.phase === 'victory' ? 'Aisle secured. Victory.' : 'Bob is down. Defeat.');
-    render();
-  };
-
-  const restart = () => {
-    sequence++;
-    clearPlayback();
-    clearInteraction();
-    state = createCombat(state.seed);
-    returnToTurn();
-    mode = 'dealing';
-    inspector = null;
-    detail = null;
-    menuOpen = false;
-    focusAfterRender = '.menu-trigger';
-    render();
-    void dealOpeningHand();
-  };
-
-  const designPoint = (event: MouseEvent, rect = root.getBoundingClientRect()) => {
-    return { x: (event.clientX - rect.left) * DESIGN_WIDTH / rect.width, y: (event.clientY - rect.top) * DESIGN_HEIGHT / rect.height };
-  };
-  const hitAt = (event: PointerEvent) => document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-  const queueSlotAt = ({ x, y }: { x: number; y: number }): number | null => {
-    if (x < CARD_WORKSPACE.x || x > CARD_WORKSPACE.x + CARD_WORKSPACE.width
-      || y < QUEUE_HIT_TOP || y > Math.min(QUEUE_HIT_BOTTOM, HAND_TOP)) return null;
-    let nearest: number | null = null;
-    let distance = Infinity;
-    for (let position = state.position; position < turnEnd(state); position++) {
-      if (state.queue[position]?.kind === 'enemy') continue;
-      const nextDistance = Math.abs(x - (queueCardX(position) + QUEUE_CARD_WIDTH * zoom / 2));
-      if (nextDistance <= distance && nextDistance <= stride() * .7) {
-        nearest = position;
-        distance = nextDistance;
-      }
-    }
-    return nearest;
-  };
-  const attachmentTargetAt = (element: HTMLElement | null): ModifierTarget | null => {
-    if (element?.closest('[data-bracket-target]')) return { kind: 'bracket' };
-    const card = element?.closest<HTMLElement>('.queue-slot.current [data-card-uid], .hand-hit[data-card-uid], .bracket-attachment[data-card-uid], .bracket-upgrade[data-card-uid]');
-    if (card) return { kind: 'card', uid: card.dataset.cardUid! };
-    const empty = element?.closest<HTMLElement>('.queue-slot.current.empty[data-slot]');
-    return empty ? { kind: 'slot', slot: Number(empty.dataset.slot) } : null;
-  };
-
-  const setDragDestination = (destination: number | null) => {
-    if (!drag || drag.destination === destination) return;
-    drag.destination = destination;
-    const source = handCard(drag.uid);
-    const target = source ? candidates(source)[0] ?? null : null;
-    drag.preview = destination === null ? null : previewPlacement(state, drag.uid, target, destination);
-  };
-
-
-  const updateDrag = (event: PointerEvent) => {
-    if (!drag) return;
-    const point = designPoint(event);
-    drag.x = point.x;
-    drag.y = point.y;
-    scene.setPointer(point.x, point.y);
-    const hit = hitAt(event);
-    const card = handCard(drag.uid);
-    const draggingModifier = Boolean(card && isAttachment(CARDS[card.definitionId]));
-    const draggingSurge = Boolean(card && CARDS[card.definitionId].surge);
-    if (drag.kind === 'attachment' || draggingSurge) {
-      drag.destination = null;
-      drag.preview = null;
-      drag.attachmentTarget = null;
-    } else if (draggingModifier) {
-      drag.destination = null;
-      drag.preview = null;
-      const target = attachmentTargetAt(hit);
-      const slot = queueSlotAt(point);
-      drag.attachmentTarget = target ?? (slot === null ? null : { kind: 'slot', slot });
-    } else {
-      drag.attachmentTarget = null;
-      setDragDestination(queueSlotAt(point));
-    }
-    const overSurgeTarget = draggingSurge && point.x >= CARD_WORKSPACE.x && point.x <= CARD_WORKSPACE.x + CARD_WORKSPACE.width
-      && (point.y < HAND_TOP || Boolean(hit?.closest('[data-surge-target]')));
-    root.querySelector('[data-surge-target]')?.classList.toggle('drop-hover', overSurgeTarget);
-    root.querySelectorAll<HTMLElement>('.queue-slot').forEach((element) => {
-      const slot = Number(element.dataset.slot);
-      const over = drag?.kind !== 'attachment' && !draggingModifier && !draggingSurge && slot === drag?.destination;
-      element.classList.toggle('drop-valid', over && drag?.preview !== null);
-      element.classList.toggle('drop-invalid', over && drag?.preview === null);
-    });
-    root.querySelectorAll<HTMLElement>('[data-card-uid], [data-bracket-target]').forEach((element) => {
-      const candidate = attachmentTargetAt(element);
-      const activeTarget = drag?.attachmentTarget;
-      const hovered = Boolean(draggingModifier && candidate && activeTarget && candidate.kind === activeTarget.kind &&
-        (candidate.kind === 'card' && activeTarget.kind === 'card' ? candidate.uid === activeTarget.uid :
-          candidate.kind === 'slot' && activeTarget.kind === 'slot' ? candidate.slot === activeTarget.slot :
-            candidate.kind === 'bracket' && activeTarget.kind === 'bracket'));
-      element.classList.toggle('drop-hover', hovered);
-    });
-    scene.setCards(visualCards());
-  };
-
-  const closeDetail = (restoreFocus = true) => {
-    if (!detail) return;
-    if (restoreFocus) focusAfterRender = detail.returnFocus;
-    selection = null;
-    pending = null;
-    detail = null;
-    render();
-  };
-
-  const openDetail = (element: HTMLElement) => {
-    cancelNavigation(true);
-    const hand = element.closest<HTMLElement>('[data-hand-card]');
-    const queueElement = element.closest<HTMLElement>('.queue-slot[data-slot]');
-    const attachmentElement = element.closest<HTMLElement>('.attachment-tab[data-card]');
-    if (attachmentElement) {
-      const card = attachedCard(attachmentElement.dataset.card!);
-      if (!card) return;
-      detail = {
-        uid: `${card.uid}:detail:${++detailSerial}`,
-        cardUid: card.uid,
-        definition: CARDS[card.definitionId],
-        source: 'attachment',
-        slot: queueElement ? Number(queueElement.dataset.slot) : null,
-        target: null,
-        returnFocus: returnFocusSelector(element),
-      };
-    } else if (hand) {
-      const card = handCard(hand.dataset.handCard!);
-      if (!card) return;
-      detail = {
-        uid: `${card.uid}:detail:${++detailSerial}`,
-        cardUid: card.uid,
-        definition: CARDS[card.definitionId],
-        source: 'hand',
-        slot: null,
-        target: null,
-        returnFocus: returnFocusSelector(element),
-      };
-    } else if (queueElement) {
-      const position = Number(queueElement.dataset.slot);
-      const history = historyAt(position);
-      const action = history?.action ?? state.queue[position];
-      if (!action) return;
-      const sourceUid = action.kind === 'enemy' ? action.uid : action.card.uid;
-      detail = {
-        uid: `${history ? `history:${position}:` : ''}${sourceUid}:detail:${++detailSerial}`,
-        cardUid: sourceUid,
-        definition: action.kind === 'enemy' ? enemyDefinition(action) : history?.definition ?? CARDS[action.card.definitionId],
-        source: history ? 'history' : position >= turnEnd(state) ? 'future' : action.kind === 'enemy' ? 'enemy' : 'queue',
-        slot: position,
-        target: action.target,
-        returnFocus: returnFocusSelector(element),
-        upgradeLevel: history?.upgradeLevel,
-      };
-    } else return;
-    clearCapture();
-    selection = null;
-    pending = null;
-    hoveredUid = null;
-    hoveredQueueSlot = null;
-    render();
-  };
-  const onClick = (event: MouseEvent) => {
-    const target = event.target as HTMLElement;
-    const actionElement = target.closest<HTMLElement>('[data-action]');
-    if (actionElement) {
-      const action = actionElement.dataset.action;
-      if (action === 'restart') restart();
-      else if (action === 'timeline-left' || action === 'timeline-right') {
-        void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + (action === 'timeline-left' ? 1 : -1));
-      }
-      else if (action === 'zoom-out') changeZoom(zoom - ZOOM_STEP);
-      else if (action === 'zoom-reset') changeZoom(1);
-      else if (action === 'zoom-in') changeZoom(zoom + ZOOM_STEP);
-      else if (action === 'return-turn') {
-        focusAfterRender = '.return-turn';
-        returnToTurn();
-        render();
-      }
-      else if (action === 'resolve') void playResolution();
-      else if (action === 'open-menu' || action === 'close-menu') toggleMenu();
-      else if (action === 'inspect') {
-        cancelNavigation(true);
-        detail = null;
-        inspector = actionElement.dataset.pile as 'draw' | 'discard';
-        render();
-      } else if (action === 'close-inspector') {
-        const pile = inspector;
-        inspector = null;
-        focusAfterRender = `.pile-button[data-pile="${pile}"]`;
-        render();
-      } else if (action === 'close-card-detail' && detail) {
-        closeDetail();
-      } else if (action === 'detail-surge' && detail?.source === 'hand' && mode === 'planning') {
-        void activateSurge(detail.cardUid);
-      } else if (action === 'detail-play' && detail?.source === 'hand' && mode === 'planning') {
-        const card = handCard(detail.cardUid);
-        if (!card || !canAfford(card)) {
-          notice = 'Not enough available energy.';
-          render();
-          return;
-        }
-        selection = { kind: 'hand', uid: card.uid };
-        detail = null;
-        notice = isAttachment(CARDS[card.definitionId])
-          ? 'Attachment selected. Choose a compatible card, current position, or turn bracket.'
-          : 'Choose a current-turn position for this card.';
-        focusAfterRender = null;
-        render();
-      } else if (action === 'detail-move' && detail?.source === 'queue' && detail.slot !== null && mode === 'planning') {
-        selection = { kind: 'queue', slot: detail.slot };
-        detail = null;
-        notice = 'Choose a timing point to move this card.';
-        focusAfterRender = null;
-        render();
-      } else if (action === 'detail-bound-inspect' && detail && mode === 'planning') {
-        const card = attachedCard(actionElement.dataset.card ?? '');
-        if (!card) return;
-        detail = {
-          uid: `${card.uid}:detail:${++detailSerial}`,
-          cardUid: card.uid,
-          definition: CARDS[card.definitionId],
-          source: 'attachment',
-          slot: null,
-          target: null,
-          returnFocus: `[data-card-uid="${CSS.escape(card.uid)}"]`,
-        };
-        render();
-      } else if (action === 'detail-bound-refund' && detail && mode === 'planning') {
-        const result = removeModifier(state, actionElement.dataset.card ?? '');
-        focusAfterRender = `[data-card-uid="${CSS.escape(detail.cardUid)}"]`;
-        feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
-      } else if (action === 'detail-refund' && detail && mode === 'planning') {
-        const result = detail.source === 'queue' && detail.slot !== null
-          ? removeCard(state, detail.slot)
-          : removeModifier(state, detail.cardUid);
-        focusAfterRender = `[data-card-uid="${CSS.escape(detail.cardUid)}"]`;
-        feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
-      }
+      });
+      scene.setCards([...visuals.values()]);
       return;
+    }
+    if (pileOpen) {
+      const world = run.world;
+      const page = detail ? [] : pileInspectionCards(pileOpen).slice(pilePage * PILE_PAGE_SIZE, (pilePage + 1) * PILE_PAGE_SIZE);
+      page.forEach((card, index) => {
+        const column = index % 3;
+        const row = Math.floor(index / 3);
+        const uid = `pile:${pileOpen}:${card.uid}`;
+        visuals.set(uid, {
+          uid,
+          definition: CARDS[card.definitionId],
+          x: 500 + column * 310,
+          y: 190 + row * 350,
+          width: 220,
+          height: 308,
+          rotation: 0,
+          hovered: false,
+          dimmed: false,
+          queued: false,
+          dragged: false,
+          locked: false,
+          upgradeLevel: world.grades[card.uid] ?? 0,
+          target: null,
+          targets: [],
+          detail: true,
+        });
+      });
+      if (detail) {
+        visuals.set('detail-card', {
+          uid: 'detail-card', definition: detail.definition, x: 720, y: 150, width: 480, height: 672,
+          rotation: 0, hovered: true, dimmed: false, queued: false, dragged: false, locked: false,
+          upgradeLevel: detail.grade, target: null, targets: [], detail: true,
+        });
+      }
+      scene.setCards([...visuals.values()]);
+      return;
+    }
+
+    const hand = handLayout(run.world.hand);
+    const legal = selectedUid ? new Set(legalTargets(run.world, selectedUid)) : new Set<string>();
+    for (const [uid, visual] of hand) {
+      const affordable = availableEnergy(run.world) >= visual.definition.cost;
+      visual.dimmed = !affordable;
+      visual.hovered = uid === selectedUid || uid === hoverUid;
+      visual.upgradeLevel = run.world.grades[uid] ?? 0;
+      visual.targets = [...legal];
+      const cardTargets = legalTargets(run.world, uid);
+      const forecastTarget = uid === selectedUid && selectedTarget ? selectedTarget : cardTargets.length === 1 ? cardTargets[0] : undefined;
+      const usesSource = visual.definition.temporal?.kind === 'echo' || visual.definition.time?.kind === 'rewind';
+      const projected = usesSource
+        ? cachedCardForecast(uid, visual.definition.temporal?.kind === 'echo' ? selectedTarget ?? undefined : undefined, uid === selectedUid ? selectedSource ?? forecastTarget : forecastTarget)
+        : cachedCardForecast(uid, forecastTarget);
+      if (projected) visual.forecast = projected;
+      if (hoverUid === uid && !drag) {
+        visual.x += visual.width / 2 - 140;
+        visual.y = Math.max(CARD_WORKSPACE.y, Math.min(DESIGN_HEIGHT - 392, visual.y + visual.height - 392));
+        visual.width = 280;
+        visual.height = 392;
+        visual.rotation = 0;
+        delete visual.clip;
+      }
+      if (drag?.uid === uid) {
+        visual.x = drag.x - 110;
+        visual.y = drag.y - 154;
+        visual.width = 220;
+        visual.height = 308;
+        visual.rotation = 0;
+        visual.dragged = true;
+        delete visual.clip;
+      }
+      visuals.set(uid, visual);
+    }
+
+    const groups = timelineGroups();
+    for (const [tick, cards] of groups) {
+      const width = TIMELINE_CARD.width * prefs.zoom;
+      const height = TIMELINE_CARD.height * prefs.zoom;
+      const x = NOW_X + (tick - run.world.tick - timelineOffset) * TIMELINE_GAP * prefs.zoom - width / 2;
+      if (x < -width || x > DESIGN_WIDTH) continue;
+      cards.forEach((card, index) => {
+        if (index >= TIMELINE_STACK_LIMIT || !card.definition) return;
+        const uid = `timeline:${card.id}`;
+        visuals.set(uid, {
+          uid,
+          definition: card.definition,
+          x,
+          y: TIMELINE_CARD.centerY - height / 2 + stackOffset(height, index),
+          width,
+          height,
+          rotation: 0,
+          hovered: false,
+          dimmed: card.canceled === true,
+          queued: true,
+          dragged: false,
+          locked: card.kind === 'enemy',
+          upgradeLevel: card.upgradeLevel,
+          forecast: cachedTimelineForecast(card),
+          target: card.entityId ?? null,
+          targets: [],
+          timelinePosition: tick,
+          clip: { x: 0, y: 550, width: DESIGN_WIDTH, height: 310 },
+        });
+      });
     }
     if (detail) {
+      visuals.set('detail-card', {
+        uid: 'detail-card',
+        definition: detail.definition,
+        x: 720,
+        y: 150,
+        width: 480,
+        height: 672,
+        rotation: 0,
+        hovered: true,
+        dimmed: false,
+        queued: false,
+        dragged: false,
+        locked: detail.locked,
+        upgradeLevel: detail.grade,
+        forecast: detail.forecast,
+        target: null,
+        targets: [],
+        detail: true,
+      });
+    }
+    scene.setCards([...visuals.values()]);
+  }
+
+  function syncHandHit(button: HTMLButtonElement, uid: string): void {
+    const visual = visuals.get(uid);
+    if (!visual) return;
+    button.style.left = `${visual.x}px`;
+    button.style.top = `${visual.y}px`;
+    button.style.width = `${visual.width}px`;
+    button.style.height = `${visual.height}px`;
+    button.style.transform = `rotate(${visual.rotation}deg)`;
+  }
+
+  function topHud(world = run!.world): string {
+    const bob = world.player;
+    const health = Math.max(0, Math.min(100, bob.hp / bob.maxHp * 100));
+    return `<section class="top-hud ink-panel" aria-label="Bob status">
+      <h1>${escapeHtml(bob.name)}</h1>
+      <img src="${portrait}" alt="" class="bob-portrait">
+      <div class="health-block"><b>${bob.hp}/${bob.maxHp}</b><span class="health-track"><i style="width:${health}%"></i></span></div>
+      <div class="status-row">${statusMarkup('Block', bob.block, 'block')}${statusMarkup('Exposed', bob.exposed, 'exposed')}${statusMarkup('Ringing', bob.ringing, 'ringing')}${statusMarkup(world.timeMode, world.timeMode !== 'normal', 'time')}</div>
+      <div class="resource-row"><span>Energy <b>${bob.energy}/${bob.energyMax}</b></span>${bob.surgeEnergy ? `<span>Surge <b>+${bob.surgeEnergy}</b></span>` : ''}<span>Potions <b>${world.potions}</b></span></div>
+    </section>`;
+  }
+
+  function worldTargets(): string {
+    if (!run) return '';
+    const legal = selectedUid ? new Set(legalTargets(run.world, selectedUid)) : new Set<string>();
+    const selectedDefinition = selectedUid ? cardDefinition(selectedUid) : null;
+    const echoEnemies = selectedDefinition?.temporal?.kind === 'echo' && selectedSource
+      ? new Set(visibleEnemies(run.world).filter((enemy) => Math.abs(enemy.position.x - run!.world.player.position.x) + Math.abs(enemy.position.y - run!.world.player.position.y) === 1).map((enemy) => enemy.id))
+      : new Set<string>();
+    const enemies = visibleEnemies(run.world).map((enemy) => {
+      const pose = scene.getWorldPose(enemy.id);
+      if (!pose) return '';
+      const selectable = legal.has(enemy.id) || echoEnemies.has(enemy.id);
+      return `<button class="world-target enemy-target ${selectable ? 'legal' : ''}" style="left:${pose.x - 40}px;top:${pose.y - 54}px" data-target="${escapeHtml(enemy.id)}" aria-label="${selectable ? 'Play on' : 'Inspect'} ${escapeHtml(enemy.name)}, ${enemy.hp} health"></button>`;
+    }).join('');
+    const adjacent = new Set(nearbyObjects(run.world).map((object) => object.id));
+    const objects = visibleObjects(run.world).map((object) => {
+      const pose = scene.getWorldPose(object.id);
+      if (!pose) return '';
+      const close = adjacent.has(object.id);
+      return `<button class="world-target object-target ${close ? 'legal' : ''}" style="left:${pose.x - 34}px;top:${pose.y - 34}px" ${close ? `data-object="${escapeHtml(object.id)}"` : `data-inspect="${escapeHtml(object.name)}"`} aria-label="${close ? 'Interact with' : 'Inspect'} ${escapeHtml(object.name)}"></button>`;
+    }).join('');
+    return enemies + objects;
+  }
+
+  function timelineBandMarkup(): string {
+    if (!run) return '';
+    const groups = timelineGroups();
+    const buttons = [...groups].map(([tick, cards]) => {
+      const width = TIMELINE_CARD.width * prefs.zoom;
+      const height = TIMELINE_CARD.height * prefs.zoom;
+      const x = NOW_X + (tick - run!.world.tick - timelineOffset) * TIMELINE_GAP * prefs.zoom - width / 2;
+      if (x < -width || x > DESIGN_WIDTH) return '';
+      const names = cards.map((card) => card.definition?.name ?? card.events[0]?.message ?? 'Empty').join(', ');
+      return `<button class="timeline-hit" style="left:${x}px;top:${TIMELINE_CARD.centerY - height / 2 - CARD_WORKSPACE.y}px;width:${width}px;height:${height + stackOffset(height, Math.max(0, cards.length - 1))}px" data-stack="${tick}" aria-label="Tick ${tick}, ${cards.length} ${cards.length === 1 ? 'card' : 'cards'}: ${escapeHtml(names)}">${cards.length > 1 ? `<b>${cards.length > TIMELINE_STACK_LIMIT ? `${TIMELINE_STACK_LIMIT} +${cards.length - TIMELINE_STACK_LIMIT}` : cards.length}</b>` : ''}</button>`;
+    }).join('');
+    return `<span class="past-label">PAST</span><span class="now-line">NOW <b>${run.world.tick}</b></span><span class="future-label">FUTURE</span>${buttons}`;
+  }
+
+  function timelineMarkup(): string {
+    if (!run) return '';
+    return `<section class="timeline" aria-label="Timeline">
+      <div class="timeline-band">${timelineBandMarkup()}</div>
+      <nav class="timeline-controls" aria-label="Timeline browsing">
+        <button data-action="browse-left" aria-label="Earlier ticks">◀</button>
+        <button data-action="recenter">NOW</button>
+        <button data-action="browse-right" aria-label="Later ticks">▶</button>
+        <button data-action="zoom-out" aria-label="Zoom out">−</button><output>${Math.round(prefs.zoom * 100)}%</output><button data-action="zoom-in" aria-label="Zoom in">+</button>
+      </nav>
+      ${run.world.phase === 'playing' ? `<button class="now-drop ${selectedUid ? 'ready' : ''}" data-action="play-now">PLAY AT NOW</button>` : ''}
+    </section>`;
+  }
+
+  function refreshTimeline(): void {
+    const focusedTick = (document.activeElement as HTMLElement | null)?.dataset.stack;
+    buildVisuals();
+    const band = main.querySelector('.timeline-band');
+    if (band) band.innerHTML = timelineBandMarkup();
+    const output = main.querySelector('.timeline-controls output');
+    if (output) output.textContent = `${Math.round(prefs.zoom * 100)}%`;
+    if (focusedTick) (main.querySelector<HTMLElement>(`[data-stack="${focusedTick}"]`) ?? main.querySelector<HTMLElement>('[data-action="recenter"]'))?.focus();
+  }
+
+  function stopTimelineNavigation(snap = true): void {
+    window.clearTimeout(timelineSnapTimer);
+    timelineSnapTimer = 0;
+    if (snap) timelineOffset = Math.max(-(run?.world.tick ?? 0), Math.round(timelineOffset));
+  }
+
+  function recenterTimeline(): void {
+    stopTimelineNavigation();
+    timelineOffset = 0;
+    refreshTimeline();
+  }
+
+  function handMarkup(): string {
+    if (!run || pileOpen) return '';
+    const world = run.world;
+    const legal = selectedUid ? new Set(legalTargets(run.world, selectedUid)) : new Set<string>();
+    const hits = visuals;
+    return `<section class="hand-zone" aria-label="Current hand">${run.world.hand.map((card) => {
+      const visual = hits.get(card.uid)!;
+      const definition = CARDS[card.definitionId];
+      const affordable = availableEnergy(world) >= definition.cost;
+      return `<button class="card-hit ${selectedUid === card.uid ? 'selected' : ''} ${legal.has(card.uid) ? 'legal' : ''}" style="left:${visual.x}px;top:${visual.y}px;width:${visual.width}px;height:${visual.height}px;transform:rotate(${visual.rotation}deg)" data-card="${escapeHtml(card.uid)}" aria-pressed="${selectedUid === card.uid}" aria-disabled="${!affordable}" aria-label="${escapeHtml(definition.name)}, cost ${definition.cost}. ${escapeHtml(displayedDescription(definition, visual.upgradeLevel, visual.forecast))}"></button>`;
+    }).join('')}</section>`;
+  }
+
+  function pileControls(world = run!.world): string {
+    return `<nav class="pile-controls" aria-label="Card piles">
+      <button data-pile="draw" aria-label="Inspect draw pile, ${world.drawPile.length} cards"><span>Draw</span><b class="pile-count">${world.drawPile.length}</b></button>
+      <button data-pile="discard" aria-label="Inspect discard pile, ${world.discardPile.length} cards"><span>Discard</span><b class="pile-count">${world.discardPile.length}</b></button>
+      <button data-pile="exhaust" aria-label="Inspect exhaust pile, ${world.exhaustPile.length} cards"><span>Exhaust</span><b class="pile-count">${world.exhaustPile.length}</b></button>
+    </nav>`;
+  }
+
+  function pileDialog(): string {
+    if (!pileOpen) return '';
+    const cards = pileInspectionCards(pileOpen);
+    const pageCount = Math.max(1, Math.ceil(cards.length / PILE_PAGE_SIZE));
+    const page = cards.slice(pilePage * PILE_PAGE_SIZE, (pilePage + 1) * PILE_PAGE_SIZE);
+    const label = pileOpen[0].toUpperCase() + pileOpen.slice(1);
+    return `<div class="modal-shade pile-shade"><section class="pile-dialog" role="dialog" aria-modal="true" aria-label="${label} pile, ${cards.length} cards">
+      <header><h2>${label} <b>${cards.length}</b>${pileOpen === 'draw' ? ' — unordered' : ''}</h2><button data-action="close-pile">Close</button></header>
+      <div class="pile-grid">${page.map((card, index) => {
+        const column = index % 3;
+        const row = Math.floor(index / 3);
+        const definition = CARDS[card.definitionId];
+        return `<button class="pile-card-hit" style="left:${500 + column * 310}px;top:${190 + row * 350}px" data-pile-card="${escapeHtml(card.uid)}" aria-label="${escapeHtml(definition.name)}, ${escapeHtml(card.uid)}. ${escapeHtml(definition.description)}"></button>`;
+      }).join('')}</div>
+      <footer><button data-action="pile-prev" ${pilePage === 0 ? 'disabled' : ''}>Previous</button><span>${pilePage + 1}/${pageCount}</span><button data-action="pile-next" ${pilePage + 1 >= pageCount ? 'disabled' : ''}>Next</button></footer>
+    </section></div>`;
+  }
+
+  function selectionPanel(): string {
+    if (!run || !selectedUid) return '';
+    const definition = cardDefinition(selectedUid);
+    if (!definition) return '';
+    const targets = legalTargets(run.world, selectedUid);
+    const terms = cardTerms(effectiveCard(run.world, selectedUid));
+    const targetControls = targets.filter((id) => run!.world.history.some((entry) => entry.cards.some((card) => card.id === id)) || /^\d+$/.test(id)).map((id) => `<button data-source="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join('');
+    return `<aside class="selection-panel ink-panel" aria-label="Selected card"><b>${escapeHtml(definition.name)}</b>${targetControls ? `<div class="source-targets">${targetControls}</div>` : ''}${terms.length ? `<details><summary>Terms</summary>${terms.map((id) => `<p><b>${escapeHtml(TERMS[id].label)}</b> ${escapeHtml(TERMS[id].description)}</p>`).join('')}</details>` : ''}<button data-action="inspect-selected">Inspect</button><button data-action="clear-selection">Cancel</button></aside>`;
+  }
+
+  function detailDialog(): string {
+    if (!detail) return '';
+    const terms = cardTerms(detail.definition);
+    return `<div class="detail-shade ${pileOpen ? 'pile-detail-shade' : ''}" data-detail-shade><section data-detail-shade role="dialog" aria-modal="true" aria-label="${escapeHtml(detail.label)}"><span class="sr-only">${escapeHtml(displayedDescription(detail.definition, detail.grade, detail.forecast))}</span>${terms.length ? `<aside>${terms.map((id) => `<p><b>${escapeHtml(TERMS[id].label)}</b> ${escapeHtml(TERMS[id].description)}</p>`).join('')}</aside>` : ''}<button data-action="close-detail">Close</button></section></div>`;
+  }
+
+  function cancelPointerInteraction(): boolean {
+    const active = drag !== null || timelinePan !== null || hoverUid !== null || timelineSnapTimer !== 0;
+    stopTimelineNavigation();
+    drag = null;
+    timelinePan = null;
+    hoverUid = null;
+    return active;
+  }
+
+  function closeOptions(): void {
+    mode = optionsReturn;
+    render();
+    queueMicrotask(() => main.querySelector<HTMLElement>(`[data-action="${mode === 'title' ? 'options' : 'menu'}"]`)?.focus());
+  }
+
+  function closeStack(): void {
+    const tick = stackTick;
+    stackTick = null;
+    renderWorld();
+    if (tick !== null) queueMicrotask(() => main.querySelector<HTMLElement>(`[data-stack="${tick}"]`)?.focus());
+  }
+
+  function closeDetail(): void {
+    const returnFocus = detail?.returnFocus;
+    detail = null;
+    renderWorld();
+    if (returnFocus) queueMicrotask(() => main.querySelector<HTMLElement>(returnFocus)?.focus());
+  }
+
+  function actionBar(): string {
+    if (!run) return '';
+    const rewind = rewindTargets(run.world);
+    if (run.world.phase === 'victory') return '<section class="terminal-outcome" role="status"><h1>Expedition Complete</h1><p>Bob reached the loading dock.</p></section><nav class="action-bar terminal-actions" aria-label="Expedition complete"><button data-action="title">Tomorrow</button><button data-action="new">New Expedition</button></nav>';
+    if (run.world.phase === 'defeat') return `<section class="terminal-outcome" role="status"><h1>Bob Went Down</h1><p>Stopped at tick ${run.world.tick}. ${rewind.length ? 'A rewind checkpoint remains.' : 'No rewind checkpoint remains.'}</p></section><nav class="action-bar terminal-actions" aria-label="Defeat">${rewind.length ? '<button data-action="rewind">Rewind</button>' : ''}<button data-action="title">Title</button><button data-action="new">New Expedition</button></nav>`;
+    return `<nav class="action-bar" aria-label="Actions"><button data-action="wait">Wait</button><button data-action="potion" ${run.world.potions < 1 ? 'disabled' : ''}>Potion</button>${rewind.length ? `<button data-action="rewind">Rewind</button>` : ''}<button data-action="dictionary">Dictionary</button><button data-action="menu">Menu</button></nav>
+      <div class="dpad" aria-label="Movement"><button data-move="up" aria-label="Move up">▲</button><button data-move="left" aria-label="Move left">◀</button><button data-move="down" aria-label="Move down">▼</button><button data-move="right" aria-label="Move right">▶</button></div>`;
+  }
+
+  function stackDialog(): string {
+    if (stackTick === null) return '';
+    const cards = timelineGroups().get(stackTick) ?? [];
+    return `<div class="modal-shade"><section class="dialog" role="dialog" aria-modal="true" aria-label="Tick ${stackTick}"><h2>Tick ${stackTick}</h2><ol>${cards.map((card) => {
+      const content = `<b>${escapeHtml(card.definition?.name ?? 'Empty')}</b><span>${escapeHtml(card.events.map((event) => event.message).join(' ') || 'No event')}</span>`;
+      const selectable = selectedUid && run && legalTargets(run.world, selectedUid).includes(card.id);
+      return `<li><button ${selectable ? `data-source="${escapeHtml(card.id)}"` : `data-inspect-card="${escapeHtml(card.id)}"`}>${content}</button></li>`;
+    }).join('')}</ol><button data-action="close-stack">Close</button></section></div>`;
+  }
+
+  function menuDialog(): string {
+    if (!menuOpen) return '';
+    return `<div class="modal-shade"><section class="dialog menu-dialog" role="dialog" aria-modal="true" aria-label="Pause menu"><h2>Paused</h2><button data-action="resume">Resume</button>${playing ? '' : '<button data-action="options">Options</button><button data-action="dictionary">Dictionary</button><button data-action="restart">Restart Expedition</button>'}<button data-action="title">Title</button><details><summary>Controls</summary><p>Arrows or D-pad move. Space waits. Select + D-pad browses time. Drag a card to NOW.</p></details></section></div>`;
+  }
+
+  function dictionaryDialog(): string {
+    if (!dictionaryOpen) return '';
+    return `<div class="modal-shade"><section class="dialog dictionary-dialog" role="dialog" aria-modal="true" aria-label="Dictionary"><h2>Dictionary</h2><dl>${Object.values(TERMS).map((term) => `<div><dt>${escapeHtml(term.label)}</dt><dd>${escapeHtml(term.description)}</dd></div>`).join('')}</dl><button data-action="close-dictionary">Close</button></section></div>`;
+  }
+
+  function rewindDialog(): string {
+    if (!run || root.dataset.rewind !== 'open') return '';
+    return `<div class="modal-shade"><section class="dialog" role="dialog" aria-modal="true" aria-label="Choose rewind tick"><h2>Rewind</h2>${rewindTargets(run.world).map((tick) => `<button data-rewind="${tick}">Tick ${tick}</button>`).join('')}<button data-action="close-rewind">Cancel</button></section></div>`;
+  }
+
+  function focusModal(): void {
+    queueMicrotask(() => {
+      const layers = root.querySelectorAll<HTMLElement>('.modal-shade, .detail-shade, .choice-screen');
+      layers.item(layers.length - 1)?.querySelector<HTMLElement>('button:not(:disabled),select,summary,[tabindex="0"]')?.focus();
+    });
+  }
+
+  function renderWorld(): void {
+    if (!run) return;
+    stopTimelineNavigation();
+    scene.setState(run.world, true);
+    scene.setTarget(selectedTarget);
+    buildVisuals();
+    main.innerHTML = `${topHud()}${worldTargets()}${timelineMarkup()}${handMarkup()}${pileControls()}${selectionPanel()}${actionBar()}${stackDialog()}${menuDialog()}${dictionaryDialog()}${rewindDialog()}${pileDialog()}${detailDialog()}<p class="toast" role="status">${escapeHtml(run.world.log.at(-1) ?? '')}</p>`;
+    root.classList.toggle('reduced-motion', reducedMotion());
+    root.classList.toggle('playing-events', playing);
+    pauseScene();
+    if (menuOpen || dictionaryOpen || detail || pileOpen || stackTick !== null || root.dataset.rewind === 'open') focusModal();
+  }
+
+  function renderTitle(): void {
+    scene.setCards([]);
+    if (replacement) {
+      const restart = replacement === 'restart';
+      main.innerHTML = `<div class="modal-shade title-shade"><section class="dialog" role="dialog" aria-modal="true" aria-label="${restart ? 'Restart' : 'Replace'} expedition"><h2>${restart ? 'Restart' : 'Replace'} expedition?</h2><p>${restart ? 'Return to tick 0 with the same seed and toolkit.' : 'Choose a new toolkit and replace the current expedition.'}</p><button data-action="cancel-new">Cancel</button><button class="primary" data-action="confirm-new">${restart ? 'Restart' : 'Replace'}</button></section></div>`;
+      pauseScene();
+      focusModal();
+      return;
+    }
+    const continued = savedRun();
+    const legacy = localStorage.getItem(LEGACY_SAVE_KEY);
+    main.innerHTML = `<div class="modal-shade title-shade"><section class="title-card" aria-label="MOREMART Last Customer"><span class="eyebrow">MAKE TOMORROW HAPPEN</span><h1>LAST CUSTOMER</h1><div class="title-actions">${continued ? '<button class="primary" data-action="continue">Continue</button>' : ''}<button class="primary" data-action="new">New Expedition</button><button data-action="options">Options</button></div>${legacy ? '<p class="legacy-notice">Your original expedition is untouched. <button data-action="export-legacy">Download old save</button></p>' : ''}</section></div>`;
+    pauseScene();
+    focusModal();
+  }
+
+  function renderToolkit(): void {
+    scene.setCards([]);
+    main.innerHTML = `<div class="modal-shade title-shade"><section class="toolkit-dialog"><span class="eyebrow">CHOOSE YOUR CART</span><h1>Toolkit</h1><div class="toolkit-grid">${TOOLKITS.map((toolkit) => `<button data-toolkit="${toolkit.id}"><b>${escapeHtml(toolkit.name)}</b><span>${escapeHtml(toolkit.description)}</span></button>`).join('')}</div><button data-action="title">Back</button></section></div>`;
+    pauseScene();
+    focusModal();
+  }
+
+  function renderOptions(): void {
+    scene.setCards([]);
+    main.innerHTML = `<div class="modal-shade"><section class="dialog options-dialog" role="dialog" aria-modal="true" aria-label="Options"><h2>Options</h2><label>Motion <select data-pref="motion"><option value="system" ${prefs.reducedMotion === 'system' ? 'selected' : ''}>System</option><option value="on" ${prefs.reducedMotion === 'on' ? 'selected' : ''}>Reduced</option><option value="off" ${prefs.reducedMotion === 'off' ? 'selected' : ''}>Full</option></select></label><button data-action="afterimages" aria-pressed="${prefs.afterimages}">Afterimages</button><button data-action="fullscreen">Fullscreen</button><button data-action="options-back">Back</button></section></div>`;
+    pauseScene();
+    focusModal();
+  }
+
+  function renderChoices(): void {
+    if (!run) return;
+    buildVisuals();
+    const options = choiceOptions();
+    const cardOptions = options.filter((option) => optionDefinition(option));
+    const plainOptions = options.filter((option) => !optionDefinition(option));
+    const pageCount = Math.max(1, Math.ceil(cardOptions.length / CHOICE_PAGE_SIZE));
+    const page = cardOptions.slice(choice.page * CHOICE_PAGE_SIZE, (choice.page + 1) * CHOICE_PAGE_SIZE);
+    const selected = options.find((option) => option.id === choice.selected);
+    main.innerHTML = `<div class="choice-screen"><header><span class="eyebrow">${run.world.phase === 'reward' ? 'TAKE ONE' : 'WORK BENCH'}</span><h1>${run.world.phase === 'reward' ? 'Recovered Stock' : 'Service'}</h1></header>${page.map((option) => {
+      const visual = visuals.get(`choice:${option.id}`)!;
+      const pairOffset = option.id.startsWith('service:refine:') ? 232 : 0;
+      const label = pairOffset ? 'Refine: before / after' : option.id.startsWith('service:remove:') ? 'Remove from deck' : '';
+      return `<button class="choice-hit ${choice.selected === option.id ? 'selected' : ''}" style="left:${visual.x - pairOffset}px;top:${visual.y}px;width:${visual.width + pairOffset}px;height:${visual.height}px" data-choice="${escapeHtml(option.id)}" aria-pressed="${choice.selected === option.id}" aria-label="${escapeHtml(option.title)}. ${escapeHtml(option.description)}">${label ? `<span class="choice-label">${label}</span>` : ''}</button>`;
+    }).join('')}${selected ? `<p class="choice-summary" role="status">${escapeHtml(selected.title)} — ${escapeHtml(selected.description)}</p>` : ''}<footer>${choice.page > 0 ? '<button data-action="choice-prev">Previous</button>' : ''}<span>${choice.page + 1}/${pageCount}</span>${choice.page + 1 < pageCount ? '<button data-action="choice-next">Next</button>' : ''}${plainOptions.map((option) => `<button data-choice="${escapeHtml(option.id)}">${escapeHtml(option.title)}</button>`).join('')}${choice.selected ? '<button class="primary" data-action="choice-confirm">Confirm</button>' : ''}</footer></div>`;
+    pauseScene();
+    focusModal();
+  }
+
+  function render(): void {
+    if (mode === 'title') renderTitle();
+    else if (mode === 'toolkit') renderToolkit();
+    else if (mode === 'options') renderOptions();
+    else if (run?.world.phase === 'reward' || run?.world.phase === 'service') renderChoices();
+    else renderWorld();
+  }
+
+  async function presentationDelay(ms: number, token: number): Promise<boolean> {
+    if (reducedMotion()) return token === playbackToken && !destroyed;
+    let remaining = ms;
+    let previous = performance.now();
+    while (remaining > 0 && token === playbackToken && !destroyed) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const now = performance.now();
+      if (!presentationPaused && !menuOpen && !dictionaryOpen) remaining -= now - previous;
+      previous = now;
+    }
+    return token === playbackToken && !destroyed;
+  }
+
+  function syncPresentation(world: WorldState, cards: Map<string, CardVisual>): void {
+    scene.setState(world, false);
+    scene.setCards([...cards.values()]);
+    const hud = main.querySelector('.top-hud');
+    if (hud) hud.outerHTML = topHud(world);
+    const piles = main.querySelector('.pile-controls');
+    if (piles) piles.outerHTML = pileControls(world);
+  }
+
+  function actor(world: WorldState, id: string | undefined) {
+    if (!id) return undefined;
+    return id === world.player.id ? world.player : world.enemies.find((enemy) => enemy.id === id);
+  }
+
+  function stageEvent(world: WorldState, event: WorldEvent, finalWorld: WorldState, damageAmounts: number[]): WorldState {
+    if (event.kind === 'rewind') return presentationSnapshot(finalWorld);
+    const acting = actor(world, event.actor);
+    const target = actor(world, event.target);
+    if (event.kind === 'action') {
+      if (acting) acting.ringing = false;
+      if (acting === world.player && event.definition) {
+        let cost = event.definition.cost;
+        const surge = Math.min(cost, world.player.surgeEnergy);
+        world.player.surgeEnergy -= surge;
+        cost -= surge;
+        world.player.energy = Math.max(0, world.player.energy - cost);
+        damageAmounts.splice(0, damageAmounts.length, ...event.definition.effects.filter((effect) => effect.kind === 'damage').map((effect) => Math.max(0, Math.floor(effect.amount))));
+      } else if (event.definition) {
+        damageAmounts.splice(0, damageAmounts.length, ...event.definition.effects.filter((effect) => effect.kind === 'damage').map((effect) => Math.max(0, Math.floor(effect.amount))));
+      }
+    } else if (event.kind === 'move' && acting && event.to) {
+      acting.position = { ...event.to };
+      if (event.from) {
+        const dx = event.to.x - event.from.x;
+        const dy = event.to.y - event.from.y;
+        if (Math.abs(dx) > Math.abs(dy)) acting.facing = dx > 0 ? 'right' : 'left';
+        else if (dy) acting.facing = dy > 0 ? 'down' : 'up';
+      }
+    } else if (event.kind === 'damage' && target) {
+      const incoming = (damageAmounts.shift() ?? event.amount ?? 0) + target.exposed;
+      target.block = Math.max(0, target.block - Math.min(target.block, incoming));
+      target.exposed = 0;
+      target.hp = Math.max(0, target.hp - (event.amount ?? 0));
+    } else if (event.kind === 'block' && target) target.block += event.amount ?? 0;
+    else if (event.kind === 'exposed' && target) target.exposed += event.amount ?? 0;
+    else if (event.kind === 'heal' && target) target.hp = Math.min(target.maxHp, target.hp + (event.amount ?? 0));
+    else if (event.kind === 'ringing') {
+      if (target) target.ringing = true;
+      else if (acting) acting.ringing = false;
+    } else if (event.kind === 'energy') {
+      if (event.message.includes('Surge')) world.player.surgeEnergy += event.amount ?? 0;
+      else world.player.energy = Math.min(world.player.energyMax, world.player.energy + (event.amount ?? 0));
+    } else if (event.kind === 'time') {
+      world.timeMode = finalWorld.timeMode;
+      world.timeExpires = finalWorld.timeExpires;
+      world.scouting = finalWorld.scouting;
+      world.scoutingExpires = finalWorld.scoutingExpires;
+    } else if (event.kind === 'interact' && event.target) {
+      if (finalWorld.usedObjectIds.includes(event.target) && !world.usedObjectIds.includes(event.target)) world.usedObjectIds.push(event.target);
+      world.potions = finalWorld.potions;
+      if (finalWorld.phase === 'service') world.phase = 'service';
+    } else if (event.kind === 'victory') world.phase = 'victory';
+    else if (event.kind === 'defeat') world.phase = 'defeat';
+    else if (event.kind === 'tick') {
+      world.tick = event.tick;
+      world.phase = finalWorld.phase;
+      world.completedEncounters = [...finalWorld.completedEncounters];
+      world.pendingRewards = [...finalWorld.pendingRewards];
+    }
+    return world;
+  }
+
+  async function playEvents(
+    events: WorldEvent[],
+    initialWorld: WorldState,
+    initialVisuals: Map<string, CardVisual>,
+    initialTimeline: TimelineCard[],
+  ): Promise<void> {
+    const token = ++playbackToken;
+    const finalWorld = run!.world;
+    let world = initialWorld;
+    const cards = initialVisuals;
+    const damageAmounts: number[] = [];
+    const deferredDiscards = new Map<string, WorldEvent>();
+    const futureActionSources = new Set(events.filter((event) => event.kind === 'action' && event.sourceUid).map((event) => event.sourceUid!));
+    let historySequence = 0;
+    let pendingAction: { event: WorldEvent; visualUid: string; disposal?: WorldEvent; returnVisual?: CardVisual } | null = null;
+    playing = true;
+    root.classList.add('playing-events');
+    pauseScene();
+    syncPresentation(world, cards);
+
+    const waitUntilReady = async () => {
+      while ((presentationPaused || menuOpen || dictionaryOpen) && token === playbackToken && !destroyed) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return token === playbackToken && !destroyed;
+    };
+
+    const animateDiscard = async (event: WorldEvent, sourceVisualUid?: string) => {
+      for (const discarded of event.cards ?? []) {
+        const visualUid = sourceVisualUid ?? discarded.uid;
+        const visual = cards.get(visualUid);
+        const pile: PileKind = finalWorld.exhaustPile.some((card) => card.uid === discarded.uid) ? 'exhaust' : 'discard';
+        if (visual) {
+          const destination = PILE_POSES[pile];
+          cards.set(visualUid, {
+            ...visual,
+            x: destination.x - 40,
+            y: destination.y - 56,
+            width: 80,
+            height: 112,
+            rotation: pile === 'exhaust' ? 12 : -8,
+            dragged: true,
+            hovered: false,
+            queued: false,
+            detail: false,
+            flip: 180,
+            clip: undefined,
+            fog: undefined,
+            transitionMs: CARD_MOTION.exit,
+          });
+          scene.setCards([...cards.values()]);
+          if (!await presentationDelay(CARD_MOTION.exit, token)) return false;
+          cards.delete(visualUid);
+        }
+        world.hand = world.hand.filter((card) => card.uid !== discarded.uid);
+        world.drawPile = world.drawPile.filter((card) => card.uid !== discarded.uid);
+        world.discardPile = world.discardPile.filter((card) => card.uid !== discarded.uid);
+        world.exhaustPile = world.exhaustPile.filter((card) => card.uid !== discarded.uid);
+        cardsInPile(pile, world).push({ ...discarded });
+      }
+      syncPresentation(world, cards);
+      if (event.visible !== false) scene.playEvent(event);
+      announce(event.message);
+      return presentationDelay(CARD_MOTION.puff, token);
+    };
+
+    const finishAction = async () => {
+      if (!pendingAction) return true;
+      const action = pendingAction;
+      pendingAction = null;
+      if (!await presentationDelay(CARD_MOTION.hold, token)) return false;
+      if (action.disposal) {
+        if (!await animateDiscard(action.disposal, action.visualUid)) return false;
+      } else {
+        const current = cards.get(action.visualUid);
+        if (current && action.event.actor !== finalWorld.player.id) {
+          cards.set(action.visualUid, { ...current, x: current.x + 240, y: current.y - current.height / 2, rotation: 18, dragged: true, transitionMs: CARD_MOTION.exit });
+        } else if (action.returnVisual) {
+          cards.set(action.visualUid, { ...action.returnVisual, transitionMs: CARD_MOTION.exit });
+        }
+        scene.setCards([...cards.values()]);
+        if (!await presentationDelay(CARD_MOTION.exit, token)) return false;
+        if (action.event.actor !== finalWorld.player.id || !action.returnVisual) cards.delete(action.visualUid);
+      }
+      addHistoryCopy(action.event);
+      scene.setCards([...cards.values()]);
+      return token === playbackToken && !destroyed;
+    };
+
+    const recordedAction = (event: WorldEvent) => finalWorld.history.at(-1)?.cards.find((card) =>
+      card.tick === event.tick
+      && card.entityId === event.actor
+      && card.definition?.id === event.definition?.id
+      && (event.actor !== finalWorld.player.id || card.sourceUid === event.sourceUid));
+
+    const addHistoryCopy = (event: WorldEvent) => {
+      const recorded = recordedAction(event);
+      if (!recorded?.definition) return;
+      const layer = historySequence++;
+      if (layer >= TIMELINE_STACK_LIMIT) return;
+      const width = TIMELINE_CARD.width * prefs.zoom;
+      const height = TIMELINE_CARD.height * prefs.zoom;
+      const uid = `playback-history:${event.tick}:${event.actor}:${layer}`;
+      cards.set(uid, {
+        uid,
+        definition: recorded.definition,
+        x: NOW_X - width / 2,
+        y: TIMELINE_CARD.centerY - height / 2 + stackOffset(height, layer),
+        width,
+        height,
+        rotation: 0,
+        hovered: false,
+        dimmed: recorded.canceled === true,
+        queued: true,
+        dragged: false,
+        locked: recorded.kind === 'enemy',
+        upgradeLevel: recorded.upgradeLevel,
+        forecast: cachedTimelineForecast(recorded),
+        target: recorded.entityId ?? null,
+        targets: [],
+        timelinePosition: event.tick,
+        clip: { x: 0, y: 550, width: DESIGN_WIDTH, height: 310 },
+        snap: true,
+      });
+    };
+
+    const animateAction = async (event: WorldEvent) => {
+      if (!event.definition) {
+        world = stageEvent(world, event, finalWorld, damageAmounts);
+        syncPresentation(world, cards);
+        scene.playEvent(event);
+        announce(event.message);
+        return presentationDelay(CARD_MOTION.hold, token);
+      }
+      const sourceVisualUid = event.sourceUid && cards.has(event.sourceUid)
+        ? event.sourceUid
+        : (() => {
+          const source = initialTimeline.find((card) => card.tick === event.tick && card.entityId === event.actor && card.definition?.id === event.definition?.id && cards.has(`timeline:${card.id}`));
+          return source ? `timeline:${source.id}` : undefined;
+        })();
+      const actorPose = scene.getWorldPose(event.actor ?? '');
+      const sourcePose = sourceVisualUid ? scene.getCardPose(sourceVisualUid) : null;
+      const uid = sourceVisualUid ?? `playback-action:${event.tick}:${event.actor}:${historySequence}`;
+      const width = 220;
+      const height = 308;
+      const startX = sourcePose?.x ?? (actorPose?.x ?? NOW_X) - width / 2;
+      const startY = sourcePose?.y ?? (actorPose?.y ?? 360) - height / 2;
+      const targetCard = event.target ? scene.getCardPose(event.target) : null;
+      const targetWorld = scene.getWorldPose(event.target ?? event.actor ?? '');
+      const targetX = targetCard ? targetCard.x + targetCard.width / 2 : targetWorld?.x ?? actorPose?.x ?? NOW_X;
+      const targetY = targetCard ? targetCard.y + targetCard.height / 2 : targetWorld?.y ?? actorPose?.y ?? 360;
+      const original = sourceVisualUid ? cards.get(sourceVisualUid) : undefined;
+      cards.set(uid, {
+        ...(original ?? {
+          uid, hovered: false, dimmed: false, queued: false, locked: true, target: null, targets: [],
+          x: startX, y: startY, width, height, rotation: 0, dragged: false, upgradeLevel: 0,
+        }),
+        uid,
+        definition: event.definition,
+        x: startX,
+        y: startY - 34,
+        width,
+        height,
+        rotation: 0,
+        hovered: false,
+        queued: false,
+        dragged: true,
+        locked: event.actor !== finalWorld.player.id,
+        upgradeLevel: 0,
+        forecast: cachedTimelineForecast(recordedAction(event)),
+        target: event.target ?? null,
+        targets: [],
+        detail: false,
+        dimmed: false,
+        flip: 0,
+        transitionMs: CARD_MOTION.lift,
+        clip: undefined,
+        fog: undefined,
+      });
+      scene.setCards([...cards.values()]);
+      if (!await presentationDelay(CARD_MOTION.lift, token)) return false;
+      cards.set(uid, {
+        ...cards.get(uid)!,
+        x: targetX - width / 2,
+        y: targetY - height / 2,
+        transitionMs: CARD_MOTION.travel,
+      });
+      scene.setCards([...cards.values()]);
+      if (!await presentationDelay(CARD_MOTION.travel, token)) return false;
+      world = stageEvent(world, event, finalWorld, damageAmounts);
+      syncPresentation(world, cards);
+      scene.playEvent(event);
+      announce(event.message);
+      const pending = event.sourceUid ? deferredDiscards.get(event.sourceUid) : undefined;
+      if (pending) deferredDiscards.delete(event.sourceUid!);
+      pendingAction = { event, visualUid: uid, disposal: pending, returnVisual: original };
+      return true;
+    };
+
+    const animateDraw = async (event: WorldEvent) => {
+      world.drawPile = finalWorld.drawPile.map((card) => ({ ...card }));
+      world.discardPile = finalWorld.discardPile.map((card) => ({ ...card }));
+      for (const drawn of event.cards ?? []) {
+        world.hand = world.hand.filter((card) => card.uid !== drawn.uid);
+        world.drawPile = world.drawPile.filter((card) => card.uid !== drawn.uid);
+        world.discardPile = world.discardPile.filter((card) => card.uid !== drawn.uid);
+        world.exhaustPile = world.exhaustPile.filter((card) => card.uid !== drawn.uid);
+        world.hand.push({ ...drawn });
+        const uid = drawn.uid;
+        const origin = PILE_POSES.draw;
+        cards.set(uid, {
+          uid, definition: CARDS[drawn.definitionId], x: origin.x - HAND_CARD.width / 2, y: origin.y - HAND_CARD.height / 2, width: HAND_CARD.width, height: HAND_CARD.height,
+          rotation: 0, hovered: false, dimmed: false, queued: false, dragged: true, locked: false,
+          upgradeLevel: world.grades[uid] ?? 0, target: null, targets: [], snap: true, flip: 180,
+        });
+        syncPresentation(world, cards);
+        if (!reducedMotion() && !await presentationDelay(16, token)) return false;
+        const destination = handLayout(world.hand).get(uid)!;
+        cards.set(uid, { ...destination, locked: false, dragged: true, flip: 0, clip: undefined, upgradeLevel: world.grades[uid] ?? 0, transitionMs: CARD_MOTION.deal });
+        scene.setCards([...cards.values()]);
+        if (!await presentationDelay(CARD_MOTION.deal, token)) return false;
+      }
+      if (event.visible !== false) scene.playEvent(event);
+      announce(event.message);
+      return presentationDelay(CARD_MOTION.drawStagger, token);
+    };
+    const endsCurrentAction = (event: WorldEvent) => pendingAction && (
+      (event.actor && event.actor !== pendingAction.event.actor)
+      || event.kind === 'action' || event.kind === 'move' || event.kind === 'tick'
+      || event.kind === 'interact' || event.kind === 'empty' || event.kind === 'victory'
+      || event.kind === 'defeat' || event.kind === 'rewind'
+    );
+
+    for (const event of events) {
+      if (!await waitUntilReady()) return;
+      if (endsCurrentAction(event) && !await finishAction()) return;
+      if (event.visible === false) {
+        world = stageEvent(world, event, finalWorld, damageAmounts);
+        continue;
+      }
+      if (event.kind === 'discard' && event.sourceUid && futureActionSources.has(event.sourceUid)) {
+        deferredDiscards.set(event.sourceUid, event);
+        continue;
+      }
+      if (event.kind === 'action') {
+        if (!await animateAction(event)) return;
+        continue;
+      }
+      if (event.kind === 'discard') {
+        if (!await animateDiscard(event)) return;
+      } else if (event.kind === 'draw') {
+        if (!await animateDraw(event)) return;
+      } else {
+        world = stageEvent(world, event, finalWorld, damageAmounts);
+        const lethalTarget = event.kind === 'damage' && actor(world, event.target)?.hp === 0;
+        if (lethalTarget) scene.playEvent(event);
+        syncPresentation(world, cards);
+        if (!lethalTarget) scene.playEvent(event);
+        announce(event.message);
+        const delay = event.kind === 'damage' ? 90 : event.kind === 'move' ? 150 : 50;
+        if (!await presentationDelay(delay, token)) return;
+      }
+    }
+    if (!await finishAction()) return;
+    for (const pending of deferredDiscards.values()) {
+      if (!await animateDiscard(pending)) return;
+    }
+    if (token !== playbackToken || destroyed) return;
+    playing = false;
+    selectedUid = null;
+    selectedTarget = null;
+    selectedSource = null;
+    timelineOffset = 0;
+    persist();
+    render();
+  }
+
+  function command(value: WorldCommand): void {
+    if (!run) return;
+    const rewindAfterDefeat = value.kind === 'rewind' && run.world.phase === 'defeat';
+    if (!rewindAfterDefeat && blocked()) return;
+    if (rewindAfterDefeat && (destroyed || playing || presentationPaused || menuOpen || dictionaryOpen || pileOpen !== null || stackTick !== null || root.dataset.rewind === 'open')) return;
+    stopTimelineNavigation();
+    const initialWorld = presentationSnapshot(run.world);
+    const initialVisuals = new Map<string, CardVisual>([...visuals].map(([uid, visual]) => [uid, {
+      ...visual,
+      targets: [...visual.targets],
+      clip: visual.clip && { ...visual.clip },
+      fog: visual.fog && { ...visual.fog },
+    }]));
+    const initialTimeline = allTimelineCards();
+    const result = dispatchRun(run, value);
+    if (!result.ok) {
+      announce(result.reason ?? 'Action unavailable.');
+      renderWorld();
+      return;
+    }
+    worldRevision++;
+    persist();
+    void playEvents(result.events, initialWorld, initialVisuals, initialTimeline);
+  }
+
+  function playSelected(target?: string): void {
+    if (!run || !selectedUid || blocked()) return;
+    const sources = legalTargets(run.world, selectedUid);
+    const definition = cardDefinition(selectedUid);
+    if (!definition || availableEnergy(run.world) < definition.cost) {
+      announce('Not enough energy.');
+      return;
+    }
+    if (definition.temporal?.kind === 'echo') {
+      if (target && sources.includes(target)) selectedSource = target;
+      if (!selectedSource) {
+        announce('Choose a past action.');
+        renderWorld();
+        return;
+      }
+      if (definition.target === 'self') {
+        command({ kind: 'play', uid: selectedUid, sourceId: selectedSource });
+        return;
+      }
+      const enemyTargets = visibleEnemies(run.world).filter((enemy) => Math.abs(enemy.position.x - run!.world.player.position.x) + Math.abs(enemy.position.y - run!.world.player.position.y) === 1).map((enemy) => enemy.id);
+      const enemyTarget = target && enemyTargets.includes(target) ? target : selectedTarget && enemyTargets.includes(selectedTarget) ? selectedTarget : undefined;
+      if (!enemyTarget) {
+        announce(enemyTargets.length ? 'Choose an enemy.' : 'No enemy is in range.');
+        renderWorld();
+        return;
+      }
+      command({ kind: 'play', uid: selectedUid, sourceId: selectedSource, targetId: enemyTarget });
+      return;
+    }
+    const selected = target ?? selectedTarget;
+    if (sources.length > 1 && !selected) {
+      announce('Choose a target.');
+      return;
+    }
+    const resolved = selected ?? sources[0];
+    const usesSource = definition.time?.kind === 'rewind';
+    command({ kind: 'play', uid: selectedUid, ...(usesSource ? { sourceId: resolved } : resolved ? { targetId: resolved } : {}) });
+  }
+  function renderWithControlFocus(): void {
+    const focused = document.activeElement as HTMLElement | null;
+    const selector = focused?.dataset.action ? `[data-action="${focused.dataset.action}"]`
+      : focused?.dataset.stack ? `[data-stack="${focused.dataset.stack}"]` : null;
+    const timelineFocused = !!focused?.closest('.timeline');
+    render();
+    const control = selector ? main.querySelector<HTMLElement>(selector) : null;
+    (control ?? (timelineFocused ? main.querySelector<HTMLElement>('[data-action="recenter"]') : null))?.focus();
+  }
+  function browse(direction: 1 | -1): void {
+    if (!run || destroyed || menuOpen || dictionaryOpen || detail || pileOpen || stackTick !== null || drag || timelinePan || playing || presentationPaused || replacement || root.dataset.rewind === 'open' || mode !== 'world') return;
+    stopTimelineNavigation();
+    timelineOffset = Math.max(-run.world.tick, timelineOffset + direction);
+    refreshTimeline();
+  }
+
+  function zoom(direction: 1 | -1): void {
+    stopTimelineNavigation();
+    const current = ZOOM_LEVELS.indexOf(prefs.zoom as typeof ZOOM_LEVELS[number]);
+    prefs.zoom = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, current + direction))];
+    savePreferences();
+    refreshTimeline();
+  }
+
+  function beginRun(seed: number, toolkit: ToolkitId): void {
+    run = createRun(seed, toolkit);
+    worldRevision++;
+    playbackToken++;
+    playing = false;
+    mode = 'world';
+    replacement = null;
+    menuOpen = false;
+    dictionaryOpen = false;
+    stackTick = null;
+    detail = null;
+    selectedUid = null;
+    selectedTarget = null;
+    selectedSource = null;
+    pileOpen = null;
+    pilePage = 0;
+    pileReturnFocus = null;
+    choice = { page: 0, selected: null };
+    cancelPointerInteraction();
+    timelineOffset = 0;
+    delete root.dataset.rewind;
+    announce('New expedition. Tick 0.');
+    persist();
+    render();
+  }
+
+  function openMenu(): void {
+    if (mode !== 'world' || !run || replacement || dictionaryOpen || detail || pileOpen || stackTick !== null || root.dataset.rewind === 'open' || run.world.phase === 'reward' || run.world.phase === 'service') return;
+    cancelPointerInteraction();
+    menuOpen = !menuOpen;
+    if (playing) {
+      main.querySelector('.playback-menu')?.remove();
+      if (menuOpen) main.insertAdjacentHTML('beforeend', menuDialog().replace('modal-shade', 'modal-shade playback-menu'));
+      pauseScene();
+      if (menuOpen) focusModal();
+      return;
+    }
+    renderWorld();
+  }
+
+  function setChoice(optionId: string): void {
+    const option = choiceOptions().find((candidate) => candidate.id === optionId);
+    if (!option) return;
+    if (!optionDefinition(option)) {
+      commitChoice(optionId);
+      return;
+    }
+    choice.selected = optionId;
+    renderChoices();
+  }
+
+  function commitChoice(optionId: string): void {
+    const result = chooseRunOption(run!, optionId);
+    if (!result.ok) announce(result.reason ?? 'Choice unavailable.');
+    else {
+      worldRevision++;
+      choice = { page: 0, selected: null };
+      persist();
+    }
+    render();
+  }
+
+  main.addEventListener('click', (event) => {
+    const clicked = event.target as HTMLElement;
+    if (clicked.dataset.detailShade !== undefined) {
       const point = designPoint(event);
-      const pose = scene.getCardPose(detail.uid) ?? DETAIL;
-      if (point.x < pose.x || point.x > pose.x + pose.width
-        || point.y < pose.y || point.y > pose.y + pose.height) closeDetail(false);
+      const pose = scene.getCardPose('detail-card');
+      if (pose && point.x >= pose.x && point.x <= pose.x + pose.width && point.y >= pose.y && point.y <= pose.y + pose.height) return;
+      closeDetail();
       return;
     }
-    if (mode !== 'planning' || inspector || menuOpen) return;
-    const modifier = modifierSource();
-    if (modifier) {
-      const attachmentTarget = attachmentTargetAt(target);
-      if (attachmentTarget && !(attachmentTarget.kind === 'card' && attachmentTarget.uid === modifier.uid)) {
-        attachTo(attachmentTarget);
-        return;
+    const button = clicked.closest<HTMLButtonElement>('button');
+    if (!button) return;
+    const action = button.dataset.action;
+    if (playing && action !== 'menu' && action !== 'resume' && action !== 'title') return;
+    if (action === 'continue') {
+      run = savedRun();
+      if (!run) return renderTitle();
+      worldRevision++;
+      mode = 'world';
+      render();
+    } else if (action === 'new') {
+      if (savedRun()) { replacement = 'new'; renderTitle(); }
+      else { mode = 'toolkit'; render(); }
+    } else if (action === 'restart' && run) {
+      replacement = 'restart';
+      renderTitle();
+    } else if (action === 'confirm-new') {
+      const previous = replacement === 'restart' ? run : null;
+      replacement = null;
+      if (previous) beginRun(previous.seed, previous.toolkit);
+      else { mode = 'toolkit'; render(); }
+    } else if (action === 'cancel-new') {
+      replacement = null;
+      render();
+    } else if (action === 'title') {
+      clearAnnouncement();
+      persist();
+      cancelPointerInteraction();
+      playbackToken++;
+      playing = false;
+      menuOpen = false;
+      detail = null;
+      pileOpen = null;
+      mode = 'title';
+      pileReturnFocus = null;
+      render();
+    } else if (action === 'options') {
+      optionsReturn = mode === 'world' ? 'world' : 'title';
+      menuOpen = false;
+      mode = 'options';
+      render();
+    } else if (action === 'options-back') {
+      closeOptions();
+    } else if (action === 'resume') {
+      menuOpen = false;
+      if (playing) {
+        main.querySelector('.playback-menu')?.remove();
+        pauseScene();
+      } else renderWorld();
+    } else if (action === 'dictionary') { dictionaryOpen = true; menuOpen = false; renderWorld(); }
+    else if (action === 'close-dictionary') { dictionaryOpen = false; renderWorld(); }
+    else if (action === 'afterimages') { prefs.afterimages = !prefs.afterimages; savePreferences(); renderWithControlFocus(); }
+    else if (action === 'fullscreen') { void (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()); }
+    else if (action === 'menu') openMenu();
+    else if (action === 'export-legacy') {
+      const legacy = localStorage.getItem(LEGACY_SAVE_KEY);
+      if (legacy) {
+        const anchor = document.createElement('a');
+        anchor.href = URL.createObjectURL(new Blob([legacy], { type: 'application/json' }));
+        anchor.download = 'stoptheinvasion-legacy-v1.json';
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(anchor.href), 0);
+      }
+    } else if (action === 'wait') command({ kind: 'wait' });
+    else if (action === 'potion') command({ kind: 'potion' });
+    else if (action === 'rewind') { root.dataset.rewind = 'open'; renderWorld(); }
+    else if (action === 'close-rewind') { delete root.dataset.rewind; renderWorld(); }
+    else if (action === 'close-pile') {
+      const returnPile = pileReturnFocus;
+      pileOpen = null;
+      pileReturnFocus = null;
+      detail = null;
+      renderWorld();
+      queueMicrotask(() => returnPile && main.querySelector<HTMLElement>(`[data-pile="${returnPile}"]`)?.focus());
+    }
+    else if (action === 'pile-prev') { pilePage = Math.max(0, pilePage - 1); renderWorld(); }
+    else if (action === 'pile-next' && pileOpen) {
+      const pages = Math.max(1, Math.ceil(cardsInPile(pileOpen).length / PILE_PAGE_SIZE));
+      pilePage = Math.min(pages - 1, pilePage + 1);
+      renderWorld();
+    }
+    else if (action === 'play-now') playSelected();
+    else if (action === 'clear-selection') { selectedUid = null; selectedTarget = null; selectedSource = null; detail = null; renderWorld(); }
+    else if (action === 'browse-left') browse(-1);
+    else if (action === 'browse-right') browse(1);
+    else if (action === 'recenter') recenterTimeline();
+    else if (action === 'zoom-out') zoom(-1);
+    else if (action === 'zoom-in') zoom(1);
+    else if (action === 'close-stack') closeStack();
+    else if (action === 'inspect-selected' && selectedUid) {
+      const definition = cardDefinition(selectedUid);
+      if (definition) detail = { definition, grade: run?.world.grades[selectedUid] ?? 0, label: definition.name, locked: false, returnFocus: '[data-action="inspect-selected"]', forecast: visuals.get(selectedUid)?.forecast };
+      renderWorld();
+    } else if (action === 'close-detail') closeDetail();
+    else if (action === 'choice-prev') { choice.page--; choice.selected = null; renderChoices(); }
+    else if (action === 'choice-next') { choice.page++; choice.selected = null; renderChoices(); }
+    else if (action === 'choice-confirm' && choice.selected) commitChoice(choice.selected);
+
+    if (button.dataset.toolkit) {
+      beginRun(freshSeed(), button.dataset.toolkit as ToolkitId);
+    } else if (button.dataset.move) command({ kind: 'move', direction: button.dataset.move as Direction });
+    else if (button.dataset.object) command({ kind: 'interact', objectId: button.dataset.object });
+    else if (button.dataset.inspect) announce(button.dataset.inspect);
+    else if (button.dataset.pile) {
+      pileReturnFocus = button.dataset.pile as PileKind;
+      pileOpen = button.dataset.pile as PileKind;
+      pilePage = 0;
+      selectedUid = null;
+      selectedTarget = null;
+      selectedSource = null;
+      renderWorld();
+    } else if (button.dataset.pileCard && pileOpen) {
+      const card = cardsInPile(pileOpen).find((candidate) => candidate.uid === button.dataset.pileCard);
+      if (card) {
+        const definition = CARDS[card.definitionId];
+        detail = { definition, grade: run!.world.grades[card.uid] ?? 0, label: `${definition.name}, ${card.uid}`, locked: true, returnFocus: `[data-pile-card="${CSS.escape(card.uid)}"]` };
+        renderWorld();
       }
     }
-    if (target.closest('[data-hand-card], .queue-card-body, .attachment-tab') && !(selection && target.closest('[data-slot]'))) {
-      openDetail(target);
+    else if (button.dataset.target) {
+      const definition = selectedUid ? cardDefinition(selectedUid) : null;
+      if (selectedUid && (legalTargets(run!.world, selectedUid).includes(button.dataset.target) || (definition?.temporal?.kind === 'echo' && selectedSource))) playSelected(button.dataset.target);
+      else { selectedTarget = button.dataset.target; scene.setTarget(selectedTarget); announce(button.getAttribute('aria-label') ?? 'Target'); }
+    } else if (button.dataset.card && !drag) {
+      if (selectedUid && legalTargets(run!.world, selectedUid).includes(button.dataset.card)) playSelected(button.dataset.card);
+      else { selectedUid = button.dataset.card; selectedTarget = null; selectedSource = null; renderWorld(); }
+    } else if (button.dataset.source) {
+      stackTick = null;
+      playSelected(button.dataset.source);
+    } else if (button.dataset.stack) { stackTick = Number(button.dataset.stack); renderWorld(); }
+    else if (button.dataset.choice) setChoice(button.dataset.choice);
+    else if (button.dataset.inspectCard) {
+      const card = allTimelineCards().find((candidate) => candidate.id === button.dataset.inspectCard);
+      if (card?.definition) {
+        detail = { definition: card.definition, grade: card.upgradeLevel, label: card.definition.name, locked: card.kind === 'enemy', returnFocus: `[data-stack="${card.tick}"]`, forecast: cachedTimelineForecast(card) };
+        stackTick = null;
+        renderWorld();
+      }
+    } else if (button.dataset.rewind) {
+      const tick = Number(button.dataset.rewind);
+      delete root.dataset.rewind;
+      command({ kind: 'rewind', tick });
+    }
+  }, { signal: controller.signal });
+
+  main.addEventListener('change', (event) => {
+    const select = event.target;
+    if (!(select instanceof HTMLSelectElement) || select.dataset.pref !== 'motion') return;
+    const value = select.value;
+    if (value !== 'system' && value !== 'on' && value !== 'off') return;
+    prefs.reducedMotion = value;
+    savePreferences();
+    pauseScene();
+  }, { signal: controller.signal });
+
+  main.addEventListener('pointerover', (event) => {
+    if (event.pointerType !== 'mouse' || playing || drag || detail) return;
+    const button = (event.target as Element).closest<HTMLButtonElement>('[data-card]');
+    const uid = button?.dataset.card;
+    if (!button || !uid || hoverUid === uid) return;
+    hoverUid = uid;
+    buildVisuals();
+    syncHandHit(button, uid);
+  }, { signal: controller.signal });
+  main.addEventListener('pointerout', (event) => {
+    if (event.pointerType !== 'mouse' || playing || drag) return;
+    const button = (event.target as Element).closest<HTMLButtonElement>('[data-card]');
+    const uid = button?.dataset.card;
+    if (!button || !uid || hoverUid !== uid) return;
+    hoverUid = null;
+    buildVisuals();
+    syncHandHit(button, uid);
+  }, { signal: controller.signal });
+
+  main.addEventListener('pointerdown', (event) => {
+    const element = event.target as Element;
+    const button = element.closest<HTMLButtonElement>('[data-card]');
+    if (!button) {
+      if (element.closest('.timeline-band') && !element.closest('button') && !blocked()) {
+        stopTimelineNavigation(false);
+        const point = designPoint(event);
+        timelinePan = { pointerId: event.pointerId, startX: point.x, startOffset: timelineOffset };
+        main.setPointerCapture(event.pointerId);
+      }
       return;
     }
-    const slotElement = target.closest<HTMLElement>('[data-slot]');
-    if (!slotElement) {
-      if (selection || pending) {
-        clearInteraction('Selection canceled. No energy was spent.');
-        render();
-      }
+    if (blocked() || !run) return;
+    const uid = button.dataset.card!;
+    const definition = cardDefinition(uid);
+    stopTimelineNavigation(false);
+    if (!definition || availableEnergy(run.world) < definition.cost) return;
+    const point = designPoint(event);
+    drag = { uid, pointerId: event.pointerId, startX: point.x, startY: point.y, x: point.x, y: point.y, moved: false };
+    button.setPointerCapture(event.pointerId);
+  }, { signal: controller.signal });
+
+  main.addEventListener('pointermove', (event) => {
+    const point = designPoint(event);
+    scene.setPointer(point.x, point.y);
+    if (timelinePan?.pointerId === event.pointerId) {
+      timelineOffset = Math.max(-run!.world.tick, timelinePan.startOffset + (timelinePan.startX - point.x) / (TIMELINE_GAP * prefs.zoom));
+      refreshTimeline();
       return;
     }
-    const to = Number(slotElement.dataset.slot);
-    if (pending) {
-      placeHandCard(pending.uid, pending.target, to);
-    } else if (selection?.kind === 'hand') {
-      const source = handCard(selection.uid);
-      if (source && isAttachment(CARDS[source.definitionId])) attachTo({ kind: 'slot', slot: to });
-      else placeHandCard(selection.uid, null, to);
-    } else if (selection?.kind === 'queue') {
-      const result = moveCard(state, selection.slot, to);
-      feedback(result.ok, 'Card moved to the chosen timing point.', result.reason);
-    } else if (state.queue[to]?.kind === 'enemy') {
-      openDetail(slotElement);
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.x = point.x;
+    drag.y = point.y;
+    drag.moved ||= Math.hypot(point.x - drag.startX, point.y - drag.startY) >= DRAG_THRESHOLD;
+    if (drag.moved) {
+      selectedUid = drag.uid;
+      buildVisuals();
     }
-  };
-  const onKeyDown = (event: KeyboardEvent) => {
-    const modal = root.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]');
-    if (!modal && !drag && !pan && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      if (event.key === '-' || event.key === '_') {
-        event.preventDefault();
-        changeZoom(zoom - ZOOM_STEP);
-        return;
-      }
-      if (event.key === '+' || event.key === '=') {
-        event.preventDefault();
-        changeZoom(zoom + ZOOM_STEP);
-        return;
-      }
-      if (event.key === '0') {
-        event.preventDefault();
-        changeZoom(1);
-        return;
-      }
-      if (event.key === 'Home') {
-        event.preventDefault();
-        returnToTurn();
-        render();
-        return;
-      }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        event.preventDefault();
-        void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + (event.key === 'ArrowLeft' ? 1 : -1));
-        return;
-      }
+  }, { signal: controller.signal });
+
+  function finishDrag(event: PointerEvent, canceled: boolean): void {
+    if (timelinePan?.pointerId === event.pointerId) {
+      timelinePan = null;
+      stopTimelineNavigation();
+      refreshTimeline();
+      return;
     }
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const ended = drag;
+    const point = designPoint(event);
+    const nowButton = !canceled && ended.moved && document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-action="play-now"]');
+    drag = null;
+    if (!canceled && ended.moved && (nowButton || (Math.abs(point.x - NOW_X) <= 110 && point.y >= CARD_WORKSPACE.y && point.y < HAND_TOP))) {
+      selectedUid = ended.uid;
+      playSelected();
+    } else if (ended.moved) renderWorld();
+  }
+  main.addEventListener('pointerup', (event) => finishDrag(event, false), { signal: controller.signal });
+  main.addEventListener('pointercancel', (event) => finishDrag(event, true), { signal: controller.signal });
+  main.addEventListener('wheel', (event) => {
+    if (!(event.target as Element).closest('.timeline') || blocked() || event.ctrlKey || event.metaKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+    const scale = main.getBoundingClientRect().width / DESIGN_WIDTH;
+    if (scale <= 0) return;
+    event.preventDefault();
+    stopTimelineNavigation(false);
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? CARD_WORKSPACE.width * scale : 1;
+    timelineOffset = Math.max(-run!.world.tick, timelineOffset + event.deltaX * unit / scale / (TIMELINE_GAP * prefs.zoom));
+    refreshTimeline();
+    timelineSnapTimer = window.setTimeout(() => {
+      stopTimelineNavigation();
+      if (!blocked()) refreshTimeline();
+    }, 140);
+  }, { signal: controller.signal, passive: false });
+
+  window.addEventListener('keydown', (event) => {
+    if (destroyed) return;
+    const target = event.target as HTMLElement;
+    if (event.repeat && event.key !== 'Tab' && !target.closest('select,input,textarea,summary')) {
+      event.preventDefault();
+      return;
+    }
+    const layers = root.querySelectorAll<HTMLElement>('.modal-shade, .detail-shade');
+    const modal = layers.item(layers.length - 1);
     if (event.key === 'Tab' && modal) {
-      const focusable = [...modal.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')];
-      if (!focusable.length) { event.preventDefault(); return; }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!modal.contains(document.activeElement) || event.shiftKey && document.activeElement === first || !event.shiftKey && document.activeElement === last) {
+      const focusable = [...modal.querySelectorAll<HTMLElement>('button:not(:disabled),select,summary,[tabindex="0"]')];
+      if (focusable.length) {
+        const index = focusable.indexOf(document.activeElement as HTMLElement);
+        const next = event.shiftKey ? (index <= 0 ? focusable.at(-1)! : focusable[index - 1]) : focusable[(index + 1) % focusable.length];
         event.preventDefault();
-        (event.shiftKey ? last : first).focus();
+        next.focus();
       }
       return;
     }
     if (event.key === 'Escape') {
-      if (detail) {
-        closeDetail();
-      } else if (drag || selection || pending) {
-        const pullingAttachment = drag?.kind === 'attachment';
-        clearInteraction(pullingAttachment ? 'Attachment kept; its reserved energy is unchanged.' : 'Placement canceled. No energy was spent.');
-        render();
-      } else if (inspector) {
-        const pile = inspector;
-        inspector = null;
-        focusAfterRender = `.pile-button[data-pile="${pile}"]`;
-        render();
-      } else {
-        toggleMenu();
-      }
-      return;
-    }
-    if ((event.key === 'Delete' || event.key === 'Backspace') && mode === 'planning') {
-      const focusedSlot = (event.target as HTMLElement).closest<HTMLElement>('.queue-card[data-slot]');
-      const slot = detail?.source === 'queue' ? detail.slot : focusedSlot ? Number(focusedSlot.dataset.slot) : null;
-      if (slot !== null) {
+      if (drag || timelinePan) {
+        const canceledCard = drag !== null;
+        cancelPointerInteraction();
+        if (canceledCard) { selectedUid = null; selectedTarget = null; selectedSource = null; }
+        renderWorld();
         event.preventDefault();
-        const result = removeCard(state, slot);
-        feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
         return;
       }
+      if (playing) {
+        openMenu();
+        return;
+      }
+      if (mode === 'options') { closeOptions(); return; }
+      if (replacement) { replacement = null; render(); return; }
+      if (mode === 'toolkit') { mode = 'title'; renderTitle(); return; }
+      const closingPile = pileOpen !== null && !detail;
+      const returnPile = pileReturnFocus;
+      if (detail) {
+        closeDetail();
+        return;
+      }
+      if (dictionaryOpen) dictionaryOpen = false;
+      else if (stackTick !== null) { closeStack(); return; }
+      else if (pileOpen) {
+        pileOpen = null;
+        pileReturnFocus = null;
+      } else if (root.dataset.rewind) delete root.dataset.rewind;
+      else if (mode === 'world') { openMenu(); return; }
+      render();
+      if (closingPile && returnPile) queueMicrotask(() => main.querySelector<HTMLElement>(`[data-pile="${returnPile}"]`)?.focus());
+      return;
     }
-    if ((event.key !== 'Enter' && event.key !== ' ') || event.target instanceof HTMLButtonElement) return;
-    const element = (event.target as HTMLElement).closest<HTMLElement>('[role="button"]');
-    if (!element || element instanceof HTMLButtonElement) return;
-    event.preventDefault();
-    element.click();
-  };
-
-  const onPointerDown = (event: PointerEvent) => {
-    if (mode !== 'planning' || event.button > 0 || detail || inspector || menuOpen) return;
-    const target = event.target as HTMLElement;
-    if (!drag && !selection && !pending && !modifierSource() && (target.closest('[data-pan-surface]') || target.matches('.queue-slot, .position-label, .region-label'))) {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const timelineControl = target.closest<HTMLElement>('.timeline');
+    if (timelineControl && event.key.startsWith('Arrow')) {
       event.preventDefault();
-      cancelNavigation();
-      pan = { pointerId: event.pointerId, x: designPoint(event).x, camera: cameraPosition, capture: root };
-      cameraFollowing = false;
-      root.setPointerCapture?.(event.pointerId);
-      root.classList.add('timeline-panning');
-      render();
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') browse(event.key === 'ArrowRight' ? 1 : -1);
       return;
     }
-    const attachmentTab = target.closest<HTMLElement>('.attachment-tab[data-card]');
-    if (!attachmentTab && target.closest('[data-action]')) return;
-    const attachmentHand = attachmentTab?.closest<HTMLElement>('[data-hand-card]') ?? null;
-    const hand = attachmentTab ? null : target.closest<HTMLElement>('[data-hand-card]');
-    const queue = attachmentTab
-      ? attachmentTab.closest<HTMLElement>('.queue-slot[data-slot]')
-      : target.closest<HTMLElement>('.queue-card[data-slot]');
-    if (pending && !attachmentTab) return;
-    const activeModifier = modifierSource();
-    if (activeModifier && (attachmentTab?.dataset.card ?? hand?.dataset.handCard) !== activeModifier.uid) return;
-    if (!hand && !queue && !attachmentHand && !attachmentTab) return;
-    const slot = queue ? Number(queue.dataset.slot) : undefined;
-    const action = slot === undefined ? null : playerAction(slot);
-    const uid = attachmentTab?.dataset.card ?? hand?.dataset.handCard ?? action?.card.uid;
-    if (!uid) return;
-    const source = handCard(uid);
-    if (hand && (!source || !canAfford(source))) return;
-    event.preventDefault();
-    cancelNavigation();
-    pending = null;
-    selection = null;
-    const point = designPoint(event);
-    const capture = attachmentTab ?? hand ?? queue!;
-    const bracketPose = { x: bracketCenterX() - 52, y: BRACKET_CARD_Y, width: 105, height: 147, rotation: 0 };
-    let fallback = hand
-      ? cardLayout(state.hand).get(uid)!
-      : queue ? queueCardPose(slot!) : attachmentHand ? cardLayout(state.hand).get(attachmentHand.dataset.handCard!)!
-        : attachmentCardPose(bracketPose, bracketAttachments().findIndex(({ card }) => card.uid === uid), bracketAttachments().length);
-    if (attachmentTab && slot !== undefined) {
-      const attachment = state.attachments.find(({ card }) => card.uid === uid);
-      const attachments = attachment?.target.kind === 'card'
-        ? cardAttachments(attachment.target.uid)
-        : positionAttachments(slot);
-      const attachmentIndex = attachments.findIndex(({ card }) => card.uid === uid);
-      if (attachmentIndex >= 0) fallback = attachmentCardPose(queueCardPose(slot), attachmentIndex, attachments.length, attachment?.target.kind === 'card');
-    }
-    if (attachmentTab && attachmentHand) {
-      const hostUid = attachmentHand.dataset.handCard!;
-      const attachments = cardAttachments(hostUid);
-      const attachmentIndex = attachments.findIndex(({ card }) => card.uid === uid);
-      if (attachmentIndex >= 0) fallback = attachmentCardPose(cardLayout(state.hand).get(hostUid)!, attachmentIndex, attachments.length, true);
-    }
-    if (attachmentTab && slot === undefined && !attachmentHand) {
-      const attachment = state.attachments.find(({ card }) => card.uid === uid);
-      if (attachment?.target.kind === 'card') {
-        const hosts = bracketAttachments();
-        const hostUid = attachment.target.uid;
-        const hostIndex = hosts.findIndex(({ card }) => card.uid === hostUid);
-        if (hostIndex >= 0) {
-          const hostPose = attachmentCardPose(bracketPose, hostIndex, hosts.length);
-          const children = cardAttachments(hostUid);
-          const childIndex = children.findIndex(({ card }) => card.uid === uid);
-          if (childIndex >= 0) fallback = attachmentCardPose(hostPose, childIndex, children.length, true);
-        }
-      }
-    }
-    const pose = scene.getCardPose(uid) ?? fallback;
-    drag = {
-      kind: attachmentTab ? 'attachment' : hand ? 'hand' : 'queue',
-      uid,
-      slot,
-      pointerId: event.pointerId,
-      startX: point.x,
-      startY: point.y,
-      x: point.x,
-      y: point.y,
-      moved: false,
-      capture,
-      pose,
-      destination: null,
-      preview: null,
-      attachmentTarget: null,
-    };
-    hoveredUid = null;
-    hoveredQueueSlot = null;
-    root.classList.add('physical-drag');
-    const draggingModifier = Boolean(source && isAttachment(CARDS[source.definitionId]));
-    const draggingSurge = Boolean(source && CARDS[source.definitionId].surge);
-    root.classList.toggle('surge-drag', draggingSurge);
-    if (!draggingSurge) root.querySelector('.timeline')?.classList.add('show-guides');
-    if (draggingSurge) {
-      notice = 'Release over the timeline or energy meter to activate Surge now. This cannot be refunded.';
-      const noticeElement = root.querySelector<HTMLElement>('.notice');
-      if (noticeElement) noticeElement.textContent = notice;
-    } else if (draggingModifier) {
-      root.querySelector('.timeline')?.classList.add('attachment-targeting');
-      root.querySelector('.hand-zone')?.classList.add('attachment-targeting');
-    }
-    root.querySelectorAll<HTMLElement>('[data-card-uid], [data-bracket-target]').forEach((element) => {
-      const candidate = attachmentTargetAt(element);
-      if (!candidate) return;
-      const valid = draggingModifier && canAttachModifier(state, uid, candidate);
-      element.classList.toggle('attachment-valid', valid);
-      element.classList.toggle('attachment-invalid', draggingModifier && !valid);
-      if (element instanceof HTMLButtonElement) element.disabled = draggingModifier && !valid;
-    });
-    capture.setPointerCapture?.(event.pointerId);
-    scene.setCards(visualCards());
-  };
+    if (target.closest('select,input,textarea,summary') || blocked()) return;
+    const direction: Record<string, Direction> = { ArrowUp: 'up', ArrowRight: 'right', ArrowDown: 'down', ArrowLeft: 'left' };
+    if (direction[event.key]) { event.preventDefault(); command({ kind: 'move', direction: direction[event.key] }); }
+    else if (!target.closest('button') && (event.key === '.' || event.key === ' ')) { event.preventDefault(); command({ kind: 'wait' }); }
+    else if (event.key === 'Home') { event.preventDefault(); recenterTimeline(); }
+    else if (event.key === '-' || event.key === '=' || event.key === '+') { event.preventDefault(); zoom(event.key === '-' ? -1 : 1); }
+    else if (event.key === '0') { event.preventDefault(); stopTimelineNavigation(); prefs.zoom = 1; savePreferences(); refreshTimeline(); }
+  }, { signal: controller.signal });
 
-  const onPointerMove = (event: PointerEvent) => {
-    const point = designPoint(event);
-    if (pan && pan.pointerId === event.pointerId) {
-      cameraPosition = pan.camera + (point.x - pan.x) / stride();
-      cameraFollowing = false;
-      updateTimelineView();
-      return;
-    }
-    scene.setPointer(point.x, point.y);
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (Math.hypot(point.x - drag.startX, point.y - drag.startY) > 7) drag.moved = true;
-    updateDrag(event);
-  };
+  window.addEventListener('blur', () => {
+    presentationPaused = true;
+    if (cancelPointerInteraction() && mode === 'world' && !playing) renderWorld();
+    else pauseScene();
+  }, { signal: controller.signal });
+  window.addEventListener('focus', () => { presentationPaused = false; pauseScene(); }, { signal: controller.signal });
+  document.addEventListener('visibilitychange', () => {
+    presentationPaused = document.hidden;
+    if (document.hidden && cancelPointerInteraction() && mode === 'world' && !playing) renderWorld();
+    else pauseScene();
+  }, { signal: controller.signal });
+  media.addEventListener('change', pauseScene, { signal: controller.signal });
 
-  const onWheel = (event: WheelEvent) => {
-    if (event.defaultPrevented || event.ctrlKey || event.metaKey
-      || !Number.isFinite(event.deltaX) || event.deltaX === 0
-      || Math.abs(event.deltaX) < Math.abs(event.deltaY)
-      || mode !== 'planning' || detail || inspector || menuOpen || drag || pan) return;
-    if (event.target instanceof Element && event.target.closest('.hand-zone')) return;
-    const rect = root.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const point = designPoint(event, rect);
-    if (point.x < CARD_WORKSPACE.x || point.x >= CARD_WORKSPACE.x + CARD_WORKSPACE.width
-      || point.y < CARD_WORKSPACE.y || point.y >= HAND_TOP) return;
-
-    event.preventDefault();
-    cancelNavigation();
-    const pixelsPerUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? rect.width * CARD_WORKSPACE.width / DESIGN_WIDTH : 1;
-    cameraPosition -= event.deltaX * pixelsPerUnit * DESIGN_WIDTH / rect.width / stride();
-    cameraFollowing = false;
-    updateTimelineView();
-    scheduleNavigationSnap(140);
-  };
-
-  const finishPointer = (event: PointerEvent, cancelled = false) => {
-    if (pan && pan.pointerId === event.pointerId) {
-      if (pan.capture.hasPointerCapture?.(pan.pointerId)) pan.capture.releasePointerCapture(pan.pointerId);
-      pan = null;
-      root.classList.remove('timeline-panning');
-      render();
-      void slideTimeline(Math.round(cameraPosition));
-      return;
-    }
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const finished = drag;
-    const releaseHit = hitAt(event);
-    if (finished.capture.hasPointerCapture?.(finished.pointerId)) finished.capture.releasePointerCapture(finished.pointerId);
-    root.classList.remove('physical-drag', 'surge-drag');
-    drag = null;
-    scene.setTarget(null);
-    root.querySelectorAll('.drop-hover,.drop-valid,.drop-invalid').forEach((element) => element.classList.remove('drop-hover', 'drop-valid', 'drop-invalid'));
-    if (cameraPosition !== Math.round(cameraPosition)) scheduleNavigationSnap(0);
-    if (cancelled) {
-      selection = null;
-      pending = null;
-      notice = finished.kind === 'attachment' ? 'Attachment kept; its reserved energy is unchanged.' : 'Placement canceled. No energy was spent.';
-      render();
-      return;
-    }
-    if (!finished.moved) {
-      scene.setCards(visualCards());
-      return;
-    }
-    event.preventDefault();
-    const release = designPoint(event);
-    const inWorkspace = release.x >= CARD_WORKSPACE.x && release.x <= CARD_WORKSPACE.x + CARD_WORKSPACE.width
-      && release.y >= CARD_WORKSPACE.y && release.y <= CARD_WORKSPACE.y + CARD_WORKSPACE.height;
-    const source = handCard(finished.uid);
-    if (finished.kind === 'hand' && source && CARDS[source.definitionId].surge) {
-      const surgeTarget = inWorkspace && (release.y < HAND_TOP || Boolean(releaseHit?.closest('[data-surge-target]')));
-      if (surgeTarget) {
-        void activateSurge(finished.uid);
-      } else {
-        notice = 'Surge canceled. Drop it over the timeline or energy meter to activate it.';
-        render();
-      }
-      return;
-    }
-    if (!inWorkspace) {
-      selection = null;
-      pending = null;
-      notice = 'Drop canceled outside the card workspace. No energy was spent.';
-      render();
-      return;
-    }
-    if (finished.kind === 'attachment') {
-      const result = removeModifier(state, finished.uid);
-      feedback(result.ok, 'Attachment returned to hand and its reserved energy was refunded.', result.reason);
-      return;
-    }
-    if (finished.kind === 'queue' && release.y >= HAND_TOP) {
-      const result = removeCard(state, finished.slot!);
-      feedback(result.ok, 'Card returned to hand and its reserved energy was refunded.', result.reason);
-      return;
-    }
-    if (source && isAttachment(CARDS[source.definitionId])) {
-      if (finished.attachmentTarget) {
-        attachTo(finished.attachmentTarget, finished.uid);
-      } else {
-        selection = null;
-        pending = null;
-        notice = 'Drop canceled. Choose a compatible card, current position, or turn bracket.';
-        render();
-      }
-      return;
-    }
-    if (finished.destination === null || finished.preview === null) {
-      selection = null;
-      pending = null;
-      notice = finished.destination === null ? 'Drop canceled. Drop near a timing position.' : 'That timing cannot accept this card.';
-      render();
-      return;
-    }
-    if (finished.kind === 'hand') {
-      placeHandCard(finished.uid, null, finished.destination);
-    } else {
-      const result = moveCard(state, finished.slot!, finished.destination);
-      feedback(result.ok, `Inserted card at position ${finished.destination}.`, result.reason);
-    }
-  };
-
-  const onPointerOver = (event: PointerEvent) => {
-    if (drag || detail) return;
-    const target = event.target as HTMLElement;
-    const hand = target.closest<HTMLElement>('[data-hand-card]');
-    const queue = target.closest<HTMLElement>('.queue-slot[data-slot]');
-    if (event.pointerType !== 'touch') {
-      const nextUid = hand?.dataset.handCard ?? null;
-      const nextSlot = queue ? Number(queue.dataset.slot) : null;
-      if (nextUid !== hoveredUid || nextSlot !== hoveredQueueSlot) {
-        hoveredUid = nextUid;
-        hoveredQueueSlot = nextSlot;
-        scene.setCards(visualCards());
-      }
-    }
-  };
-
-  const onPointerOut = (event: PointerEvent) => {
-    if (drag || detail) return;
-    const target = event.target as HTMLElement;
-    const related = event.relatedTarget as Node | null;
-    const hand = target.closest<HTMLElement>('[data-hand-card]');
-    const queue = target.closest<HTMLElement>('.queue-slot[data-slot]');
-    let changed = false;
-    if (hand && !hand.contains(related)) { hoveredUid = null; changed = true; }
-    if (queue && !queue.contains(related)) { hoveredQueueSlot = null; changed = true; }
-    if (changed) scene.setCards(visualCards());
-  };
-
-  const onFocusIn = (event: FocusEvent) => {
-    const queue = (event.target as HTMLElement).closest<HTMLElement>('.queue-slot[data-slot]');
-    if (queue) {
-      hoveredQueueSlot = Number(queue.dataset.slot);
-      scene.setCards(visualCards());
-    }
-  };
-  const onFocusOut = (event: FocusEvent) => {
-    const target = event.target as HTMLElement;
-    const queue = target.closest<HTMLElement>('.queue-slot[data-slot]');
-    if (queue && !queue.contains(event.relatedTarget as Node | null)) {
-      hoveredQueueSlot = null;
-      scene.setCards(visualCards());
-    }
-  };
-
-  const listenerOptions = { signal: listeners.signal };
-  root.addEventListener('click', onClick, listenerOptions);
-  document.addEventListener('keydown', onKeyDown, listenerOptions);
-  root.addEventListener('pointerdown', onPointerDown, listenerOptions);
-  root.parentElement!.addEventListener('pointermove', onPointerMove, listenerOptions);
-  root.parentElement!.addEventListener('wheel', onWheel, { ...listenerOptions, passive: false });
-  root.addEventListener('pointerup', finishPointer, listenerOptions);
-  root.addEventListener('pointercancel', (event) => finishPointer(event, true), listenerOptions);
-  root.addEventListener('pointerover', onPointerOver, listenerOptions);
-  root.addEventListener('pointerout', onPointerOut, listenerOptions);
-  root.addEventListener('focusin', onFocusIn, listenerOptions);
-  root.addEventListener('focusout', onFocusOut, listenerOptions);
-  const stopGamepad = mountGamepad({
-    canNavigate: () => mode === 'planning' && !detail && !inspector && !menuOpen && !drag && !pan,
-    navigate: (direction) => {
-      void slideTimeline(Math.round(navigationTarget ?? cameraPosition) + direction);
-    },
-    zoom: (direction) => changeZoom(zoom + direction * ZOOM_STEP),
-    toggleMenu,
+  const unmountGamepad = mountGamepad({
+    canAct: () => !blocked(),
+    move: (direction) => command({ kind: 'move', direction }),
+    navigate: browse,
+    zoom,
+    toggleMenu: openMenu,
   });
-  render();
-  void dealOpeningHand();
 
+  Object.defineProperty(window, '__WORLD__', {
+    configurable: true,
+    get: () => Object.freeze(run ? {
+      tick: run.world.tick,
+      phase: run.world.phase,
+      hp: run.world.player.hp,
+      position: Object.freeze({ ...run.world.player.position }),
+      hand: Object.freeze(run.world.hand.map((card) => card.definitionId)),
+      playing,
+      modal: menuOpen || dictionaryOpen || detail !== null || pileOpen !== null || stackTick !== null || root.dataset.rewind === 'open' || run.world.phase === 'reward' || run.world.phase === 'service',
+    } : { phase: mode }),
+  });
+
+  render();
   return {
     destroy() {
+      if (destroyed) return;
       destroyed = true;
-      sequence++;
-      clearPlayback();
-      clearInteraction();
-      listeners.abort();
-      root.replaceChildren();
-      stopGamepad();
-      scene.setTarget(null);
+      clearAnnouncement();
+      stopTimelineNavigation();
+      playbackToken++;
       scene.setCards([]);
+      controller.abort();
+      unmountGamepad();
+      delete (window as Window & { __WORLD__?: unknown }).__WORLD__;
+      root.replaceChildren();
     },
   };
 }

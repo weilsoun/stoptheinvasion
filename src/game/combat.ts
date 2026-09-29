@@ -1,1264 +1,943 @@
-import { CARDS, ENCOUNTER, STARTER_DECK, enemyIntent } from './content';
-import { applyUpgrade, scaledBracket } from './upgrades';
+import { CARDS, ENCOUNTER, ENCOUNTERS, STARTER_DECK, WORLD_RULES } from './content';
+import { canEnter, createStoreMap, findPath, hasLineOfSight } from './map';
+import type { MapObject, TilePosition } from './map';
+import { randomStep } from './random';
+import { applyUpgrade } from './upgrades';
 import type {
-  Actor,
-  ActorId,
-  Attachment,
   CardDefinition,
   CardInstance,
-  CombatEvent,
-  CombatState,
-  CommandResult,
+  Direction,
   Effect,
-  EnemyAction,
-  ModifierTarget,
-  PlayerAction,
-  QueueSlot,
-  ResolutionStep,
-  TimelineEntry,
-  SurgeResult,
+  TimelineCard,
+  WorldActor,
+  WorldCommand,
+  WorldCommandResult,
+  WorldEnemy,
+  WorldEvent,
+  WorldHistoryEntry,
+  WorldSnapshot,
+  WorldState,
 } from './types';
 
-const LOG_LIMIT = 80;
 const DEFAULT_SEED = 1;
+const LOG_LIMIT = 80;
+const PLAYER_ID = 'bob';
+const DIRECTIONS: Record<Direction, TilePosition> = {
+  up: { x: 0, y: -1 },
+  right: { x: 1, y: 0 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+};
 
-function failure(reason: string): CommandResult {
-  return { ok: false, reason };
+function copyPosition(position: TilePosition): TilePosition {
+  return { x: position.x, y: position.y };
 }
 
-function definition(card: CardInstance) {
-  const value = CARDS[card.definitionId];
-  if (!value) throw new Error(`Unknown card definition: ${card.definitionId}`);
-  return value;
-}
-
-function energyCost(card: CardInstance): number {
-  const cost = definition(card).cost;
-  if (!Number.isSafeInteger(cost) || cost < 0) throw new Error(`${definition(card).name} has an invalid energy cost.`);
-  return cost;
-}
-
-function cloneCard(card: CardInstance): CardInstance {
+function copyCard(card: CardInstance): CardInstance {
   return { ...card };
 }
-function cloneAttachment(attachment: Attachment): Attachment {
-  return { card: cloneCard(attachment.card), target: { ...attachment.target } };
-}
-function cloneEvent(event: CombatEvent): CombatEvent {
-  return { ...event, cards: event.cards?.map(cloneCard) };
-}
-function cloneDefinition(value: CardDefinition | null): CardDefinition | null {
-  return value && {
-    ...value,
-    effects: value.effects.map((effect) => ({ ...effect })),
-    onCritical: value.onCritical?.map((effect) => ({ ...effect })),
-    modifier: value.modifier && { ...value.modifier },
-    bracket: value.bracket && { ...value.bracket },
-    scaling: value.scaling && {
-      ...value.scaling,
-      effects: value.scaling.effects && [...value.scaling.effects],
-      bracket: value.scaling.bracket && { ...value.scaling.bracket },
+
+function copyDefinition(definition: CardDefinition): CardDefinition {
+  return {
+    ...definition,
+    effects: definition.effects.map((effect) => ({ ...effect })),
+    onCritical: definition.onCritical?.map((effect) => ({ ...effect })),
+    modifier: definition.modifier && { ...definition.modifier },
+    time: definition.time && { ...definition.time },
+    temporal: definition.temporal && { ...definition.temporal },
+    scaling: definition.scaling && {
+      ...definition.scaling,
+      effects: definition.scaling.effects && [...definition.scaling.effects],
+      time: definition.scaling.time && { ...definition.scaling.time },
     },
   };
 }
-function cloneSlot(slot: QueueSlot): QueueSlot {
-  if (!slot) return null;
-  if (slot.kind === 'player') return { ...slot, card: cloneCard(slot.card) };
+
+function copyActor<T extends WorldActor>(actor: T): T {
+  return { ...actor, position: copyPosition(actor.position) };
+}
+
+function copyEvent(event: WorldEvent): WorldEvent {
   return {
-    ...slot,
-    effects: slot.effects.map((effect) => ({ ...effect })),
-    scaling: slot.scaling && {
-      ...slot.scaling,
-      effects: slot.scaling.effects && [...slot.scaling.effects],
-      bracket: slot.scaling.bracket && { ...slot.scaling.bracket },
-    },
+    ...event,
+    cards: event.cards?.map(copyCard),
+    definition: event.definition && copyDefinition(event.definition),
+    from: event.from && copyPosition(event.from),
+    to: event.to && copyPosition(event.to),
   };
 }
-function cloneHistory(entry: TimelineEntry): TimelineEntry {
+
+function copyTimelineCard(card: TimelineCard): TimelineCard {
   return {
-    ...entry,
-    action: cloneSlot(entry.action),
-    definition: cloneDefinition(entry.definition),
-    attachments: entry.attachments.map(cloneAttachment),
-    events: entry.events.map(cloneEvent),
+    ...card,
+    definition: card.definition && copyDefinition(card.definition),
+    events: card.events.map(copyEvent),
   };
 }
-function cloneState(state: CombatState): CombatState {
+
+function copyHistory(entry: WorldHistoryEntry): WorldHistoryEntry {
   return {
-    ...state,
-    actors: {
-      bob: { ...state.actors.bob },
-      guard: { ...state.actors.guard },
-    },
-    hand: state.hand.map(cloneCard),
-    drawPile: state.drawPile.map(cloneCard),
-    discardPile: state.discardPile.map(cloneCard),
-    history: state.history.map(cloneHistory),
-    queue: state.queue.map(cloneSlot),
-    attachments: state.attachments.map(cloneAttachment),
+    tick: entry.tick,
+    command: { ...entry.command },
+    events: entry.events.map(copyEvent),
+    cards: entry.cards.map(copyTimelineCard),
+  };
+}
+
+function snapshot(state: WorldState): WorldSnapshot {
+  return {
+    seed: state.seed,
+    rng: state.rng,
+    tick: state.tick,
+    phase: state.phase,
+    player: copyActor(state.player),
+    enemies: state.enemies.map(copyActor),
+    deck: state.deck.map(copyCard),
+    hand: state.hand.map(copyCard),
+    drawPile: state.drawPile.map(copyCard),
+    discardPile: state.discardPile.map(copyCard),
+    exhaustPile: state.exhaustPile.map(copyCard),
+    grades: { ...state.grades },
+    retainedUids: [...state.retainedUids],
+    drawDebt: state.drawDebt,
+    echoUsed: [...state.echoUsed],
+    potions: state.potions,
+    usedObjectIds: [...state.usedObjectIds],
+    completedEncounters: [...state.completedEncounters],
+    pendingRewards: [...state.pendingRewards],
+    rewardIds: [...state.rewardIds],
+    serviceObjectId: state.serviceObjectId,
+    timeMode: state.timeMode,
+    timeExpires: state.timeExpires,
+    scouting: state.scouting,
+    scoutingExpires: state.scoutingExpires,
     log: [...state.log],
   };
 }
 
+function copySnapshot(value: WorldSnapshot): WorldSnapshot {
+  return {
+    ...value,
+    player: copyActor(value.player),
+    enemies: value.enemies.map(copyActor),
+    deck: value.deck.map(copyCard),
+    hand: value.hand.map(copyCard),
+    drawPile: value.drawPile.map(copyCard),
+    discardPile: value.discardPile.map(copyCard),
+    exhaustPile: value.exhaustPile.map(copyCard),
+    grades: { ...value.grades },
+    retainedUids: [...value.retainedUids],
+    echoUsed: [...value.echoUsed],
+    usedObjectIds: [...value.usedObjectIds],
+    completedEncounters: [...value.completedEncounters],
+    pendingRewards: [...value.pendingRewards],
+    rewardIds: [...value.rewardIds],
+    log: [...value.log],
+  };
+}
 
-function appendLog(state: CombatState, message: string): void {
+function cloneState(state: WorldState): WorldState {
+  return {
+    ...snapshot(state),
+    version: 2,
+    map: state.map,
+    rewindCharges: state.rewindCharges,
+    exhaustedByRewind: [...state.exhaustedByRewind],
+    history: [...state.history],
+    checkpoints: [...state.checkpoints],
+  };
+}
+
+function restoreSnapshot(state: WorldState, value: WorldSnapshot): void {
+  const restored = copySnapshot(value);
+  Object.assign(state, restored);
+}
+
+
+function fail(reason: string): WorldCommandResult {
+  return { ok: false, reason, events: [] };
+}
+
+function addLog(state: WorldState, message: string): void {
   state.log.push(message);
   if (state.log.length > LOG_LIMIT) state.log.splice(0, state.log.length - LOG_LIMIT);
 }
 
-function record(state: CombatState, events: CombatEvent[], event: CombatEvent): void {
+function emit(events: WorldEvent[], event: WorldEvent): void {
   events.push(event);
-  appendLog(state, event.message);
 }
 
-function validIndex(state: CombatState, slot: number): boolean {
-  return Number.isSafeInteger(slot) && slot >= state.position && slot < turnEnd(state);
+function samePosition(a: TilePosition, b: TilePosition): boolean {
+  return a.x === b.x && a.y === b.y;
 }
 
-function planningFailure(state: CombatState): CommandResult | undefined {
-  if (state.phase !== 'planning') return failure('Actions can only be changed during planning.');
-  if (!Number.isSafeInteger(state.position) || state.position < 0) return failure('Combat position is corrupt.');
-  return undefined;
+function distance(a: TilePosition, b: TilePosition): number {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 }
 
-function validateTarget(state: CombatState, card: CardInstance, target: ActorId | null): string | undefined {
-  if (target === null) return `${definition(card).name} needs a target.`;
-  if (target !== 'bob' && target !== 'guard') return 'That target does not exist.';
-  const cardDefinition = definition(card);
-  const expected = cardDefinition.target === 'self' ? card.owner : card.owner === 'bob' ? 'guard' : 'bob';
-  if (target !== expected) return `${cardDefinition.name} cannot target ${target}.`;
-  if (!state.actors[target] || state.actors[target].hp <= 0) return `${state.actors[target]?.name ?? target} is not a living target.`;
+function cardByUid(state: WorldState, uid: string): CardInstance | undefined {
+  return state.hand.find((card) => card.uid === uid);
 }
 
-function validateAmount(amount: number, label: string): void {
-  if (!Number.isFinite(amount) || amount < 0) throw new Error(`Invalid ${label}: ${amount}`);
+function baseDefinition(card: CardInstance): CardDefinition {
+  const result = CARDS[card.definitionId];
+  if (!result) throw new Error(`Unknown card definition: ${card.definitionId}`);
+  return result;
 }
-function validateEffect(effect: Effect, label: string): void {
-  if (!effect || !['damage', 'block', 'exposed', 'heal', 'energy', 'draw', 'ringing'].includes(effect.kind)) {
-    throw new Error(`Invalid ${label}.`);
-  }
-  if (effect.recipient !== 'self' && effect.recipient !== 'target') {
-    throw new Error(`Invalid ${label} recipient.`);
-  }
-  validateAmount(effect.amount, label);
-  if (effect.kind === 'ringing' && effect.amount !== 1) {
-    throw new Error(`Invalid ${label}: Ringing must last exactly one turn.`);
+
+function shuffle(state: WorldState, cards: CardInstance[]): void {
+  for (let index = cards.length - 1; index > 0; index -= 1) {
+    const [rng, value] = randomStep(state.rng);
+    state.rng = rng;
+    const other = Math.floor(value * (index + 1));
+    [cards[index], cards[other]] = [cards[other], cards[index]];
   }
 }
 
-
-function validateAction(state: CombatState, action: QueueSlot): void {
-  if (!action) return;
-  if (action.kind === 'player') {
-    if (!action.card || (action.card.owner !== 'bob' && action.card.owner !== 'guard')) {
-      throw new Error('Invalid queued player action.');
-    }
-    const cardDefinition = definition(action.card);
-    if (cardDefinition.surge) throw new Error('Surge cards cannot occupy queue slots.');
-    if (cardDefinition.modifier || cardDefinition.bracket) throw new Error('Attachment cards cannot occupy queue slots.');
-    const targetFailure = validateTarget(state, action.card, action.target);
-    if (targetFailure) throw new Error(targetFailure);
-    validateAmount(cardDefinition.cost, 'card cost');
-    cardDefinition.effects.forEach((effect) => validateEffect(effect, `${cardDefinition.name} effect`));
-    cardDefinition.onCritical?.forEach((effect) => validateEffect(effect, `${cardDefinition.name} critical effect`));
-    return;
-  }
-  if (!action.effects || !action.effects.length) throw new Error('Enemy action has no effects.');
-  if (!action.name || !action.description) throw new Error('Enemy action is missing display text.');
-  if (action.actor !== 'bob' && action.actor !== 'guard') throw new Error('Enemy action has an invalid actor.');
-  if (!action.uid) throw new Error('Enemy action is missing a uid.');
-  if (action.target !== 'bob' && action.target !== 'guard') throw new Error('Enemy action has an invalid target.');
-  if (!state.actors[action.target] || state.actors[action.target].hp <= 0) {
-    throw new Error(`${state.actors[action.target]?.name ?? action.target} is not a living target.`);
-  }
-  action.effects.forEach((effect) => validateEffect(effect, `${action.name} effect`));
+function refillDrawPile(state: WorldState): void {
+  if (state.drawPile.length || !state.discardPile.length) return;
+  state.drawPile = state.discardPile.splice(0).sort((a, b) => a.uid.localeCompare(b.uid));
+  shuffle(state, state.drawPile);
 }
 
-function bracketValue(state: CombatState, card: CardInstance, key: 'positions' | 'scouting'): number {
-  const cardDefinition = definition(card);
-  if (cardDefinition.modifier && cardDefinition.bracket) {
-    throw new Error(`${cardDefinition.name} cannot be both an upgrade and bracket modifier.`);
+function draw(state: WorldState, count: number, events?: WorldEvent[], eventTick = state.tick, repayDebt = false): CardInstance[] {
+  let allowance = Math.max(0, Math.floor(count));
+  if (repayDebt && state.drawDebt > 0) {
+    const repaid = Math.min(allowance, state.drawDebt);
+    state.drawDebt -= repaid;
+    allowance -= repaid;
   }
-  if (!cardDefinition.bracket) return 0;
-  const bracket = scaledBracket(cardDefinition, upgradeLevel(state, card.uid, null));
-  const positions = bracket?.positions ?? 0;
-  const scouting = bracket?.scouting ?? 0;
-  if (!Number.isSafeInteger(positions)) {
-    throw new Error(`${cardDefinition.name} has invalid bracket positions.`);
+  const drawn: CardInstance[] = [];
+  while (drawn.length < allowance) {
+    refillDrawPile(state);
+    const card = state.drawPile.shift();
+    if (!card) break;
+    state.hand.push(card);
+    drawn.push(card);
   }
-  if (!Number.isSafeInteger(scouting) || scouting < 0) {
-    throw new Error(`${cardDefinition.name} has invalid bracket scouting.`);
+  if (drawn.length && events) {
+    emit(events, { kind: 'draw', tick: eventTick, actor: PLAYER_ID, amount: drawn.length, cards: drawn.map(copyCard), message: `Bob drew ${drawn.length} card${drawn.length === 1 ? '' : 's'}.` });
   }
-  return key === 'positions' ? positions : scouting;
+  return drawn;
 }
 
-
-export function turnLength(state: CombatState): number {
-  let length = state.actors.bob.turnLength;
-  for (const attachment of state.attachments) {
-    if (attachment.target.kind === 'bracket') length += bracketValue(state, attachment.card, 'positions');
-  }
-  return Math.max(1, length);
+function startingDeck(deck?: CardInstance[]): CardInstance[] {
+  if (deck) return deck.map(copyCard);
+  return STARTER_DECK.map((definitionId, index) => ({ uid: `bob:${index}:${definitionId}`, definitionId, owner: PLAYER_ID }));
 }
 
-export function turnEnd(state: CombatState): number {
-  return state.position + turnLength(state);
-}
-
-export function visibleEnd(state: CombatState): number {
-  let scouting = state.actors.bob.scouting;
-  for (const attachment of state.attachments) {
-    if (attachment.target.kind === 'bracket') scouting += bracketValue(state, attachment.card, 'scouting');
-  }
-  return turnEnd(state) + Math.max(0, scouting);
-}
-
-function fillVisibleTimeline(state: CombatState): void {
-  const end = visibleEnd(state);
-  while (state.queue.length < end) {
-    const position = state.queue.length;
-    const intent = enemyIntent(position);
-    if (intent) validateAction(state, intent);
-    state.queue.push(cloneSlot(intent));
-  }
-}
-
-function makeActor(
-  id: ActorId,
-  name: string,
-  hp: number,
-  energy: number,
-  energyMax: number,
-  energyGain: number,
-  drawCount: number,
-  turnLength: number,
-  scouting: number,
-): Actor {
-  return {
-    id, name, hp, maxHp: hp, block: 0, exposed: 0, ringing: false, ringingNextTurn: false,
-    energy, surgeEnergy: 0, energyMax, energyGain, drawCount, turnLength, scouting,
-  };
-}
-
-export function createCombat(seed = DEFAULT_SEED): CombatState {
-  if (!Number.isSafeInteger(seed)) throw new TypeError('Combat seed must be a safe integer.');
-  if (!Number.isSafeInteger(ENCOUNTER.turnLength) || ENCOUNTER.turnLength <= 0) {
-    throw new Error('Encounter turn length must be a positive safe integer.');
-  }
-
-  const deck = STARTER_DECK.map((definitionId, index): CardInstance => {
-    if (!CARDS[definitionId]) throw new Error(`Starter deck contains unknown card: ${definitionId}`);
-    return { uid: `bob-${index}-${definitionId}`, definitionId, owner: 'bob' };
-  });
-  const bob = makeActor(
-    'bob',
-    'Bob',
-    ENCOUNTER.playerHp,
-    ENCOUNTER.startingEnergy,
-    ENCOUNTER.energyMax,
-    ENCOUNTER.energyGain,
-    ENCOUNTER.drawCount,
-    ENCOUNTER.turnLength,
-    0,
-  );
-  const guard = makeActor('guard', 'Possessed Security', ENCOUNTER.enemyHp, 0, 0, 0, 0, ENCOUNTER.turnLength, 0);
-  validateAmount(bob.hp, 'player health');
-  validateAmount(guard.hp, 'enemy health');
-  validateAmount(bob.energy, 'starting energy');
-  validateAmount(bob.energyMax, 'energy cap');
-  validateAmount(bob.energyGain, 'energy gain');
-  validateAmount(bob.drawCount, 'draw count');
-  if (!Number.isInteger(bob.drawCount) || bob.drawCount > deck.length) {
-    throw new Error('Opening draw exceeds the starter deck.');
-  }
-
-  const state: CombatState = {
+export function createWorld(seed = DEFAULT_SEED, deck?: CardInstance[]): WorldState {
+  if (!Number.isSafeInteger(seed)) throw new TypeError('World seed must be a safe integer.');
+  const map = createStoreMap();
+  const cards = startingDeck(deck);
+  const state: WorldState = {
+    version: 2,
     seed,
-    turn: 1,
-    phase: 'planning',
-    actors: { bob, guard },
-    hand: deck.slice(0, bob.drawCount),
-    drawPile: deck.slice(bob.drawCount).reverse(),
+    rng: seed >>> 0,
+    tick: 0,
+    phase: 'playing',
+    map,
+    player: {
+      id: PLAYER_ID,
+      name: 'Bob',
+      position: copyPosition(map.start),
+      facing: 'up',
+      hp: ENCOUNTER.playerHp,
+      maxHp: ENCOUNTER.playerHp,
+      block: 0,
+      exposed: 0,
+      ringing: false,
+      energy: WORLD_RULES.initialEnergy,
+      energyMax: WORLD_RULES.energyMax,
+      surgeEnergy: 0,
+      surgeExpires: 0,
+    },
+    enemies: map.enemies.map((spawn) => {
+      const encounter = ENCOUNTERS[spawn.encounterId];
+      if (!encounter) throw new Error(`Unknown encounter: ${spawn.encounterId}`);
+      return {
+        id: spawn.id,
+        encounterId: spawn.encounterId,
+        name: encounter.name,
+        position: copyPosition(spawn.position),
+        facing: 'down' as Direction,
+        hp: encounter.hp,
+        maxHp: encounter.hp,
+        block: 0,
+        exposed: 0,
+        ringing: false,
+        aware: false,
+        actionProgress: 0,
+        actionIndex: 0,
+        upgradeLevel: 0,
+      };
+    }),
+    deck: cards.map(copyCard),
+    hand: [],
+    drawPile: cards.map(copyCard),
     discardPile: [],
-    position: 0,
+    exhaustPile: [],
+    grades: {},
+    retainedUids: [],
+    drawDebt: 0,
+    echoUsed: [],
+    potions: 0,
+    usedObjectIds: [],
+    completedEncounters: [],
+    pendingRewards: [],
+    rewardIds: [],
+    serviceObjectId: null,
+    timeMode: 'normal',
+    timeExpires: 0,
+    scouting: 0,
+    scoutingExpires: 0,
+    rewindCharges: 1,
+    exhaustedByRewind: [],
     history: [],
-    queue: [],
-    attachments: [],
-    activeSlot: null,
-    log: ['Turn 1: plan Bob’s actions.'],
+    checkpoints: [],
+    log: [],
   };
-  fillVisibleTimeline(state);
+  shuffle(state, state.drawPile);
+  draw(state, WORLD_RULES.initialHand);
+  state.checkpoints.push({ tick: 0, snapshot: snapshot(state) });
   return state;
 }
 
-export function availableEnergy(state: CombatState, actor: ActorId = 'bob'): number {
-  const source = state.actors[actor];
-  if (!source) throw new Error(`Unknown actor: ${actor}`);
-  if (
-    !Number.isSafeInteger(source.energy)
-    || source.energy < 0
-    || !Number.isSafeInteger(source.surgeEnergy)
-    || source.surgeEnergy < 0
-    || !Number.isSafeInteger(source.energy + source.surgeEnergy)
-  ) throw new Error(`${source.name} has invalid energy.`);
-  const total = source.energy + source.surgeEnergy;
-  if (state.phase !== 'planning') return total;
-  let reserved = 0;
-  for (const slot of state.queue) {
-    if (slot?.kind === 'player' && slot.card.owner === actor) reserved += energyCost(slot.card);
-  }
-  for (const attachment of state.attachments) {
-    if (attachment.card.owner === actor) reserved += energyCost(attachment.card);
-  }
-  if (!Number.isSafeInteger(reserved) || reserved < 0) throw new Error(`${source.name} has invalid energy commitments.`);
-  return total - reserved;
-}
-interface UpgradeCandidate {
-  uid: string;
-  owner: ActorId;
-  scaling: CardDefinition['scaling'] | EnemyAction['scaling'];
-  modifier: boolean;
-  position: number | null;
+export function availableEnergy(state: WorldState): number {
+  return Math.max(0, state.player.energy + state.player.surgeEnergy);
 }
 
-function cardCandidate(card: CardInstance, position: number | null = null): UpgradeCandidate {
-  const cardDefinition = definition(card);
-  return {
-    uid: card.uid,
-    owner: card.owner,
-    scaling: cardDefinition.scaling,
-    modifier: cardDefinition.modifier !== undefined,
-    position,
+export function effectiveCard(state: WorldState, uid: string): CardDefinition {
+  const card = cardByUid(state, uid);
+  if (!card) throw new Error(`Card is not in hand: ${uid}`);
+  return copyDefinition(applyUpgrade(baseDefinition(card), state.grades[uid] ?? 0));
+}
+
+function canSee(state: WorldState, position: TilePosition): boolean {
+  return distance(state.player.position, position) <= WORLD_RULES.sight
+    && hasLineOfSight(state.map, state.player.position, position, state.completedEncounters);
+}
+
+export function visibleEnemies(state: WorldState): WorldEnemy[] {
+  return state.enemies.filter((enemy) => enemy.hp > 0 && canSee(state, enemy.position)).map(copyActor);
+}
+
+export function nearbyObjects(state: WorldState): MapObject[] {
+  return state.map.objects.filter((object) => !state.usedObjectIds.includes(object.id) && distance(state.player.position, object.position) <= 1).map((object) => ({ ...object, position: copyPosition(object.position) }));
+}
+
+export function visibleObjects(state: WorldState): MapObject[] {
+  return state.map.objects.filter((object) => {
+    if (state.usedObjectIds.includes(object.id)) return false;
+    if (canSee(state, object.position)) return true;
+    for (const delta of Object.values(DIRECTIONS)) {
+      const neighbor = { x: object.position.x + delta.x, y: object.position.y + delta.y };
+      if (canEnter(state.map, neighbor, state.completedEncounters) && canSee(state, neighbor)) return true;
+    }
+    return false;
+  }).map((object) => ({ ...object, position: copyPosition(object.position) }));
+}
+
+function playerHistorySources(state: WorldState): TimelineCard[] {
+  return state.history.flatMap((entry) => entry.cards).filter((card) => card.kind === 'player' && card.definition !== null && !card.canceled);
+}
+
+function echoSupported(definition: CardDefinition, defenseOnly: boolean): boolean {
+  if (definition.temporal?.kind === 'echo' || definition.time?.kind === 'rewind') return false;
+  const effects = definition.effects.filter((effect) => ['damage', 'block', 'exposed'].includes(effect.kind));
+  if (!effects.length || effects.length !== definition.effects.length) return false;
+  if (definition.onCritical?.some((effect) => effect.kind !== 'ringing')) return false;
+  return !defenseOnly || effects.every((effect) => effect.kind === 'block');
+}
+
+export function legalTargets(state: WorldState, uid: string): string[] {
+  const card = cardByUid(state, uid);
+  if (!card) return [];
+  const definition = effectiveCard(state, uid);
+  if (definition.modifier) {
+    if (definition.modifier.levels > 0) {
+      return state.hand.filter((candidate) => candidate.uid !== uid && baseDefinition(candidate).scaling !== undefined && baseDefinition(candidate).modifier === undefined).map((candidate) => candidate.uid);
+    }
+    return visibleEnemies(state).filter((visible) => {
+      const enemy = state.enemies.find((candidate) => candidate.id === visible.id)!;
+      return definitionForEnemy(state, enemy).scaling !== undefined;
+    }).map((enemy) => enemy.id);
+  }
+  if (definition.temporal?.kind === 'retain') return state.hand.filter((candidate) => candidate.uid !== uid).map((candidate) => candidate.uid);
+  if (definition.temporal?.kind === 'echo') {
+    return playerHistorySources(state).filter((source) => !state.echoUsed.includes(source.id) && source.definition && echoSupported(source.definition, definition.temporal?.defenseOnly === true)).map((source) => source.id);
+  }
+  if (definition.time?.kind === 'rewind') return rewindTargets(state).map(String);
+  if (definition.target === 'self') return [PLAYER_ID];
+  const enemies = visibleEnemies(state);
+  return enemies.filter((enemy) => definition.type !== 'attack' || distance(state.player.position, enemy.position) === 1).map((enemy) => enemy.id);
+}
+
+function spendEnergy(state: WorldState, amount: number): void {
+  const surge = Math.min(state.player.surgeEnergy, amount);
+  state.player.surgeEnergy -= surge;
+  state.player.energy -= amount - surge;
+}
+
+function actorFacing(from: TilePosition, to: TilePosition): Direction {
+  if (to.x > from.x) return 'right';
+  if (to.x < from.x) return 'left';
+  if (to.y > from.y) return 'down';
+  return 'up';
+}
+
+function beginActorAction(actor: WorldActor): boolean {
+  actor.block = 0;
+  if (!actor.ringing) return true;
+  actor.ringing = false;
+  return false;
+}
+
+function definitionForEnemy(state: WorldState, enemy: WorldEnemy): CardDefinition {
+  const encounter = ENCOUNTERS[enemy.encounterId];
+  if (!encounter?.actions.length) throw new Error(`Encounter has no actions: ${enemy.encounterId}`);
+  const action = encounter.actions[enemy.actionIndex % encounter.actions.length];
+  const targetSelf = !action.effects.some((effect) => effect.recipient === 'target');
+  const base: CardDefinition = {
+    id: `${enemy.encounterId}:${enemy.actionIndex % encounter.actions.length}`,
+    name: action.name,
+    cost: 0,
+    type: action.effects.some((effect) => effect.kind === 'damage') ? 'attack' : 'skill',
+    target: targetSelf ? 'self' : 'enemy',
+    description: action.description,
+    flavor: encounter.description,
+    icon: action.effects.some((effect) => effect.kind === 'damage') ? 'hammer' : 'shield',
+    effects: action.effects.map((effect) => ({ ...effect })),
+    scaling: action.scaling && { ...action.scaling, effects: action.scaling.effects && [...action.scaling.effects], time: action.scaling.time && { ...action.scaling.time } },
   };
+  return copyDefinition(base);
 }
 
-function slotCandidate(action: Exclude<QueueSlot, null>, position: number | null = null): UpgradeCandidate {
-  return action.kind === 'player'
-    ? cardCandidate(action.card, position)
-    : {
-      uid: action.uid,
-      owner: action.actor,
-      scaling: action.scaling,
-      modifier: false,
-      position,
-    };
+export function enemyCard(state: WorldState, enemyId: string): CardDefinition {
+  const enemy = state.enemies.find((candidate) => candidate.id === enemyId && candidate.hp > 0);
+  if (!enemy) throw new Error(`Unknown living enemy: ${enemyId}`);
+  return definitionForEnemy(state, enemy);
 }
 
-// This lookup deliberately does not call turnEnd: active bracket grades are
-// themselves part of turnLength, so range-aware lookup here would recurse.
-function upgradeCandidate(state: CombatState, uid: string): UpgradeCandidate | undefined {
-  const handCard = state.hand.find((card) => card.uid === uid);
-  if (handCard) return cardCandidate(handCard);
-  for (let position = state.position; position < state.queue.length; position += 1) {
-    const action = state.queue[position];
-    if (action && (action.kind === 'player' ? action.card.uid : action.uid) === uid) {
-      return slotCandidate(action, position);
-    }
+function applyEffect(state: WorldState, actor: WorldActor, target: WorldActor, effect: Effect, tick: number, events: WorldEvent[]): boolean {
+  const recipient = effect.recipient === 'self' ? actor : target;
+  const amount = Math.max(0, Math.floor(effect.amount));
+  if (effect.kind === 'damage') {
+    if (recipient.hp <= 0) return false;
+    const exposed = recipient.exposed;
+    recipient.exposed = 0;
+    const incoming = amount + exposed;
+    const blocked = Math.min(recipient.block, incoming);
+    recipient.block -= blocked;
+    const dealt = Math.min(recipient.hp, incoming - blocked);
+    recipient.hp -= dealt;
+    emit(events, { kind: 'damage', tick, actor: actor.id, target: recipient.id, amount: dealt, critical: exposed > 0, message: `${actor.name} dealt ${dealt} damage to ${recipient.name}${exposed > 0 ? ' with a critical hit' : ''}.` });
+    return exposed > 0;
   }
-  const bracketCard = state.attachments.find((attachment) =>
-    attachment.target.kind === 'bracket' && attachment.card.uid === uid
-  )?.card;
-  return bracketCard ? cardCandidate(bracketCard) : undefined;
-}
-
-function compatibleModifierTarget(
-  state: CombatState,
-  modifierCard: CardInstance,
-  candidate: UpgradeCandidate,
-): boolean {
-  const modifierDefinition = definition(modifierCard);
-  if (
-    !modifierDefinition.modifier
-    || candidate.uid === modifierCard.uid
-    || candidate.modifier
-    || !candidate.scaling
-    || state.actors[candidate.owner].hp <= 0
-  ) return false;
-  const expectedOwner = modifierDefinition.target === 'self'
-    ? modifierCard.owner
-    : modifierCard.owner === 'bob' ? 'guard' : 'bob';
-  return candidate.owner === expectedOwner;
-}
-
-function modifierAttachmentFailure(
-  state: CombatState,
-  uid: string,
-  target: ModifierTarget,
-): string | undefined {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return phaseFailure.reason;
-  const modifierCard = state.hand.find((card) => card.uid === uid);
-  if (!modifierCard) return 'That modifier card is not in hand.';
-  const modifierDefinition = definition(modifierCard);
-  if (modifierDefinition.modifier && modifierDefinition.bracket) {
-    return 'An attachment cannot modify both a card level and the turn bracket.';
+  if (effect.kind === 'block') {
+    recipient.block += amount;
+    emit(events, { kind: 'block', tick, actor: actor.id, target: recipient.id, amount, message: `${recipient.name} gained ${amount} Block.` });
+  } else if (effect.kind === 'exposed') {
+    recipient.exposed += amount;
+    emit(events, { kind: 'exposed', tick, actor: actor.id, target: recipient.id, amount, message: `${recipient.name} gained ${amount} Exposed.` });
+  } else if (effect.kind === 'heal') {
+    const healed = Math.min(amount, recipient.maxHp - recipient.hp);
+    recipient.hp += healed;
+    emit(events, { kind: 'heal', tick, actor: actor.id, target: recipient.id, amount: healed, message: `${recipient.name} restored ${healed} health.` });
+  } else if (effect.kind === 'ringing') {
+    recipient.ringing = true;
+    emit(events, { kind: 'ringing', tick, actor: actor.id, target: recipient.id, amount, message: `${recipient.name} is Ringing.` });
+  } else if (effect.kind === 'energy' && recipient.id === PLAYER_ID) {
+    const player = state.player;
+    const gained = Math.min(amount, player.energyMax - player.energy);
+    player.energy += gained;
+    emit(events, { kind: 'energy', tick, actor: actor.id, target: PLAYER_ID, amount: gained, message: `Bob stored ${gained} energy.` });
+  } else if (effect.kind === 'draw' && recipient.id === PLAYER_ID) {
+    draw(state, amount, events, tick);
   }
-  if (!modifierDefinition.modifier && !modifierDefinition.bracket) return 'That card is not an attachment.';
-  validateAmount(modifierDefinition.cost, 'attachment cost');
-  if (availableEnergy(state, modifierCard.owner) < modifierDefinition.cost) {
-    return 'Not enough available energy.';
+  return false;
+}
+
+function resolveDefinition(state: WorldState, actor: WorldActor, target: WorldActor, definition: CardDefinition, tick: number, events: WorldEvent[]): void {
+  let critical = false;
+  for (const effect of definition.effects) {
+    critical = applyEffect(state, actor, target, effect, tick, events) || critical;
+    if (target.hp <= 0 || actor.hp <= 0) break;
   }
-  if (target?.kind === 'bracket') {
-    if (!modifierDefinition.bracket || modifierCard.owner !== 'bob') return 'That card cannot modify this turn bracket.';
-    bracketValue(state, modifierCard, 'positions');
-    return;
-  }
-  if (!modifierDefinition.modifier) return 'Bracket attachments can only target the turn bracket.';
-  if (!Number.isSafeInteger(modifierDefinition.modifier.levels) || modifierDefinition.modifier.levels === 0) {
-    return 'Attachment has invalid upgrade levels.';
-  }
-  if (target?.kind === 'card') {
-    const candidate = upgradeCandidate(state, target.uid);
-    if (candidate?.position !== null && candidate?.position !== undefined && !validIndex(state, candidate.position)) {
-      return 'That card is outside the current turn bracket.';
-    }
-    if (!candidate || !compatibleModifierTarget(state, modifierCard, candidate)) {
-      return 'That card cannot receive this attachment.';
-    }
-    return;
-  }
-  if (target?.kind === 'slot') {
-    if (!validIndex(state, target.slot)) return 'Attachment slot must be in the current turn bracket.';
-    const action = state.queue[target.slot];
-    if (action && !compatibleModifierTarget(state, modifierCard, slotCandidate(action, target.slot))) {
-      return 'That slot cannot receive this attachment.';
-    }
-    return;
-  }
-  return 'That attachment target does not exist.';
-}
-
-export function canAttachModifier(state: CombatState, uid: string, target: ModifierTarget): boolean {
-  return modifierAttachmentFailure(state, uid, target) === undefined;
-}
-
-function reconcileBracket(state: CombatState): void {
-  const end = turnEnd(state);
-  for (let position = end; position < state.queue.length; position += 1) {
-    const action = state.queue[position];
-    const enemyUid = action?.kind === 'enemy' ? action.uid : null;
-    if (action?.kind === 'player') {
-      state.hand.push(action.card);
-      state.queue[position] = null;
-      appendLog(state, `Returned ${definition(action.card).name} from position ${position}.`);
-    }
-    for (let index = 0; index < state.attachments.length;) {
-      const attachment = state.attachments[index];
-      const leavesBracket = attachment.target.kind === 'slot'
-        ? attachment.target.slot === position
-        : attachment.target.kind === 'card' && attachment.target.uid === enemyUid;
-      if (!leavesBracket) {
-        index += 1;
-        continue;
-      }
-      state.attachments.splice(index, 1);
-      state.hand.push(attachment.card);
-      appendLog(state, `Returned ${definition(attachment.card).name} from position ${position}.`);
-    }
-  }
-  fillVisibleTimeline(state);
-}
-
-function clonePlanningState(state: CombatState): CombatState {
-  return {
-    ...state,
-    hand: [...state.hand],
-    queue: [...state.queue],
-    attachments: [...state.attachments],
-    log: [...state.log],
-  };
-}
-
-function commitPlanningMutation(state: CombatState, next: CombatState): void {
-  state.hand = next.hand;
-  state.queue = next.queue;
-  state.attachments = next.attachments;
-  state.log = next.log;
-}
-
-export function attachModifier(state: CombatState, uid: string, target: ModifierTarget): CommandResult {
-  const reason = modifierAttachmentFailure(state, uid, target);
-  if (reason) return failure(reason);
-  const next = clonePlanningState(state);
-  const handIndex = next.hand.findIndex((card) => card.uid === uid);
-  const [card] = next.hand.splice(handIndex, 1);
-  next.attachments.push({ card, target: { ...target } });
-  appendLog(next, `Attached ${definition(card).name}.`);
-  reconcileBracket(next);
-  commitPlanningMutation(state, next);
-  return { ok: true };
-}
-
-export function removeModifier(state: CombatState, uid: string): CommandResult {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return phaseFailure;
-  const attachmentIndex = state.attachments.findIndex((attachment) => attachment.card.uid === uid);
-  if (attachmentIndex < 0) return failure('That attachment is not active.');
-  const next = clonePlanningState(state);
-  const [attachment] = next.attachments.splice(attachmentIndex, 1);
-  next.hand.push(attachment.card);
-  appendLog(next, `Returned ${definition(attachment.card).name} to hand.`);
-  reconcileBracket(next);
-  commitPlanningMutation(state, next);
-  return { ok: true };
-}
-
-export function upgradeLevel(state: CombatState, uid: string, slot: number | null): number {
-  const candidate = upgradeCandidate(state, uid);
-  if (!candidate) return 0;
-  let level = 0;
-  for (const attachment of state.attachments) {
-    const applies = attachment.target.kind === 'card'
-      ? attachment.target.uid === uid
-      : attachment.target.kind === 'slot' && slot !== null && attachment.target.slot === slot;
-    if (!applies || !compatibleModifierTarget(state, attachment.card, candidate)) continue;
-    const levels = definition(attachment.card).modifier!.levels;
-    if (!Number.isSafeInteger(levels) || levels === 0 || !Number.isSafeInteger(level + levels)) {
-      throw new Error('Attachment has invalid upgrade levels.');
-    }
-    level += levels;
-  }
-  return level;
-}
-
-function validateInventory(state: CombatState): void {
-  const seen = new Set<string>();
-  const visit = (card: CardInstance): void => {
-    if (card.owner !== 'bob' && card.owner !== 'guard') throw new Error('Card has an invalid owner.');
-    if (seen.has(card.uid)) throw new Error(`Card ${card.uid} exists in more than one combat zone.`);
-    seen.add(card.uid);
-    definition(card);
-  };
-  state.hand.forEach(visit);
-  state.drawPile.forEach(visit);
-  state.discardPile.forEach(visit);
-  for (const action of state.queue) {
-    if (action?.kind === 'player') visit(action.card);
-  }
-  for (const attachment of state.attachments) visit(attachment.card);
-}
-
-function validateAttachments(state: CombatState): void {
-  const seen = new Set<string>();
-  for (const attachment of state.attachments) {
-    const cardDefinition = definition(attachment.card);
-    if (attachment.card.owner !== 'bob' && attachment.card.owner !== 'guard') {
-      throw new Error('Attachment card has an invalid owner.');
-    }
-    const sourceIsElsewhere = state.hand.some((card) => card.uid === attachment.card.uid)
-      || state.drawPile.some((card) => card.uid === attachment.card.uid)
-      || state.discardPile.some((card) => card.uid === attachment.card.uid)
-      || state.queue.some((action) => action?.kind === 'player' && action.card.uid === attachment.card.uid);
-    if (sourceIsElsewhere) throw new Error('Attachment card exists in another combat zone.');
-    if ((!cardDefinition.modifier && !cardDefinition.bracket) || (cardDefinition.modifier && cardDefinition.bracket)) {
-      throw new Error('Active attachment must have exactly one modifier kind.');
-    }
-    if (seen.has(attachment.card.uid)) throw new Error('Attachment card is active more than once.');
-    seen.add(attachment.card.uid);
-    validateAmount(cardDefinition.cost, 'attachment cost');
-    if (attachment.target.kind === 'bracket') {
-      if (!cardDefinition.bracket || attachment.card.owner !== 'bob') {
-        throw new Error('Bracket attachment has an invalid target.');
-      }
-      bracketValue(state, attachment.card, 'positions');
-    } else if (cardDefinition.bracket) {
-      throw new Error('Bracket attachment has an invalid target.');
-    } else {
-      if (!Number.isSafeInteger(cardDefinition.modifier!.levels) || cardDefinition.modifier!.levels === 0) {
-        throw new Error('Attachment has invalid upgrade levels.');
-      }
-      if (attachment.target.kind === 'card') {
-        const candidate = upgradeCandidate(state, attachment.target.uid);
-        if (
-          !candidate
-          || (candidate.position !== null && !validIndex(state, candidate.position))
-          || !compatibleModifierTarget(state, attachment.card, candidate)
-        ) {
-          throw new Error('Attachment has an invalid card target.');
-        }
-      } else if (!validIndex(state, attachment.target.slot)) {
-        throw new Error('Attachment has an invalid slot target.');
-      }
+  if (critical && actor.hp > 0 && target.hp > 0) {
+    for (const rider of definition.onCritical ?? []) {
+      applyEffect(state, actor, target, rider, tick, events);
+      if (target.hp <= 0 || actor.hp <= 0) break;
     }
   }
 }
 
-interface PlacementPlan {
-  queue: QueueSlot[];
-  card: CardInstance;
-  handIndex: number | null;
+function livingEnemyAt(state: WorldState, position: TilePosition, except?: string): WorldEnemy | undefined {
+  return state.enemies.find((enemy) => enemy.hp > 0 && enemy.id !== except && samePosition(enemy.position, position));
 }
 
-type PlacementResult = { ok: true; plan: PlacementPlan } | { ok: false; reason: string };
-
-function planPlacement(
-  state: CombatState,
-  uid: string,
-  target: ActorId | null,
-  to: number,
-  expectedFrom?: number | null,
-): PlacementResult {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return { ok: false, reason: phaseFailure.reason ?? 'Planning is unavailable.' };
-  if (!validIndex(state, to)) return { ok: false, reason: 'Position must be in the current turn bracket.' };
-  if (state.queue[to]?.kind === 'enemy') return { ok: false, reason: 'Enemy action positions are locked.' };
-
-  const queuedIndex = expectedFrom === null
-    ? -1
-    : expectedFrom ?? state.queue.findIndex((slot) => slot?.kind === 'player' && slot.card.uid === uid);
-  const queued = queuedIndex >= 0 ? state.queue[queuedIndex] : null;
-  if (queuedIndex >= 0 && (!validIndex(state, queuedIndex) || queued?.kind !== 'player' || queued.card.uid !== uid)) {
-    return { ok: false, reason: 'That queued card cannot be moved.' };
-  }
-
-  const handIndex = queuedIndex < 0 ? state.hand.findIndex((card) => card.uid === uid) : -1;
-  if (expectedFrom === null && handIndex < 0) return { ok: false, reason: 'That card is not in hand.' };
-  if (expectedFrom !== undefined && expectedFrom !== null && queuedIndex < 0) {
-    return { ok: false, reason: 'The source queue slot does not contain that card.' };
-  }
-  if (queuedIndex < 0 && handIndex < 0) return { ok: false, reason: 'That card is not available.' };
-
-  const card = queued?.kind === 'player' ? queued.card : state.hand[handIndex];
-  const cardDefinition = definition(card);
-  if (cardDefinition.surge) {
-    return { ok: false, reason: 'Surge cards activate immediately and do not occupy timeline positions.' };
-  }
-  if (cardDefinition.modifier || cardDefinition.bracket) {
-    return { ok: false, reason: 'Attachments do not occupy timeline positions.' };
-  }
-  const activeQueue = state.queue.slice(state.position, turnEnd(state));
-  if (
-    queuedIndex < 0
-    && state.actors[card.owner].ringing
-    && activeQueue.some((slot) => slot?.kind === 'player' && slot.card.owner === card.owner)
-  ) {
-    return { ok: false, reason: `${state.actors[card.owner].name} can only queue one action while Ringing.` };
-  }
-  let action: PlayerAction;
-  if (queued?.kind === 'player') {
-    action = queued;
-  } else {
-    let normalizedTarget = target;
-    if (normalizedTarget === null) {
-      let choices = 0;
-      for (const actorId in state.actors) {
-        if (!validateTarget(state, card, actorId as ActorId)) {
-          normalizedTarget = actorId as ActorId;
-          choices++;
-        }
-      }
-      if (choices === 0) return { ok: false, reason: 'This card has no living target.' };
-      if (choices > 1) normalizedTarget = null;
-    }
-    if (normalizedTarget !== null) {
-      const targetFailure = validateTarget(state, card, normalizedTarget);
-      if (targetFailure) return { ok: false, reason: targetFailure };
-    }
-    if (availableEnergy(state, card.owner) < cardDefinition.cost) {
-      return { ok: false, reason: 'Not enough available energy.' };
-    }
-    action = { kind: 'player', card, target: normalizedTarget };
-  }
-
-  const queue = state.queue.slice();
-  if (queuedIndex === to) return { ok: true, plan: { queue, card, handIndex: null } };
-
-  if (queuedIndex >= 0) {
-    if (!queue[to]) {
-      queue[queuedIndex] = null;
-      queue[to] = action;
-    } else {
-      const occupied: number[] = [];
-      for (let index = Math.min(queuedIndex, to); index <= Math.max(queuedIndex, to); index += 1) {
-        if (queue[index]?.kind === 'player') occupied.push(index);
-      }
-      if (queuedIndex < to) {
-        for (let index = 0; index < occupied.length - 1; index += 1) {
-          queue[occupied[index]] = queue[occupied[index + 1]];
-        }
-      } else {
-        for (let index = occupied.length - 1; index > 0; index -= 1) {
-          queue[occupied[index]] = queue[occupied[index - 1]];
-        }
-      }
-      queue[to] = action;
-    }
-    return { ok: true, plan: { queue, card, handIndex: null } };
-  }
-
-  if (queue[to]) {
-    const playerPositions: number[] = [];
-    for (let index = state.position; index < turnEnd(state); index += 1) {
-      if (queue[index]?.kind !== 'enemy') playerPositions.push(index);
-    }
-    const destination = playerPositions.indexOf(to);
-    let hole = -1;
-    let distance = Number.POSITIVE_INFINITY;
-    for (let rank = 0; rank < playerPositions.length; rank += 1) {
-      const position = playerPositions[rank];
-      if (queue[position] !== null) continue;
-      const candidateDistance = Math.abs(position - to);
-      if (candidateDistance < distance) {
-        hole = rank;
-        distance = candidateDistance;
-      }
-    }
-    if (hole < 0) return { ok: false, reason: 'The queue has no room for another card.' };
-    if (hole < destination) {
-      for (let rank = hole; rank < destination; rank += 1) {
-        queue[playerPositions[rank]] = queue[playerPositions[rank + 1]];
-      }
-    } else {
-      for (let rank = hole; rank > destination; rank -= 1) {
-        queue[playerPositions[rank]] = queue[playerPositions[rank - 1]];
-      }
-    }
-  }
-  queue[to] = action;
-  return { ok: true, plan: { queue, card, handIndex } };
+function updateAwareness(state: WorldState, enemy: WorldEnemy): void {
+  if (enemy.aware || enemy.hp <= 0) return;
+  if (distance(enemy.position, state.player.position) <= WORLD_RULES.sight
+    && hasLineOfSight(state.map, enemy.position, state.player.position, state.completedEncounters)) enemy.aware = true;
 }
 
-export function previewPlacement(
-  state: CombatState,
-  uid: string,
-  target: ActorId | null,
-  to: number,
-): QueueSlot[] | null {
-  const result = planPlacement(state, uid, target, to);
-  return result.ok ? result.plan.queue : null;
+function enemyTimeline(id: string, tick: number, enemy: WorldEnemy, definition: CardDefinition | null, events: WorldEvent[], canceled = false): TimelineCard {
+  return { id, tick, kind: 'enemy', definition, upgradeLevel: enemy.upgradeLevel, entityId: enemy.id, events: events.map(copyEvent), canceled };
 }
 
-export function queueCard(state: CombatState, uid: string, target: ActorId | null, slot: number): CommandResult {
-  const result = planPlacement(state, uid, target, slot, null);
-  if (!result.ok) return failure(result.reason);
-  const cardDefinition = definition(result.plan.card);
-  state.hand.splice(result.plan.handIndex!, 1);
-  state.queue = result.plan.queue;
-  appendLog(state, `Queued ${cardDefinition.name} at position ${slot}.`);
-  return { ok: true };
-}
-
-export function removeCard(state: CombatState, slot: number): CommandResult {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return phaseFailure;
-  if (!validIndex(state, slot)) return failure('Position must be in the current turn bracket.');
-  const action = state.queue[slot];
-  if (!action) return failure('That timeline position is empty.');
-  if (action.kind !== 'player') return failure('Enemy actions cannot be removed.');
-  const cardName = definition(action.card).name;
-  state.queue[slot] = null;
-  state.hand.push(action.card);
-  appendLog(state, `Returned ${cardName} to hand.`);
-  return { ok: true };
-}
-
-export function moveCard(state: CombatState, from: number, to: number): CommandResult {
-  if (!validIndex(state, from)) return failure('The source must be in the current turn bracket.');
-  const source = state.queue[from];
-  if (!source) return failure('The source timeline position is empty.');
-  if (source.kind !== 'player') return failure('Enemy actions cannot be moved.');
-  const result = planPlacement(state, source.card.uid, source.target, to, from);
-  if (!result.ok) return failure(result.reason);
-  state.queue = result.plan.queue;
-  appendLog(state, `Moved ${definition(source.card).name} to position ${to}.`);
-  return { ok: true };
-}
-
-export function retargetCard(state: CombatState, slot: number, target: ActorId): CommandResult {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return phaseFailure;
-  if (!validIndex(state, slot)) return failure('Position must be in the current turn bracket.');
-  const action = state.queue[slot];
-  if (!action) return failure('That timeline position is empty.');
-  if (action.kind !== 'player') return failure('Enemy actions cannot be retargeted.');
-  const targetFailure = validateTarget(state, action.card, target);
-  if (targetFailure) return failure(targetFailure);
-  const cardName = definition(action.card).name;
-  const targetName = state.actors[target].name;
-  action.target = target;
-  appendLog(state, `Targeted ${cardName} at ${targetName}.`);
-  return { ok: true };
-}
-
-function spendEnergy(actor: Actor, amount: number): void {
-  if (!Number.isSafeInteger(amount) || amount < 0) throw new Error(`Energy cost must be a nonnegative safe integer: ${amount}`);
-  if (
-    !Number.isSafeInteger(actor.energy)
-    || actor.energy < 0
-    || !Number.isSafeInteger(actor.surgeEnergy)
-    || actor.surgeEnergy < 0
-    || !Number.isSafeInteger(actor.energy + actor.surgeEnergy)
-  ) throw new Error(`${actor.name} has invalid energy.`);
-  if (amount > actor.energy + actor.surgeEnergy) throw new Error(`${actor.name} spent more energy than available.`);
-  const fromSurge = Math.min(actor.surgeEnergy, amount);
-  actor.surgeEnergy -= fromSurge;
-  actor.energy -= amount - fromSurge;
-}
-
-export function playSurge(state: CombatState, uid: string): SurgeResult {
-  const phaseFailure = planningFailure(state);
-  if (phaseFailure) return { ...phaseFailure, events: [] };
-  const handIndex = state.hand.findIndex((card) => card.uid === uid);
-  if (handIndex < 0) return { ...failure('That Surge card is not in hand.'), events: [] };
-  const source = state.hand[handIndex];
-  const sourceDefinition = definition(source);
-  if (!sourceDefinition.surge) return { ...failure('That card is not a Surge.'), events: [] };
-  if (state.actors[source.owner].hp <= 0) return { ...failure('A defeated actor cannot activate Surge.'), events: [] };
-
-  validateInventory(state);
-  validateAttachments(state);
-  energyCost(source);
-  for (const actor of Object.values(state.actors)) {
-    if (
-      !Number.isSafeInteger(actor.energy)
-      || actor.energy < 0
-      || !Number.isSafeInteger(actor.surgeEnergy)
-      || actor.surgeEnergy < 0
-      || !Number.isSafeInteger(actor.energy + actor.surgeEnergy)
-    ) throw new Error(`${actor.name} has invalid energy.`);
-  }
-
-  const level = upgradeLevel(state, source.uid, null);
-  const effective = applyUpgrade(sourceDefinition, level);
-  if (!effective.effects.length || effective.effects.some((effect) => effect.kind !== 'energy' || effect.recipient !== 'self')) {
-    throw new Error(`${sourceDefinition.name} must contain only self Surge energy effects.`);
-  }
-  let grant = 0;
-  for (const effect of effective.effects) {
-    validateEffect(effect, `${sourceDefinition.name} Surge effect`);
-    grant += effect.amount;
-    if (!Number.isSafeInteger(grant)) throw new Error(`${sourceDefinition.name} has an invalid Surge grant.`);
-  }
-
-  const bound = state.attachments.filter((attachment) =>
-    attachment.target.kind === 'card' && attachment.target.uid === source.uid
-  );
-  const committed: Record<ActorId, number> = { bob: source.owner === 'bob' ? sourceDefinition.cost : 0, guard: source.owner === 'guard' ? sourceDefinition.cost : 0 };
-  for (const slot of state.queue) {
-    if (slot?.kind === 'player') committed[slot.card.owner] += energyCost(slot.card);
-  }
-  for (const attachment of state.attachments) {
-    committed[attachment.card.owner] += energyCost(attachment.card);
-  }
-  for (const actorId of ['bob', 'guard'] as const) {
-    if (!Number.isSafeInteger(committed[actorId]) || committed[actorId] < 0) throw new Error(`${actorId} has invalid energy commitments.`);
-    const actor = state.actors[actorId];
-    if (committed[actorId] > actor.energy + actor.surgeEnergy) {
-      return { ...failure('Not enough available energy.'), events: [] };
-    }
-  }
-  const immediateCosts: Record<ActorId, number> = { bob: 0, guard: 0 };
-  immediateCosts[source.owner] += sourceDefinition.cost;
-  for (const attachment of bound) immediateCosts[attachment.card.owner] += energyCost(attachment.card);
-  const sourceActor = state.actors[source.owner];
-  const surgeAfterCost = sourceActor.surgeEnergy - Math.min(sourceActor.surgeEnergy, immediateCosts[source.owner]);
-  if (!Number.isSafeInteger(surgeAfterCost + grant)) {
-    throw new Error(`${sourceDefinition.name} would overflow Surge energy.`);
-  }
-
-  for (const actorId of ['bob', 'guard'] as const) spendEnergy(state.actors[actorId], immediateCosts[actorId]);
-
-  state.hand.splice(handIndex, 1);
-  const boundUids = new Set(bound.map((attachment) => attachment.card.uid));
-  state.attachments = state.attachments.filter((attachment) => !boundUids.has(attachment.card.uid));
-  const discarded = [source, ...bound.map((attachment) => attachment.card)];
-  state.discardPile.push(...discarded);
-  state.actors[source.owner].surgeEnergy += grant;
-
-  const events: CombatEvent[] = [];
-  record(state, events, {
-    kind: 'energy',
-    actor: source.owner,
-    target: source.owner,
-    amount: grant,
-    message: `${state.actors[source.owner].name} gained ${grant} Surge energy.`,
-  });
-  record(state, events, {
-    kind: 'discard',
-    actor: source.owner,
-    amount: discarded.length,
-    cards: discarded,
-    message: `${state.actors[source.owner].name} consumed ${sourceDefinition.name}${
-      bound.length ? ` with ${bound.length} attached upgrade${bound.length === 1 ? '' : 's'}` : ''
-    }.`,
-  });
-  return { ok: true, events: events.map(cloneEvent) };
-}
-
-function hashText(value: string, seed: number): number {
-  let hash = seed >>> 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function randomStep(seed: number): [number, number] {
-  let next = (seed + 0x6d2b79f5) >>> 0;
-  let value = next;
-  value = Math.imul(value ^ (value >>> 15), value | 1);
-  value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-  return [next, ((value ^ (value >>> 14)) >>> 0) / 4294967296];
-}
-
-function reshuffle(state: CombatState): void {
-  if (!state.discardPile.length) return;
-  const pile = state.discardPile.splice(0);
-  let randomSeed = hashText(`${state.turn}:${pile.map((card) => card.uid).join('|')}`, state.seed);
-  for (let index = pile.length - 1; index > 0; index -= 1) {
-    let random: number;
-    [randomSeed, random] = randomStep(randomSeed);
-    const other = Math.floor(random * (index + 1));
-    [pile[index], pile[other]] = [pile[other], pile[index]];
-  }
-  state.drawPile.push(...pile);
-}
-
-function drawCards(
-  state: CombatState,
-  actor: ActorId,
-  count: number,
-  events: CombatEvent[],
-  protectedCards?: Set<string>,
+function recordEnemyTimeline(
+  state: WorldState,
+  cards: TimelineCard[],
+  card: TimelineCard,
+  cardEvents: WorldEvent[],
+  visibleBefore: boolean,
+  concealUnseen: boolean,
 ): void {
-  validateAmount(count, 'draw amount');
-  if (!Number.isInteger(count)) throw new Error(`Draw amount must be an integer: ${count}`);
-  if (actor !== 'bob') throw new Error(`${actor} has no combat deck.`);
-
-  const drawn: CardInstance[] = [];
-  for (let index = 0; index < count; index += 1) {
-    if (!state.drawPile.length) reshuffle(state);
-    const card = state.drawPile.pop();
-    if (!card) break;
-    state.hand.push(card);
-    protectedCards?.add(card.uid);
-    drawn.push(card);
+  const hidden = concealUnseen && !visibleBefore && !canSee(state, state.enemies.find((enemy) => enemy.id === card.entityId)!.position);
+  if (hidden) {
+    for (const event of cardEvents) event.visible = false;
+  } else {
+    cards.push(card);
   }
-  const names = drawn.map((card) => definition(card).name).join(', ');
-  record(state, events, {
-    kind: 'draw',
-    actor,
-    amount: drawn.length,
-    cards: drawn,
-    message: drawn.length ? `${state.actors[actor].name} drew ${drawn.length}: ${names}.` : 'No cards left to draw.',
-  });
 }
 
-function terminalPhase(state: CombatState): 'victory' | 'defeat' | undefined {
-  if (state.actors.bob.hp <= 0) return 'defeat';
-  if (state.actors.guard.hp <= 0) return 'victory';
+function performEnemyBasicAction(state: WorldState, enemy: WorldEnemy, tick: number, sequence: number, events: WorldEvent[], cards: TimelineCard[], concealUnseen: boolean): void {
+  updateAwareness(state, enemy);
+  if (!enemy.aware || enemy.hp <= 0 || state.player.hp <= 0) return;
+  const visibleBefore = canSee(state, enemy.position);
+  const cardEvents: WorldEvent[] = [];
+  const base = definitionForEnemy(state, enemy);
+  const definition = copyDefinition(applyUpgrade(base, enemy.upgradeLevel));
+  const requiresRange = definition.effects.some((effect) => effect.recipient === 'target');
+  if (requiresRange && distance(enemy.position, state.player.position) > 1) {
+    if (!beginActorAction(enemy)) {
+      const event: WorldEvent = { kind: 'action', tick, actor: enemy.id, message: `${enemy.name} lost an action to Ringing.` };
+      emit(events, event);
+      cardEvents.push(event);
+      recordEnemyTimeline(state, cards, enemyTimeline(`timeline:${tick}:enemy:${enemy.id}:${sequence}`, tick, enemy, base, cardEvents, true), cardEvents, visibleBefore, concealUnseen);
+      return;
+    }
+    const occupied = state.enemies.filter((other) => other.hp > 0 && other.id !== enemy.id).map((other) => other.position);
+    const path = findPath(state.map, enemy.position, state.player.position, state.completedEncounters, occupied);
+    const destination = path?.[0];
+    if (destination && !samePosition(destination, state.player.position) && !livingEnemyAt(state, destination, enemy.id)) {
+      const from = copyPosition(enemy.position);
+      enemy.facing = actorFacing(from, destination);
+      enemy.position = copyPosition(destination);
+      const event: WorldEvent = { kind: 'move', tick, actor: enemy.id, from, to: copyPosition(destination), message: `${enemy.name} moved closer to Bob.` };
+      emit(events, event);
+      cardEvents.push(event);
+    } else {
+      const event: WorldEvent = { kind: 'empty', tick, actor: enemy.id, message: `${enemy.name} could not find a path.` };
+      emit(events, event);
+      cardEvents.push(event);
+    }
+    recordEnemyTimeline(state, cards, enemyTimeline(`timeline:${tick}:enemy:${enemy.id}:${sequence}`, tick, enemy, null, cardEvents), cardEvents, visibleBefore, concealUnseen);
+    return;
+  }
+  if (!beginActorAction(enemy)) {
+    const event: WorldEvent = { kind: 'action', tick, actor: enemy.id, message: `${enemy.name} lost an action to Ringing.` };
+    emit(events, event);
+    cardEvents.push(event);
+    recordEnemyTimeline(state, cards, enemyTimeline(`timeline:${tick}:enemy:${enemy.id}:${sequence}`, tick, enemy, base, cardEvents, true), cardEvents, visibleBefore, concealUnseen);
+    enemy.actionIndex = (enemy.actionIndex + 1) % ENCOUNTERS[enemy.encounterId].actions.length;
+    if (enemy.upgradeLevel !== 0) {
+      enemy.upgradeLevel = 0;
+      delete state.grades[enemy.id];
+    }
+    return;
+  }
+  const actionEvent: WorldEvent = { kind: 'action', tick, actor: enemy.id, target: requiresRange ? PLAYER_ID : enemy.id, definition: copyDefinition(definition), message: `${enemy.name} used ${definition.name}.` };
+  emit(events, actionEvent);
+  cardEvents.push(actionEvent);
+  const effectEvents: WorldEvent[] = [];
+  resolveDefinition(state, enemy, requiresRange ? state.player : enemy, definition, tick, effectEvents);
+  for (const event of effectEvents) {
+    emit(events, event);
+    cardEvents.push(event);
+  }
+  recordEnemyTimeline(state, cards, enemyTimeline(`timeline:${tick}:enemy:${enemy.id}:${sequence}`, tick, enemy, base, cardEvents), cardEvents, visibleBefore, concealUnseen);
+  enemy.actionIndex = (enemy.actionIndex + 1) % ENCOUNTERS[enemy.encounterId].actions.length;
+  if (enemy.upgradeLevel !== 0) {
+    enemy.upgradeLevel = 0;
+    delete state.grades[enemy.id];
+  }
+}
+
+function canonicalEnemyTick(state: WorldState, tick: number, events: WorldEvent[], cards: TimelineCard[], allowedIds?: ReadonlySet<string>, concealUnseen = false): void {
+  const actionsPerTick = state.timeMode === 'compress' ? 2 : 1;
+  const duration = state.timeMode === 'stretch' ? 2 : 1;
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0 || state.player.hp <= 0 || (allowedIds && !allowedIds.has(enemy.id))) continue;
+    updateAwareness(state, enemy);
+    if (!enemy.aware) continue;
+    for (let sequence = 0; sequence < actionsPerTick && enemy.hp > 0 && state.player.hp > 0; sequence += 1) {
+      enemy.actionProgress += 1;
+      if (enemy.actionProgress < duration) continue;
+      enemy.actionProgress = 0;
+      performEnemyBasicAction(state, enemy, tick, sequence, events, cards, concealUnseen);
+    }
+  }
+}
+
+function defeatEnemies(state: WorldState, events: WorldEvent[]): void {
+  for (const enemy of state.enemies) {
+    if (enemy.hp > 0 || state.completedEncounters.includes(enemy.encounterId)) continue;
+    state.completedEncounters.push(enemy.encounterId);
+    delete state.grades[enemy.id];
+    state.pendingRewards.push(enemy.encounterId);
+    emit(events, { kind: 'defeat', tick: state.tick, actor: enemy.id, message: `${enemy.name} was defeated.` });
+  }
+}
+
+function finishTick(state: WorldState, tick: number, events: WorldEvent[], cards: TimelineCard[], replacement: boolean): void {
+  const exiting = state.phase === 'victory';
+  state.tick = tick;
+  canonicalEnemyTick(state, tick, events, cards, undefined, true);
+  defeatEnemies(state, events);
+  if (state.player.hp <= 0) {
+    state.phase = 'defeat';
+    state.drawDebt = 0;
+    emit(events, { kind: 'defeat', tick, actor: PLAYER_ID, message: 'Bob was defeated.' });
+    return;
+  }
+  if (state.timeExpires > 0 && tick >= state.timeExpires) {
+    state.timeMode = 'normal';
+    state.timeExpires = 0;
+  }
+  if (state.scoutingExpires > 0 && tick >= state.scoutingExpires) {
+    state.scouting = 0;
+    state.scoutingExpires = 0;
+  }
+  if (state.player.surgeExpires > 0 && tick >= state.player.surgeExpires) {
+    state.player.surgeEnergy = 0;
+    state.player.surgeExpires = 0;
+  }
+  const gained = Math.min(WORLD_RULES.energyPerTick, state.player.energyMax - state.player.energy);
+  state.player.energy += gained;
+  if (gained) emit(events, { kind: 'energy', tick, actor: PLAYER_ID, target: PLAYER_ID, amount: gained, message: `Bob regained ${gained} energy.` });
+  if (replacement) draw(state, 1, events, tick, true);
+  if (exiting) {
+    state.phase = 'victory';
+    state.drawDebt = 0;
+  } else if (state.pendingRewards.length) state.phase = 'reward';
+  emit(events, { kind: 'tick', tick, message: `Tick ${tick} completed.` });
+}
+
+function removeHandCard(state: WorldState, uid: string): CardInstance {
+  const index = state.hand.findIndex((card) => card.uid === uid);
+  if (index < 0) throw new Error(`Card is not in hand: ${uid}`);
+  const [card] = state.hand.splice(index, 1);
+  return card;
+}
+
+function discardPlayed(state: WorldState, card: CardInstance, events: WorldEvent[], exhaust = false): void {
+  delete state.grades[card.uid];
+  const pile = exhaust ? state.exhaustPile : state.discardPile;
+  pile.push(card);
+  emit(events, { kind: 'discard', tick: state.tick + 1, actor: PLAYER_ID, cards: [copyCard(card)], sourceUid: card.uid, message: `${card.definitionId} was ${exhaust ? 'exhausted' : 'discarded'}.` });
+}
+
+function applyPlayerCard(state: WorldState, card: CardInstance, command: Extract<WorldCommand, { kind: 'play' }>, tick: number, events: WorldEvent[], cards: TimelineCard[]): string | undefined {
+  const level = state.grades[card.uid] ?? 0;
+  const definition = effectiveCard(state, card.uid);
+  if (availableEnergy(state) < definition.cost) return 'Not enough energy.';
+  if (definition.temporal?.kind === 'borrow' && state.drawDebt > 0) return 'Borrowed draws must be repaid first.';
+  const targets = legalTargets(state, card.uid);
+  const selected = definition.temporal?.kind === 'echo'
+    ? command.targetId
+    : command.targetId ?? (targets.length === 1 ? targets[0] : undefined);
+  let echoSource: TimelineCard | undefined;
+  let echoTarget: WorldActor | undefined;
+  if ((definition.modifier || definition.temporal?.kind === 'retain') && !selected) return 'Choose a target.';
+  if (!definition.time && !definition.temporal?.kind && definition.target === 'enemy' && !selected) return targets.length ? 'Choose a target.' : 'No legal target.';
+  if (selected && !targets.includes(selected) && !definition.time && definition.temporal?.kind !== 'echo') return 'Invalid target.';
+  if (definition.temporal?.kind === 'echo') {
+    if (!command.sourceId || !targets.includes(command.sourceId)) return 'Invalid Echo source.';
+    echoSource = playerHistorySources(state).find((candidate) => candidate.id === command.sourceId && candidate.definition);
+    if (!echoSource?.definition) return 'Invalid Echo source.';
+    if (echoSource.definition.target === 'self') {
+      if (command.targetId && command.targetId !== PLAYER_ID) return 'Invalid Echo target.';
+      echoTarget = state.player;
+    } else {
+      const candidates = state.enemies.filter((enemy) => enemy.hp > 0 && canSee(state, enemy.position)
+        && (echoSource!.definition!.type !== 'attack' || distance(state.player.position, enemy.position) === 1));
+      if (command.targetId) echoTarget = candidates.find((enemy) => enemy.id === command.targetId);
+      else if (candidates.length === 1) [echoTarget] = candidates;
+      else if (candidates.length > 1) return 'Choose an Echo target.';
+      if (!echoTarget) return 'No legal Echo target.';
+    }
+  }
+  if (definition.time?.kind === 'rewind') return 'rewind';
+
+  spendEnergy(state, definition.cost);
+  const source = removeHandCard(state, card.uid);
+  const retained = definition.retain === true || state.retainedUids.includes(card.uid);
+  state.retainedUids = state.retainedUids.filter((uid) => uid !== card.uid);
+  if (retained) {
+    delete state.grades[source.uid];
+    state.hand.push(source);
+  } else {
+    discardPlayed(state, source, events, definition.temporal?.kind === 'borrow');
+  }
+  const actionEvents: WorldEvent[] = [];
+  const actionEvent: WorldEvent = { kind: 'action', tick, actor: PLAYER_ID, target: echoTarget?.id ?? selected, sourceUid: card.uid, definition: copyDefinition(definition), message: `Bob used ${definition.name}.` };
+  emit(events, actionEvent);
+  actionEvents.push(actionEvent);
+
+  if (!beginActorAction(state.player)) {
+    const canceled: WorldEvent = { kind: 'ringing', tick, actor: PLAYER_ID, message: 'Bob lost the action to Ringing.' };
+    emit(events, canceled);
+    actionEvents.push(canceled);
+    cards.push({ id: `timeline:${tick}:player:${card.uid}`, tick, kind: 'player', definition: copyDefinition(baseDefinition(card)), upgradeLevel: level, entityId: PLAYER_ID, sourceUid: card.uid, events: actionEvents.map(copyEvent), canceled: true });
+    return undefined;
+  }
+
+  if (definition.modifier) {
+    if (definition.modifier.levels > 0 && selected) state.grades[selected] = (state.grades[selected] ?? 0) + definition.modifier.levels;
+    else if (selected) {
+      const enemy = state.enemies.find((candidate) => candidate.id === selected && candidate.hp > 0);
+      if (!enemy) return 'Invalid enemy target.';
+      enemy.upgradeLevel += definition.modifier.levels;
+      state.grades[enemy.id] = enemy.upgradeLevel;
+    }
+  } else if (definition.temporal?.kind === 'retain' && selected) {
+    if (!state.retainedUids.includes(selected)) state.retainedUids.push(selected);
+  } else if (definition.temporal?.kind === 'borrow') {
+    const amount = definition.temporal.amount ?? 0;
+    draw(state, amount, events, tick);
+    state.drawDebt += amount;
+  } else if (definition.temporal?.kind === 'echo') {
+    state.echoUsed.push(echoSource!.id);
+    const echoed = copyDefinition(applyUpgrade(echoSource!.definition!, echoSource!.upgradeLevel));
+    resolveDefinition(state, state.player, echoTarget!, echoed, tick, actionEvents);
+    for (const event of actionEvents.slice(1)) if (!events.includes(event)) emit(events, event);
+  } else if (definition.surge) {
+    const amount = definition.effects.filter((effect) => effect.kind === 'energy').reduce((total, effect) => total + effect.amount, 0);
+    state.player.surgeEnergy += amount;
+    state.player.surgeExpires = state.tick + WORLD_RULES.temporalDuration;
+    const energyEvent: WorldEvent = { kind: 'energy', tick, actor: PLAYER_ID, target: PLAYER_ID, amount, message: `Bob gained ${amount} Surge energy.` };
+    emit(events, energyEvent);
+    actionEvents.push(energyEvent);
+  } else if (definition.time) {
+    if (definition.time.kind === 'scout') {
+      state.scouting = definition.time.amount;
+      state.scoutingExpires = state.tick + WORLD_RULES.temporalDuration;
+    } else {
+      if (state.timeMode !== definition.time.kind) {
+        for (const enemy of state.enemies) enemy.actionProgress = 0;
+      }
+      state.timeMode = definition.time.kind;
+      state.timeExpires = state.tick + definition.time.amount;
+    }
+    const timeEvent: WorldEvent = { kind: 'time', tick, actor: PLAYER_ID, amount: definition.time.amount, message: `${definition.name} changed the timeline.` };
+    emit(events, timeEvent);
+    actionEvents.push(timeEvent);
+  } else {
+    const target = definition.target === 'self' ? state.player : state.enemies.find((enemy) => enemy.id === selected && enemy.hp > 0);
+    if (!target) return 'Invalid target.';
+    const effectEvents: WorldEvent[] = [];
+    resolveDefinition(state, state.player, target, definition, tick, effectEvents);
+    for (const event of effectEvents) {
+      emit(events, event);
+      actionEvents.push(event);
+    }
+  }
+  cards.push({ id: `timeline:${tick}:player:${card.uid}`, tick, kind: 'player', definition: copyDefinition(baseDefinition(card)), upgradeLevel: level, entityId: PLAYER_ID, sourceUid: card.uid, events: actionEvents.map(copyEvent) });
   return undefined;
 }
 
-function applyTerminal(state: CombatState, events: CombatEvent[]): void {
-  const phase = terminalPhase(state);
-  if (!phase || state.phase === phase) return;
-  state.phase = phase;
-  record(state, events, {
-    kind: phase,
-    actor: phase === 'victory' ? 'bob' : 'guard',
-    target: phase === 'victory' ? 'guard' : 'bob',
-    message: phase === 'victory' ? 'The possessed guard is down. Victory!' : 'Bob is down. Defeat.',
-  });
+function validateRewind(state: WorldState, tick: number): { snapshot: WorldSnapshot } | { reason: string } {
+  if (state.phase !== 'playing' && state.phase !== 'defeat') return { reason: 'Rewind is unavailable in this phase.' };
+  if (!Number.isSafeInteger(tick)) return { reason: 'Rewind tick must be an integer.' };
+  if (state.rewindCharges < 1) return { reason: 'No rewind charge remains.' };
+  if (tick >= state.tick || tick < Math.max(0, state.tick - WORLD_RULES.rewindWindow)) return { reason: 'That tick is outside the rewind window.' };
+  const checkpoint = [...state.checkpoints].reverse().find((candidate) => candidate.tick === tick);
+  return checkpoint ? { snapshot: checkpoint.snapshot } : { reason: 'No snapshot exists for that tick.' };
 }
 
-function effectRecipient(action: PlayerAction | EnemyAction, effect: Effect): ActorId {
-  const actor = action.kind === 'player' ? action.card.owner : action.actor;
-  if (effect.recipient === 'self') return actor;
-  if (action.target === null) throw new Error('Targeted effect has no recipient.');
-  return action.target;
+export function rewindTargets(state: WorldState): number[] {
+  if (state.rewindCharges < 1 || (state.phase !== 'playing' && state.phase !== 'defeat')) return [];
+  const minimum = Math.max(0, state.tick - WORLD_RULES.rewindWindow);
+  return state.checkpoints.map((checkpoint) => checkpoint.tick).filter((tick) => tick >= minimum && tick < state.tick).sort((a, b) => b - a);
 }
 
-function applyEffect(
-  state: CombatState,
-  action: PlayerAction | EnemyAction,
-  effect: Effect,
-  events: CombatEvent[],
-  protectedCards: Set<string>,
-): boolean {
-  validateEffect(effect, `${effect.kind} effect`);
-  const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-  const recipientId = effectRecipient(action, effect);
-  const recipient = state.actors[recipientId];
-  if (!recipient) throw new Error(`Effect recipient does not exist: ${recipientId}`);
-  if (recipient.hp <= 0) return false;
-
-  if (effect.kind === 'damage') {
-    const baseDamage = effect.amount;
-    const exposed = recipient.exposed;
-    const critical = recipientId !== actorId && exposed > 0;
-    const incoming = baseDamage + exposed;
-    if (exposed > 0) recipient.exposed = 0;
-    const blocked = Math.min(recipient.block, incoming);
-    recipient.block -= blocked;
-    const damage = Math.min(recipient.hp, incoming - blocked);
-    recipient.hp -= damage;
-    record(state, events, {
-      kind: 'damage',
-      actor: actorId,
-      target: recipientId,
-      amount: damage,
-      critical,
-      message: `${recipient.name} took ${damage} damage${blocked ? ` (${blocked} blocked)` : ''}${exposed ? `, including ${exposed} Exposed` : ''}.`,
-    });
-    applyTerminal(state, events);
-    return critical;
+function removeEverywhere(state: WorldState, uid: string): CardInstance | undefined {
+  for (const zone of [state.hand, state.drawPile, state.discardPile, state.exhaustPile]) {
+    const index = zone.findIndex((card) => card.uid === uid);
+    if (index >= 0) return zone.splice(index, 1)[0];
   }
-  if (effect.kind === 'heal') {
-    const restored = Math.min(effect.amount, Math.max(0, recipient.maxHp - recipient.hp));
-    recipient.hp += restored;
-    record(state, events, {
-      kind: 'heal', actor: actorId, target: recipientId, amount: restored,
-      message: `${recipient.name} restored ${restored} health.`,
-    });
-    return false;
-  }
-
-  if (effect.kind === 'block') {
-    recipient.block += effect.amount;
-    record(state, events, {
-      kind: 'block', actor: recipientId, target: recipientId, amount: effect.amount,
-      message: `${recipient.name} gained ${effect.amount} Block.`,
-    });
-    return false;
-  }
-
-  if (effect.kind === 'exposed') {
-    recipient.exposed += effect.amount;
-    record(state, events, {
-      kind: 'exposed', actor: actorId, target: recipientId, amount: effect.amount,
-      message: `${recipient.name} gained ${effect.amount} Exposed.`,
-    });
-    return false;
-  }
-
-  if (effect.kind === 'energy') {
-    const before = recipient.energy;
-    recipient.energy = Math.min(recipient.energyMax, recipient.energy + effect.amount);
-    const gained = recipient.energy - before;
-    record(state, events, {
-      kind: 'energy', actor: recipientId, target: recipientId, amount: gained,
-      message: `${recipient.name} banked ${gained} energy.`,
-    });
-    return false;
-  }
-
-  if (effect.kind === 'ringing') {
-    recipient.ringingNextTurn = true;
-    record(state, events, {
-      kind: 'ringing', actor: actorId, target: recipientId, amount: effect.amount,
-      message: `${recipient.name} is Ringing and can take only one action next turn.`,
-    });
-    return false;
-  }
-
-  if (effect.kind === 'draw') {
-    drawCards(state, recipientId, effect.amount, events, protectedCards);
-    return false;
-  }
-  throw new Error(`Unsupported effect: ${effect.kind}`);
+  return state.deck.find((card) => card.uid === uid);
 }
 
-
-function cleanupHand(state: CombatState, protectedCards: Set<string>, terminal: boolean): void {
-  const kept: CardInstance[] = [];
-  for (const card of state.hand) {
-    if (!terminal && (protectedCards.has(card.uid) || definition(card).retain)) kept.push(card);
-    else state.discardPile.push(card);
+function performRewind(state: WorldState, tick: number, sourceUids: string[], events: WorldEvent[]): string | undefined {
+  const validation = validateRewind(state, tick);
+  if ('reason' in validation) return validation.reason;
+  const charges = state.rewindCharges - 1;
+  const provenance = [...new Set([...state.exhaustedByRewind, ...sourceUids])];
+  const history = state.history.filter((entry) => entry.tick <= tick).map(copyHistory);
+  const checkpoints = state.checkpoints.filter((checkpoint) => checkpoint.tick <= tick).map((checkpoint) => ({ tick: checkpoint.tick, snapshot: copySnapshot(checkpoint.snapshot) }));
+  restoreSnapshot(state, validation.snapshot);
+  state.rewindCharges = charges;
+  state.exhaustedByRewind = provenance;
+  state.history = history;
+  state.checkpoints = checkpoints;
+  const exhausted: CardInstance[] = [];
+  for (const uid of provenance) {
+    const card = removeEverywhere(state, uid);
+    if (card && !state.exhaustPile.some((candidate) => candidate.uid === uid)) {
+      state.exhaustPile.push(card);
+      exhausted.push(copyCard(card));
+    }
+    delete state.grades[uid];
   }
-  state.hand = kept;
-  for (const action of state.queue) {
-    if (action?.kind === 'player') state.discardPile.push(action.card);
+  if (exhausted.length) {
+    events.push({ kind: 'discard', tick, actor: PLAYER_ID, cards: exhausted, sourceUid: sourceUids[0], message: `${exhausted.length} rewind source card${exhausted.length === 1 ? ' was' : 's were'} exhausted.` });
   }
-  for (const attachment of state.attachments) state.discardPile.push(attachment.card);
+  state.retainedUids = state.retainedUids.filter((uid) => !provenance.includes(uid));
+  const event: WorldEvent = { kind: 'rewind', tick, actor: PLAYER_ID, amount: tick, sourceUid: sourceUids[0], message: `Bob rewound to tick ${tick}.` };
+  events.push(event);
+  addLog(state, event.message);
+  return undefined;
 }
 
-function historyAttachments(state: CombatState, position: number, action: QueueSlot): Attachment[] {
-  const uid = action?.kind === 'player' ? action.card.uid : action?.uid;
-  return state.attachments
-    .filter((attachment) => attachment.target.kind === 'slot'
-      ? attachment.target.slot === position
-      : attachment.target.kind === 'card' && attachment.target.uid === uid)
-    .map(cloneAttachment);
+function addSnapshot(state: WorldState): void {
+  state.checkpoints = state.checkpoints.filter((checkpoint) => checkpoint.tick !== state.tick);
+  state.checkpoints.push({ tick: state.tick, snapshot: snapshot(state) });
+  state.checkpoints.sort((left, right) => left.tick - right.tick);
+  if (state.checkpoints.length > WORLD_RULES.rewindWindow) {
+    state.checkpoints.splice(0, state.checkpoints.length - WORLD_RULES.rewindWindow);
+  }
 }
 
-export function resolveTurn(state: CombatState): ResolutionStep[] {
-  if (state.phase !== 'planning') throw new Error('Only a planning state can be resolved.');
-  if (!Number.isSafeInteger(state.position) || state.position < 0) throw new Error('Combat position is invalid.');
-  const start = state.position;
-  const end = turnEnd(state);
-  if (state.queue.length < end) throw new Error('Combat timeline does not cover the current turn.');
-  validateInventory(state);
-  validateAttachments(state);
+export function establishCheckpoint(state: WorldState): void {
+  state.rewindCharges = 1;
+  state.exhaustedByRewind = [];
+  state.checkpoints = [{ tick: state.tick, snapshot: snapshot(state) }];
+}
+function executeCommand(next: WorldState, command: WorldCommand): WorldCommandResult {
+  if (command.kind === 'rewind') {
+    const events: WorldEvent[] = [];
+    const reason = performRewind(next, command.tick, [], events);
+    if (reason) return fail(reason);
+    next.history.push({ tick: command.tick, command: { ...command }, events: events.map(copyEvent), cards: [] });
+    return { ok: true, events };
+  }
+  if (next.phase !== 'playing') return fail('The world is not accepting actions now.');
+  const tick = next.tick + 1;
+  const events: WorldEvent[] = [];
+  const cards: TimelineCard[] = [];
+  let replacement = false;
 
-  const queuedActions: Record<ActorId, number> = { bob: 0, guard: 0 };
-  for (let position = 0; position < state.queue.length; position += 1) {
-    const action = state.queue[position];
-    if (action?.kind === 'player' && (position < start || position >= end)) {
-      throw new Error(`Player action at position ${position} is outside the current turn bracket.`);
-    }
-    if (position >= start && position < end) {
-      validateAction(state, action);
-      if (action?.kind === 'player') queuedActions[action.card.owner] += 1;
-    }
-  }
-  for (const actorId of ['bob', 'guard'] as const) {
-    if (state.actors[actorId].ringing && queuedActions[actorId] > 1) {
-      throw new Error(`${state.actors[actorId].name} cannot queue more than one action while Ringing.`);
-    }
-  }
-
-  const working = cloneState(state);
-  const reservedByActor: Record<ActorId, number> = { bob: 0, guard: 0 };
-  for (let position = start; position < end; position += 1) {
-    const action = working.queue[position];
-    if (action?.kind === 'player') reservedByActor[action.card.owner] += energyCost(action.card);
-  }
-  for (const attachment of working.attachments) {
-    reservedByActor[attachment.card.owner] += energyCost(attachment.card);
-  }
-  for (const actorId of ['bob', 'guard'] as const) {
-    const actor = working.actors[actorId];
-    if (reservedByActor[actorId] > actor.energy + actor.surgeEnergy) {
-      throw new Error(`${actorId} queued more energy than available.`);
-    }
-    spendEnergy(actor, reservedByActor[actorId]);
-  }
-  working.phase = 'resolving';
-  appendLog(working, `Resolution began; ${reservedByActor.bob} energy committed.`);
-
-  const steps: ResolutionStep[] = [];
-  const protectedCards = new Set<string>();
-  const firstRingingAction: Record<ActorId, number | null> = { bob: null, guard: null };
-  for (let position = start; position < end; position += 1) {
-    const action = working.queue[position];
-    if (!action) continue;
-    const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-    if (working.actors[actorId].ringing && firstRingingAction[actorId] === null) {
-      firstRingingAction[actorId] = position;
-    }
-  }
-
-  let cursor = start;
-  for (let position = start; position < end; position += 1) {
-    working.activeSlot = position;
-    const events: CombatEvent[] = [];
-    const action = working.queue[position];
-    const actionUid = action?.kind === 'player' ? action.card.uid : action?.uid;
-    const appliedUpgradeLevel = actionUid ? upgradeLevel(working, actionUid, position) : 0;
-    const effectiveAction = action && applyUpgrade(
-      action.kind === 'player' ? definition(action.card) : action,
-      appliedUpgradeLevel,
-    );
-
-    if (!action) {
-      record(working, events, { kind: 'empty', slot: position, message: `Position ${position} is empty.` });
+  if (command.kind === 'move') {
+    const delta = DIRECTIONS[command.direction];
+    const destination = { x: next.player.position.x + delta.x, y: next.player.position.y + delta.y };
+    if (!canEnter(next.map, destination, next.completedEncounters)) return fail('That tile is blocked.');
+    if (livingEnemyAt(next, destination)) return fail('An enemy occupies that tile.');
+    const acted = beginActorAction(next.player);
+    if (!acted) {
+      emit(events, { kind: 'ringing', tick, actor: PLAYER_ID, message: 'Bob lost the move to Ringing.' });
     } else {
-      const actorId = action.kind === 'player' ? action.card.owner : action.actor;
-      if (working.actors[actorId].ringing && firstRingingAction[actorId] !== position) {
-        record(working, events, {
-          kind: 'empty', actor: actorId, slot: position,
-          message: `${working.actors[actorId].name} is Ringing; position ${position} is canceled.`,
-        });
-      } else if (working.actors[actorId].hp <= 0) {
-        record(working, events, {
-          kind: 'empty', actor: actorId, slot: position,
-          message: `${working.actors[actorId].name} cannot act.`,
-        });
-      } else {
-        const actionTarget = action.target;
-        if (actionTarget === null) throw new Error('Queued action has no target.');
-        record(working, events, {
-          kind: 'action',
-          actor: actorId,
-          target: actionTarget,
-          slot: position,
-          message: `${working.actors[actorId].name} used ${
-            action.kind === 'player' ? definition(action.card).name : action.name
-          }.`,
-        });
-        let critical = false;
-        for (const effect of effectiveAction!.effects) {
-          critical = applyEffect(
-            working,
-            action,
-            effect,
-            events,
-            protectedCards,
-          ) || critical;
-          if (terminalPhase(working)) break;
-        }
-        if (critical && action.kind === 'player' && !terminalPhase(working)) {
-          for (const effect of definition(action.card).onCritical ?? []) {
-            applyEffect(working, action, effect, events, protectedCards);
-            if (terminalPhase(working)) break;
-          }
-        }
-      }
+      const from = copyPosition(next.player.position);
+      next.player.position = destination;
+      next.player.facing = command.direction;
+      emit(events, { kind: 'move', tick, actor: PLAYER_ID, from, to: copyPosition(destination), message: 'Bob moved.' });
     }
-
-    working.history.push({
-      position,
-      turn: working.turn,
-      action: cloneSlot(action),
-      definition: action?.kind === 'player' ? cloneDefinition(definition(action.card)) : null,
-      upgradeLevel: appliedUpgradeLevel,
-      attachments: historyAttachments(working, position, action),
-      events: events.map(cloneEvent),
-    });
-    steps.push({ state: cloneState(working), events: events.map(cloneEvent) });
-    cursor = position + 1;
-    if (terminalPhase(working)) break;
-  }
-
-  working.position = cursor;
-  const terminal = terminalPhase(working);
-  const discardStart = working.discardPile.length;
-  cleanupHand(working, protectedCards, terminal !== undefined);
-  working.activeSlot = null;
-  working.attachments = [];
-  working.actors.bob.block = 0;
-  working.actors.guard.block = 0;
-  const clearEnd = terminal ? working.queue.length : end;
-  for (let position = start; position < clearEnd; position += 1) {
-    working.queue[position] = null;
-  }
-  for (const actor of Object.values(working.actors)) {
-    if (terminal) {
-      actor.ringing = false;
-      actor.ringingNextTurn = false;
+    cards.push({ id: `timeline:${tick}:player:move`, tick, kind: 'empty', definition: null, upgradeLevel: 0, entityId: PLAYER_ID, events: events.map(copyEvent), canceled: !acted });
+  } else if (command.kind === 'wait') {
+    const acted = beginActorAction(next.player);
+    emit(events, { kind: acted ? 'empty' : 'ringing', tick, actor: PLAYER_ID, message: acted ? 'Bob waited.' : 'Bob lost the wait to Ringing.' });
+    cards.push({ id: `timeline:${tick}:player:wait`, tick, kind: 'empty', definition: null, upgradeLevel: 0, entityId: PLAYER_ID, events: events.map(copyEvent), canceled: !acted });
+  } else if (command.kind === 'potion') {
+    if (next.potions < 1) return fail('No potion is available.');
+    if (next.player.hp >= next.player.maxHp) return fail('Bob is already at full health.');
+    next.potions -= 1;
+    const acted = beginActorAction(next.player);
+    const amount = acted ? Math.min(WORLD_RULES.potionHeal, next.player.maxHp - next.player.hp) : 0;
+    next.player.hp += amount;
+    emit(events, { kind: acted ? 'heal' : 'ringing', tick, actor: PLAYER_ID, target: PLAYER_ID, amount, message: acted ? `Bob restored ${amount} health.` : 'Bob lost the potion action to Ringing.' });
+    cards.push({ id: `timeline:${tick}:item:potion`, tick, kind: 'item', definition: null, upgradeLevel: 0, entityId: PLAYER_ID, events: events.map(copyEvent), canceled: !acted });
+  } else if (command.kind === 'interact') {
+    const object = next.map.objects.find((candidate) => candidate.id === command.objectId);
+    if (!object || next.usedObjectIds.includes(object.id)) return fail('That object is unavailable.');
+    if (distance(next.player.position, object.position) > 1) return fail('That object is out of reach.');
+    const acted = beginActorAction(next.player);
+    if (!acted) {
+      emit(events, { kind: 'ringing', tick, actor: PLAYER_ID, message: 'Bob lost the interaction to Ringing.' });
+    } else if (object.kind === 'potion') {
+      next.potions += 1;
+      next.usedObjectIds.push(object.id);
+    } else if (object.kind === 'supply') {
+      const amount = Math.min(8, next.player.maxHp - next.player.hp);
+      next.player.hp += amount;
+      next.usedObjectIds.push(object.id);
+      emit(events, { kind: 'heal', tick, actor: PLAYER_ID, target: PLAYER_ID, amount, message: `Bob restored ${amount} health.` });
+    } else if (object.kind === 'service') {
+      next.serviceObjectId = object.id;
+      next.phase = 'service';
     } else {
-      actor.ringing = actor.ringingNextTurn;
-      actor.ringingNextTurn = false;
+      if (!next.completedEncounters.includes('night-manager')) return fail('The loading bay is still locked.');
+      next.usedObjectIds.push(object.id);
+      next.phase = 'victory';
+      emit(events, { kind: 'victory', tick, actor: PLAYER_ID, message: 'Bob escaped MOREMART.' });
     }
-  }
-  for (const actor of Object.values(working.actors)) actor.surgeEnergy = 0;
-  const finalEvents: CombatEvent[] = [];
-  const discarded = working.discardPile.slice(discardStart);
-  if (discarded.length) {
-    record(working, finalEvents, {
-      kind: 'discard', actor: 'bob', amount: discarded.length, cards: discarded,
-      message: `Bob discarded ${discarded.length} cards.`,
-    });
-  }
-  if (terminal) {
-    working.phase = terminal;
-    record(working, finalEvents, {
-      kind: 'turn',
-      message: terminal === 'victory' ? 'Combat ended in victory.' : 'Combat ended in defeat.',
-    });
+    emit(events, { kind: 'interact', tick, actor: PLAYER_ID, target: object.id, message: `${acted ? 'Bob used' : 'Bob missed'} ${object.name}.` });
+    cards.push({ id: `timeline:${tick}:item:${object.id}`, tick, kind: 'item', definition: null, upgradeLevel: 0, entityId: object.id, events: events.map(copyEvent), canceled: !acted });
   } else {
-    working.position = end;
-    working.turn += 1;
-    for (const actor of Object.values(working.actors)) {
-      actor.energy = Math.min(actor.energyMax, actor.energy + actor.energyGain);
+    const card = cardByUid(next, command.uid);
+    if (!card) return fail('Card is not in hand.');
+    const definition = effectiveCard(next, card.uid);
+    if (definition.time?.kind === 'rewind') {
+      const rewindTick = Number(command.sourceId);
+      if (!Number.isSafeInteger(rewindTick)) return fail('Choose a rewind tick.');
+      if (availableEnergy(next) < definition.cost) return fail('Not enough energy.');
+      const level = next.grades[card.uid] ?? 0;
+      const boundSources = next.history.flatMap((entry) => entry.events)
+        .filter((event) => event.kind === 'action' && event.target === card.uid && event.definition?.modifier)
+        .map((event) => event.sourceUid)
+        .filter((uid): uid is string => uid !== undefined);
+      const reason = performRewind(next, rewindTick, [card.uid, ...boundSources], events);
+      if (reason) return fail(reason);
+      const timeline: TimelineCard = { id: `timeline:${rewindTick}:rewind:${card.uid}`, tick: rewindTick, kind: 'player', definition: copyDefinition(baseDefinition(card)), upgradeLevel: level, entityId: PLAYER_ID, sourceUid: card.uid, events: events.map(copyEvent) };
+      next.history.push({ tick: rewindTick, command: { ...command }, events: events.map(copyEvent), cards: [timeline] });
+      return { ok: true, events };
     }
-    drawCards(working, 'bob', working.actors.bob.drawCount, finalEvents);
-    working.phase = 'planning';
-    fillVisibleTimeline(working);
-    record(working, finalEvents, { kind: 'turn', actor: 'bob', message: `Turn ${working.turn}: plan Bob’s actions.` });
+    const reason = applyPlayerCard(next, card, command, tick, events, cards);
+    if (reason) return fail(reason);
+    replacement = !next.hand.some((candidate) => candidate.uid === card.uid);
   }
-  steps.push({ state: cloneState(working), events: finalEvents.map(cloneEvent) });
-  return steps;
+
+  finishTick(next, tick, events, cards, replacement);
+  for (const event of events) if (event.visible !== false) addLog(next, event.message);
+  const entry: WorldHistoryEntry = { tick, command: { ...command }, events: events.map(copyEvent), cards: cards.map(copyTimelineCard) };
+  next.history.push(entry);
+  return { ok: true, events };
+}
+
+export function stepWorld(state: WorldState, command: WorldCommand): WorldCommandResult {
+  const next = cloneState(state);
+  if (command.kind !== 'rewind') addSnapshot(next);
+  const result = executeCommand(next, command);
+  if (!result.ok) return result;
+  Object.assign(state, next);
+  return { ok: true, events: result.events.map(copyEvent) };
+}
+
+export function projectEnemyTicks(state: WorldState, horizon: number): TimelineCard[] {
+  if (!Number.isSafeInteger(horizon) || horizon < 0) throw new TypeError('Forecast horizon must be a non-negative integer.');
+  const projected = cloneState(state);
+  const allowed = new Set(visibleEnemies(state).map((enemy) => enemy.id));
+  const cards: TimelineCard[] = [];
+  for (let offset = 1; offset <= horizon && projected.player.hp > 0; offset += 1) {
+    const tick = projected.tick + offset;
+    const events: WorldEvent[] = [];
+    beginActorAction(projected.player);
+    canonicalEnemyTick(projected, tick, events, cards, allowed);
+    if (projected.timeExpires > 0 && tick >= projected.timeExpires) {
+      projected.timeMode = 'normal';
+      projected.timeExpires = 0;
+    }
+  }
+  return cards.map(copyTimelineCard);
 }

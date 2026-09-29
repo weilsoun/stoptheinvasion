@@ -4,7 +4,7 @@ type Scalable = {
   effects: Effect[];
   description: string;
   scaling?: UpgradeScaling;
-  bracket?: CardDefinition['bracket'];
+  time?: CardDefinition['time'];
 };
 
 function integer(value: number, label: string): number {
@@ -19,37 +19,12 @@ function scaledInteger(base: number, step: number, level: number, label: string)
   return integer(value, `Scaled ${label}`);
 }
 
-
-function scaleBracket(base: Scalable, level: number, label: string): CardDefinition['bracket'] {
-  const scaling = base.scaling;
-  if (!scaling) throw new Error(`${label} has no upgrade scaling.`);
-  const bracketScaling = scaling.bracket;
-  if (!bracketScaling) return base.bracket;
-  if (!base.bracket) throw new Error(`${label} has bracket scaling without a base bracket.`);
-
-  const bracket = { ...base.bracket };
-  if (bracketScaling.positions !== undefined) {
-    if (base.bracket.positions === undefined || base.bracket.positions === 0) {
-      throw new Error(`${label} has position scaling without a signed base value.`);
-    }
-    const value = scaledInteger(base.bracket.positions, bracketScaling.positions, level, `${label} positions`);
-    bracket.positions = base.bracket.positions > 0 ? Math.max(0, value) : Math.min(0, value);
-  }
-  if (bracketScaling.scouting !== undefined) {
-    if (base.bracket.scouting === undefined) throw new Error(`${label} has scouting scaling without a base value.`);
-    bracket.scouting = Math.max(0, scaledInteger(
-      base.bracket.scouting,
-      bracketScaling.scouting,
-      level,
-      `${label} scouting`,
-    ));
-  }
-  return bracket;
-}
-
-export function scaledBracket(base: CardDefinition, level: number): CardDefinition['bracket'] {
-  integer(level, 'Upgrade level');
-  return level === 0 ? base.bracket : scaleBracket(base, level, base.name);
+function scaledTime(base: Scalable, level: number): CardDefinition['time'] {
+  const scaling = base.scaling?.time;
+  if (!scaling) return base.time;
+  if (!base.time) throw new Error('Time scaling requires a base time mechanic.');
+  const amount = Math.max(0, scaledInteger(base.time.amount, scaling.amount, level, 'time'));
+  return amount === base.time.amount ? base.time : { ...base.time, amount };
 }
 
 function scaledEffects(base: Scalable, level: number): Effect[] {
@@ -66,7 +41,7 @@ function scaledEffects(base: Scalable, level: number): Effect[] {
   });
 }
 
-function scaledDescription(base: Scalable, effects: Effect[], bracket: CardDefinition['bracket']): string {
+function scaledDescription(base: Scalable, effects: Effect[], time: CardDefinition['time']): string {
   const template = base.scaling!.description;
   if (typeof template !== 'string' || template.length === 0) throw new Error('Upgrade description template is missing.');
   const description = template.replace(/\{([^{}]+)\}/g, (token, key: string) => {
@@ -77,13 +52,9 @@ function scaledDescription(base: Scalable, effects: Effect[], bracket: CardDefin
       if (!effect) throw new Error(`Upgrade token references missing effect ${indexText}.`);
       return String(effect.amount);
     }
-    if (key === 'positions') {
-      if (bracket?.positions === undefined) throw new Error('Upgrade token references missing positions.');
-      return String(Math.abs(bracket.positions));
-    }
-    if (key === 'scouting') {
-      if (bracket?.scouting === undefined) throw new Error('Upgrade token references missing scouting.');
-      return String(bracket.scouting);
+    if (key === 'time') {
+      if (!time) throw new Error('Upgrade token references missing time.');
+      return String(time.amount);
     }
     throw new Error(`Unknown upgrade token ${token}.`);
   });
@@ -96,11 +67,11 @@ export function applyUpgrade<T extends Scalable>(base: T, level: number): T {
   if (level === 0) return base;
   if (!base.scaling) throw new Error('Cannot apply an upgrade without authored scaling.');
   const effects = scaledEffects(base, level);
-  const bracket = scaleBracket(base, level, 'Card');
+  const time = scaledTime(base, level);
   return {
     ...base,
     effects,
-    ...(base.bracket === undefined ? {} : { bracket }),
-    description: scaledDescription(base, effects, bracket),
+    ...(base.time === undefined ? {} : { time }),
+    description: scaledDescription(base, effects, time),
   };
 }

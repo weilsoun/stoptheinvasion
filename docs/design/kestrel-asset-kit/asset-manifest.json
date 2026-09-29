@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "coordinateSystem": { "width": 1920, "height": 1440 },
+  "provenance": {
+    "generator": "OpenAI built-in image generation",
+    "reference": "user-supplied current-screen image",
+    "referenceRole": "style and composition only",
+    "generatedOn": "2026-09-28"
+  },
+  "background": {
+    "id": "viewscreen-spacefield",
+    "source": "assets/source/viewscreen-spacefield-source.png",
+    "production": "assets/production/backgrounds/viewscreen-spacefield.png",
+    "productionSize": [1480, 660],
+    "destination": { "x": 360, "y": 160, "width": 1480, "height": 660 },
+    "fit": "cover",
+    "nativeLabels": true
+  },
+  "ships": [
+    {
+      "role": "corsair",
+      "source": "assets/source/sable-corsair-source.png",
+      "production": "assets/production/ships/sable-corsair.png",
+      "productionSize": [700, 460],
+      "displaySize": [350, 230],
+      "focalPoint": [0.52, 0.52]
+    },
+    {
+      "role": "needle",
+      "source": "assets/source/needle-drone-source.png",
+      "production": "assets/production/ships/needle-drone.png",
+      "productionSize": [700, 460],
+      "displaySize": [350, 230],
+      "focalPoint": [0.52, 0.5]
+    },
+    {
+      "role": "bulwark",
+      "source": "assets/source/bulwark-tug-source.png",
+      "production": "assets/production/ships/bulwark-tug.png",
+      "productionSize": [700, 460],
+      "displaySize": [350, 230],
+      "focalPoint": [0.5, 0.52]
+    }
+  ],
+  "cardArt": [
+    { "id": "pulse", "file": "assets/production/cards/pulse-cannon.png", "objectPosition": "50% 50%" },
+    { "id": "shield", "file": "assets/production/cards/shield-cycle.png", "objectPosition": "50% 50%" },
+    { "id": "lance", "file": "assets/production/cards/rail-lance.png", "objectPosition": "50% 50%" },
+    { "id": "cell", "file": "assets/production/cards/reserve-cell.png", "objectPosition": "50% 50%" },
+    { "id": "sweep", "file": "assets/production/cards/tactical-sweep.png", "objectPosition": "50% 50%" },
+    { "id": "burst", "file": "assets/production/cards/twin-burst.png", "objectPosition": "50% 50%" }
+  ],
+  "cardArtSize": [672, 472],
+  "cardArt2xDirectory": "assets/production/cards-2x",
+  "cardArtDestination": { "x": 44, "y": 176, "width": 672, "height": 472 },
+  "templates": {
+    "cardFrame": "templates/card-frame.svg",
+    "chips": "templates/ui-chips.svg",
+    "css": "kestrel-cutout.css"
+  }
+}

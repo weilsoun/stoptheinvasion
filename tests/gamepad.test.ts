@@ -10,33 +10,68 @@ const RELEASED: GamepadSnapshot = {
   select: false,
   l1: false,
   r1: false,
+  dpadUp: false,
+  dpadDown: false,
   dpadLeft: false,
   dpadRight: false,
   start: false,
 };
 
-function step(
-  state: GamepadInputState,
-  input: Partial<GamepadSnapshot> | null,
-  now = 0,
-  canNavigate = true,
-) {
-  return stepGamepadInput(state, input && { ...RELEASED, ...input }, now, canNavigate);
+function step(state: GamepadInputState, input: Partial<GamepadSnapshot> | null, now = 0, canAct = true) {
+  return stepGamepadInput(state, input && { ...RELEASED, ...input }, now, canAct);
 }
 
-describe('standard gamepad input state', () => {
-  test('zoom requires an unambiguous Select shoulder chord and fires on its edge only', () => {
+describe('standard world gamepad input', () => {
+  test('bare D-pad moves cardinally and repeats after the shared delay', () => {
     let state = createGamepadInputState();
+    let result = step(state, { dpadUp: true }, 0);
+    expect(result.intents).toEqual([{ type: 'move', direction: 'up' }]);
+    state = result.state;
 
-    let result = step(state, { l1: true });
+    result = step(state, { dpadUp: true }, 349);
     expect(result.intents).toEqual([]);
     state = result.state;
 
-    result = step(state, { select: true, l1: true, r1: true });
+    result = step(state, { dpadUp: true }, 350);
+    expect(result.intents).toEqual([{ type: 'move', direction: 'up' }]);
+    state = result.state;
+
+    result = step(state, { dpadUp: true }, 499);
     expect(result.intents).toEqual([]);
     state = result.state;
 
-    result = step(state, { select: true, l1: true });
+    result = step(state, { dpadUp: true }, 500);
+    expect(result.intents).toEqual([{ type: 'move', direction: 'up' }]);
+  });
+
+  test('opposed and diagonal D-pad input is neutral', () => {
+    let state = createGamepadInputState();
+    let result = step(state, { dpadLeft: true, dpadRight: true });
+    expect(result.intents).toEqual([]);
+    state = result.state;
+
+    result = step(state, { dpadUp: true, dpadRight: true });
+    expect(result.intents).toEqual([]);
+  });
+
+  test('Select changes horizontal D-pad into timeline navigation', () => {
+    let state = createGamepadInputState();
+    let result = step(state, { select: true, dpadLeft: true });
+    expect(result.intents).toEqual([{ type: 'navigate', direction: -1 }]);
+    state = result.state;
+
+    result = step(state, { select: true });
+    state = result.state;
+    result = step(state, { select: true, dpadRight: true });
+    expect(result.intents).toEqual([{ type: 'navigate', direction: 1 }]);
+
+    result = step(result.state, { select: true, dpadUp: true });
+    expect(result.intents).toEqual([]);
+  });
+
+  test('Select shoulder zoom is unambiguous and edge-triggered', () => {
+    let state = createGamepadInputState();
+    let result = step(state, { select: true, l1: true });
     expect(result.intents).toEqual([{ type: 'zoom', direction: -1 }]);
     state = result.state;
 
@@ -44,94 +79,49 @@ describe('standard gamepad input state', () => {
     expect(result.intents).toEqual([]);
     state = result.state;
 
-    result = step(state, { select: true });
-    state = result.state;
-    result = step(state, { select: true, r1: true });
-    expect(result.intents).toEqual([{ type: 'zoom', direction: 1 }]);
+    result = step(state, { select: true, l1: true, r1: true });
+    expect(result.intents).toEqual([]);
   });
 
-  test('Select plus D-pad navigates immediately, repeats after the delay, and neutralizes opposition', () => {
+  test('Start wins over simultaneous actions and is edge-triggered', () => {
     let state = createGamepadInputState();
-
-    let result = step(state, { dpadLeft: true }, 99);
-    expect(result.intents).toEqual([]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true }, 100);
-    expect(result.intents).toEqual([{ type: 'navigate', direction: 1 }]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true }, 449);
-    expect(result.intents).toEqual([]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true }, 450);
-    expect(result.intents).toEqual([{ type: 'navigate', direction: 1 }]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true }, 599);
-    expect(result.intents).toEqual([]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true }, 600);
-    expect(result.intents).toEqual([{ type: 'navigate', direction: 1 }]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadLeft: true, dpadRight: true }, 700);
-    expect(result.intents).toEqual([]);
-    state = result.state;
-
-    result = step(state, { select: true, dpadRight: true }, 701);
-    expect(result.intents).toEqual([{ type: 'navigate', direction: -1 }]);
-  });
-
-  test('Start wins over simultaneous chords and remains edge-triggered', () => {
-    let state = createGamepadInputState();
-
-    let result = step(state, { select: true, r1: true, dpadLeft: true, start: true });
+    let result = step(state, { start: true, dpadRight: true });
     expect(result.intents).toEqual([{ type: 'toggleMenu' }]);
     state = result.state;
 
-    result = step(state, { select: true, r1: true, dpadLeft: true, start: true }, 1_000);
+    result = step(state, { start: true, dpadRight: true }, 1_000);
     expect(result.intents).toEqual([]);
-    state = result.state;
-
-    result = step(state, RELEASED, 1_001);
-    state = result.state;
-    result = step(state, { start: true }, 1_002, false);
-    expect(result.intents).toEqual([{ type: 'toggleMenu' }]);
   });
 
-  test('blocked navigation is consumed and cannot replay when the modal closes', () => {
+  test('modal-blocked input is consumed until controls are released', () => {
     let state = createGamepadInputState();
-
-    let result = step(state, { select: true, dpadLeft: true, r1: true }, 0, false);
+    let result = step(state, { dpadRight: true }, 0, false);
     expect(result.intents).toEqual([]);
     state = result.state;
 
-    result = step(state, { select: true, dpadLeft: true, r1: true }, 1_000, true);
+    result = step(state, { dpadRight: true }, 1_000, true);
     expect(result.intents).toEqual([]);
     state = result.state;
 
-    result = step(state, RELEASED, 1_001, true);
+    result = step(state, {}, 1_001, true);
     state = result.state;
-    result = step(state, { select: true, dpadLeft: true }, 1_002, true);
-    expect(result.intents).toEqual([{ type: 'navigate', direction: 1 }]);
+    result = step(state, { dpadRight: true }, 1_002, true);
+    expect(result.intents).toEqual([{ type: 'move', direction: 'right' }]);
   });
 
-  test('blur or disconnect requires relevant buttons to be released before rearming', () => {
-    let state = createGamepadInputState();
-    state = step(state, null).state;
-
-    let result = step(state, { select: true, l1: true, start: true }, 1_000);
+  test('blur or disconnect rearms only after every relevant control is released', () => {
+    let state = step(createGamepadInputState(), null).state;
+    let result = step(state, { dpadDown: true });
     expect(result.intents).toEqual([]);
+    expect(result.state.armed).toBe(false);
     state = result.state;
 
-    result = step(state, RELEASED, 1_001);
+    result = step(state, {});
     expect(result.intents).toEqual([]);
+    expect(result.state.armed).toBe(true);
     state = result.state;
 
-    result = step(state, { select: true, l1: true }, 1_002);
-    expect(result.intents).toEqual([{ type: 'zoom', direction: -1 }]);
+    result = step(state, { dpadDown: true });
+    expect(result.intents).toEqual([{ type: 'move', direction: 'down' }]);
   });
 });

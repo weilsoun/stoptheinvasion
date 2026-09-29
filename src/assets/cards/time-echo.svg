@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-label="A claw hammer lands twice in two offset impressions">
+  <defs>
+    <pattern id="echo-dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="6" cy="6" r="4" fill="#70516F"/></pattern>
+    <clipPath id="echo-screen"><path d="M286 271h753v214H286z"/></clipPath>
+  </defs>
+  <rect width="1200" height="960" fill="#F1E6C8"/>
+  <g transform="translate(90 72) scale(.85)">
+
+  <!-- late second impression: one offset head plus a short handle echo -->
+  <path d="M302 303h283l54-42h177l43 41 135-19c48-7 91-28 126-62l-31 68c-13 29-13 61 1 90l27 57c-43-29-88-44-136-44H855l-43 39H637l-55-42H302z" fill="none" stroke="#70516F" stroke-width="25" stroke-linejoin="round"/>
+  <path d="M613 430l21 185" fill="none" stroke="#70516F" stroke-width="24" stroke-linecap="round"/>
+  <path d="M1049 265l44 27M1056 300l50 19" stroke="#70516F" stroke-width="14" stroke-linecap="round"/>
+  <g clip-path="url(#echo-screen)" opacity=".72"><rect x="270" y="245" width="830" height="260" fill="url(#echo-dots)"/></g>
+
+  <!-- primary claw hammer, drawn as a complete working tool -->
+  <path d="M242 229h326l58-45h184l48 46 137-20c49-7 96-30 131-65l-32 72c-13 30-12 64 2 93l30 62c-45-31-94-47-145-47H854l-46 42H628l-59-45H242z" fill="#477B78" stroke="#172324" stroke-width="25" stroke-linejoin="round"/>
+  <!-- flat striking face and neck -->
+  <path d="M242 229h139v93H242z" fill="#477B78" stroke="#172324" stroke-width="23"/>
+  <path d="M276 247h87" stroke="#F1E6C8" stroke-width="13" stroke-linecap="round"/>
+  <!-- central eye makes the head/handle joint mechanically clear -->
+  <ellipse cx="717" cy="275" rx="54" ry="37" fill="#172324"/>
+  <ellipse cx="717" cy="275" rx="28" ry="18" fill="#D86532"/>
+  <!-- split claw has protected negative space -->
+  <path d="M1000 208c38-15 74-36 106-63M1000 325c39 8 74 24 106 47" fill="none" stroke="#172324" stroke-width="15" stroke-linecap="round"/>
+  <path d="M1111 235l-101 39 101 39-32-39z" fill="#F1E6C8" stroke="#172324" stroke-width="12" stroke-linejoin="round"/>
+
+  <!-- bowed wood handle, rubbed end, and contour break -->
+  <path d="M658 318h118l67 471-80 78-91-58z" fill="#D86532" stroke="#172324" stroke-width="25" stroke-linejoin="round"/>
+  <path d="M705 365l54 379" stroke="#F1E6C8" stroke-width="13" stroke-linecap="round"/>
+  <path d="M713 824l50 32 69-67" fill="none" stroke="#477B78" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- compact neutral work grip keeps the tool anatomy readable -->
+  <path d="M158 442l315-42 74 168-318 70z" fill="#D86532" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M461 411c48-30 106-17 133 31l31 55 43-19c31-14 68 0 82 31 13 30 1 65-28 80l-55 29c-65 34-135 22-175-39l-53-81c-21-32-11-70 22-87z" fill="#F1E6C8" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M505 433c39 9 71 33 94 70M483 475c37 10 69 31 93 64M496 535c32 2 61 15 85 39" fill="none" stroke="#172324" stroke-width="10" stroke-linecap="round"/>
+  <path d="M464 421c27-17 55-21 82-13" fill="none" stroke="#F1E6C8" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- double contact rhythm: two hard bursts at the handle's action diagonal -->
+  <path d="M639 775l-78 41M655 811l-55 66M684 830l-18 70" fill="none" stroke="#D86532" stroke-width="19" stroke-linecap="round"/>
+  <path d="M811 751l69 27M818 785l71 59M801 818l36 71" fill="none" stroke="#70516F" stroke-width="16" stroke-linecap="round"/>
+  </g>
+</svg>

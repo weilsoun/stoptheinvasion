@@ -1,13 +1,20 @@
-export type ActorId = 'bob' | 'guard';
-export type Phase = 'planning' | 'resolving' | 'victory' | 'defeat';
-export type Effect = { kind: 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'ringing'; amount: number; recipient: 'self' | 'target' };
+import type { StoreMap, TilePosition } from './map';
+
+export type ActorId = string;
+export type Direction = 'up' | 'right' | 'down' | 'left';
 export type CardRarity = 'basic' | 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
-/** Authored changes per signed upgrade level; templates reference effect indices and bracket stats. */
+export type Effect = {
+  kind: 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'ringing';
+  amount: number;
+  recipient: 'self' | 'target';
+};
+
 export interface UpgradeScaling {
   effects?: number[];
-  bracket?: { positions?: number; scouting?: number };
+  time?: { amount: number };
   description: string;
 }
+
 export interface CardDefinition {
   id: string;
   name: string;
@@ -17,90 +24,162 @@ export interface CardDefinition {
   description: string;
   flavor: string;
   icon: 'hammer' | 'shield' | 'tape' | 'coffee' | 'toolbox' | 'boot';
-  /** Reuse a named, preloaded comic illustration when identity differs from artwork. */
   art?: string;
   effects: Effect[];
-  /** Applied once after this action critically hits an Exposed enemy. */
   onCritical?: Effect[];
-  /** Unranked laboratory cards use the common presentation. */
   rarity?: CardRarity;
-  /** Character identity color; the current builder deck defaults to Bob's orange. */
   characterColor?: string;
   retain?: boolean;
   modifier?: { levels: number };
   scaling?: UpgradeScaling;
-  /** Planning-only modifier attached to the current turn bracket. Expires at cleanup. */
-  bracket?: { positions?: number; scouting?: number };
-  /** Immediate, non-refundable planning activation; energy effects grant temporary Surge. */
+  time?: { kind: 'stretch' | 'compress' | 'scout' | 'rewind'; amount: number };
   surge?: boolean;
+  temporal?: { kind: 'echo' | 'retain' | 'borrow'; amount?: number; defenseOnly?: boolean };
 }
-export interface CardInstance { uid: string; definitionId: string; owner: ActorId }
-export interface Actor {
-  id: ActorId;
+
+export interface CardInstance {
+  uid: string;
+  definitionId: string;
+  owner: ActorId;
+}
+
+export interface EncounterDefinition {
+  id: string;
   name: string;
+  title: string;
+  description: string;
+  hp: number;
+  actions: Array<{
+    name: string;
+    description: string;
+    effects: Effect[];
+    scaling?: UpgradeScaling;
+  }>;
+  boss?: boolean;
+}
+
+export interface WorldActor {
+  id: string;
+  name: string;
+  position: TilePosition;
+  facing: Direction;
   hp: number;
   maxHp: number;
   block: number;
   exposed: number;
-  /** Limits this actor to one action in the current turn. */
   ringing: boolean;
-  /** Becomes active at cleanup, then expires after the following turn. */
-  ringingNextTurn: boolean;
-  energy: number;
-  /** Temporary planning energy, spent before stored energy and cleared at turn end. */
-  surgeEnergy: number;
-  energyMax: number;
-  energyGain: number;
-  drawCount: number;
-  /** Persistent actor stats; temporary bracket attachments add to these values. */
-  turnLength: number;
-  scouting: number;
 }
-export interface PlayerAction { kind: 'player'; card: CardInstance; target: ActorId | null }
-export interface EnemyAction { kind: 'enemy'; uid: string; actor: ActorId; target: ActorId; name: string; description: string; effects: Effect[]; scaling?: UpgradeScaling }
-export type QueueSlot = PlayerAction | EnemyAction | null;
-export type ModifierTarget = { kind: 'card'; uid: string } | { kind: 'slot'; slot: number } | { kind: 'bracket' };
-export interface Attachment { card: CardInstance; target: ModifierTarget }
-export interface TimelineEntry {
-  position: number;
-  turn: number;
-  action: QueueSlot;
-  /** Player definition frozen at resolution; enemy actions already contain their rules. */
+
+export interface WorldPlayer extends WorldActor {
+  energy: number;
+  energyMax: number;
+  surgeEnergy: number;
+  surgeExpires: number;
+}
+
+export interface WorldEnemy extends WorldActor {
+  encounterId: string;
+  aware: boolean;
+  actionProgress: number;
+  actionIndex: number;
+  upgradeLevel: number;
+}
+
+export type WorldPhase = 'playing' | 'reward' | 'service' | 'victory' | 'defeat';
+
+export interface WorldEvent {
+  kind: 'move' | 'action' | 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'ringing' | 'discard' | 'empty' | 'victory' | 'defeat' | 'tick' | 'interact' | 'time' | 'rewind';
+  tick: number;
+  message: string;
+  visible?: boolean;
+  actor?: string;
+  target?: string;
+  amount?: number;
+  critical?: boolean;
+  cards?: CardInstance[];
+  definition?: CardDefinition;
+  sourceUid?: string;
+  from?: TilePosition;
+  to?: TilePosition;
+}
+
+export interface TimelineCard {
+  id: string;
+  tick: number;
+  kind: 'player' | 'enemy' | 'item' | 'empty';
   definition: CardDefinition | null;
   upgradeLevel: number;
-  attachments: Attachment[];
-  events: CombatEvent[];
+  entityId?: string;
+  sourceUid?: string;
+  events: WorldEvent[];
+  canceled?: boolean;
 }
-export interface CombatState {
+
+export type WorldCommand =
+  | { kind: 'move'; direction: Direction }
+  | { kind: 'wait' }
+  | { kind: 'interact'; objectId: string }
+  | { kind: 'potion' }
+  | { kind: 'play'; uid: string; targetId?: string; sourceId?: string }
+  | { kind: 'rewind'; tick: number };
+
+export interface WorldHistoryEntry {
+  tick: number;
+  command: WorldCommand;
+  events: WorldEvent[];
+  cards: TimelineCard[];
+}
+
+export interface WorldMutableFields {
   seed: number;
-  turn: number;
-  phase: Phase;
-  actors: Record<ActorId, Actor>;
+  rng: number;
+  tick: number;
+  phase: WorldPhase;
+  player: WorldPlayer;
+  enemies: WorldEnemy[];
+  deck: CardInstance[];
   hand: CardInstance[];
   drawPile: CardInstance[];
   discardPile: CardInstance[];
-  /** Absolute position at the start of the current turn. Higher indices are later/LEFT. */
-  position: number;
-  /** Independent records of consumed positions, including empty and canceled positions. */
-  history: TimelineEntry[];
-  /** Queue indices are absolute encounter positions; consumed positions contain null. */
-  queue: QueueSlot[];
-  attachments: Attachment[];
-  activeSlot: number | null;
+  exhaustPile: CardInstance[];
+  grades: Record<string, number>;
+  retainedUids: string[];
+  drawDebt: number;
+  echoUsed: string[];
+  potions: number;
+  usedObjectIds: string[];
+  completedEncounters: string[];
+  pendingRewards: string[];
+  rewardIds: string[];
+  serviceObjectId: string | null;
+  timeMode: 'normal' | 'stretch' | 'compress';
+  timeExpires: number;
+  scouting: number;
+  scoutingExpires: number;
   log: string[];
 }
-export interface CombatEvent {
-  kind: 'action' | 'damage' | 'block' | 'exposed' | 'heal' | 'energy' | 'draw' | 'ringing' | 'discard' | 'empty' | 'victory' | 'defeat' | 'turn';
-  message: string;
-  actor?: ActorId;
-  target?: ActorId;
-  amount?: number;
-  /** Damage hit an enemy that was Exposed before the hit consumed it. */
-  critical?: boolean;
-  slot?: number;
-  /** Exact moved cards, including cards discarded and redrawn in one cleanup. */
-  cards?: CardInstance[];
+
+export interface WorldSnapshot extends WorldMutableFields {}
+
+export interface WorldCheckpoint {
+  tick: number;
+  snapshot: WorldSnapshot;
 }
-export interface ResolutionStep { state: CombatState; events: CombatEvent[] }
-export interface CommandResult { ok: boolean; reason?: string }
-export interface SurgeResult extends CommandResult { events: CombatEvent[] }
+
+export interface WorldState extends WorldMutableFields {
+  version: 2;
+  map: StoreMap;
+  rewindCharges: number;
+  exhaustedByRewind: string[];
+  history: WorldHistoryEntry[];
+  checkpoints: WorldCheckpoint[];
+}
+
+export interface CommandResult {
+  ok: boolean;
+  reason?: string;
+}
+
+export interface WorldCommandResult extends CommandResult {
+  events: WorldEvent[];
+}

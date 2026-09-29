@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="1080" viewBox="0 0 760 1080">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff4d3"/>
+      <stop offset=".62" stop-color="#eadbb6"/>
+      <stop offset="1" stop-color="#cbb88e"/>
+    </linearGradient>
+    <pattern id="hatch" width="46" height="46" patternUnits="userSpaceOnUse" patternTransform="rotate(-20)">
+      <rect width="10" height="46" fill="#07151d" opacity=".08"/>
+    </pattern>
+    <clipPath id="face"><rect width="760" height="1080" rx="46"/></clipPath>
+  </defs>
+  <g clip-path="url(#face)">
+    <rect width="760" height="1080" fill="url(#paper)"/>
+    <rect width="760" height="150" fill="var(--card-accent, #e5664f)"/>
+    <rect width="760" height="1080" fill="url(#hatch)"/>
+    <rect x="44" y="176" width="672" height="472" rx="22" fill="#070d18" stroke="#07151d" stroke-width="12"/>
+    <rect x="55" y="187" width="650" height="450" rx="16" fill="none" stroke="#62c8c2" stroke-width="4"/>
+    <rect x="44" y="678" width="672" height="310" rx="24" fill="#fffae2" fill-opacity=".94" stroke="#07151d" stroke-width="10"/>
+    <rect x="65" y="704" width="630" height="7" fill="var(--card-accent, #e5664f)"/>
+    <circle cx="88" cy="85" r="54" fill="#f0c35b" stroke="#07151d" stroke-width="9"/>
+  </g>
+  <rect x="10" y="10" width="740" height="1060" rx="37" fill="none" stroke="#07151d" stroke-width="18"/>
+  <rect x="29" y="29" width="702" height="1022" rx="26" fill="none" stroke="var(--card-accent, #e5664f)" stroke-width="6"/>
+</svg>

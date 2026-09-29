@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOREMART — Misprinted Tomorrow / Art Direction</title>
+  <style>
+    :root { color-scheme: light; color: #172324; background: #ded3b8; font: 16px/1.5 Arial, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 40px 24px; }
+    main { max-width: 1280px; margin: auto; background: #f1e6c8; border: 3px solid #172324; padding: 48px; box-shadow: 8px 8px 0 #477b78; }
+    header { border-bottom: 6px solid #172324; padding-bottom: 24px; }
+    .kicker, h2, figcaption, .stamp { font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    .kicker { color: #ac443e; font-size: 13px; }
+    h1 { max-width: 850px; margin: 12px 0; font-size: clamp(38px, 6vw, 78px); line-height: .97; letter-spacing: -.06em; text-transform: uppercase; }
+    .lead { max-width: 760px; font-size: 20px; }
+    .stamp { display: inline-block; color: #ac443e; border: 3px solid currentColor; padding: 5px 12px; transform: rotate(-3deg); font-size: 12px; }
+    h2 { font-size: 16px; margin: 38px 0 16px; }
+    p { max-width: 85ch; }
+    .palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
+    .swatch { height: 70px; border: 2px solid #172324; margin-bottom: 8px; }
+    .palette b, .palette code { display: block; font-size: 12px; }
+    .principles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .principles article { border-top: 3px solid #477b78; padding-top: 14px; }
+    .principles b { display: block; font-size: 19px; }
+    .assets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    figure { margin: 0; }
+    .art { width: 100%; aspect-ratio: 1.25; object-fit: contain; display: block; border: 2px solid #172324; background: #fff5da; }
+    figcaption { font-size: 13px; margin-top: 12px; }
+    figure p { font-size: 14px; margin: 6px 0; }
+    .thumbs { display: flex; gap: 18px; align-items: center; padding: 16px; background: #477b78; margin-top: 10px; }
+    .thumbs img { width: 120px; max-width: 45%; height: 96px; object-fit: contain; background: #f1e6c8; }
+    .thumbs img:last-child { filter: grayscale(1); }
+    .map { width: 100%; background: #f1e6c8; border: 2px solid #172324; }
+    .rule { padding: 20px; border-left: 6px solid #d86532; background: #fff5da; }
+    a { color: #172324; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+    a:focus-visible { outline: 3px solid #ac443e; outline-offset: 5px; }
+    footer { margin-top: 40px; padding-top: 20px; border-top: 3px solid #172324; font-size: 13px; }
+    @media (max-width: 850px) { main { padding: 24px; } .palette { grid-template-columns: repeat(4, 1fr); } .assets { grid-template-columns: repeat(2, 1fr); } .principles { grid-template-columns: 1fr; } }
+    @media (max-width: 540px) { body { padding: 16px 10px; } main { padding: 18px; box-shadow: 4px 4px 0 #477b78; } .assets { grid-template-columns: 1fr; } .lead { font-size: 17px; } }
+    @media print { body { padding: 0; } main { border: 0; box-shadow: none; padding: 0; } figure, article { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="kicker">MOREMART / Employee print shop / Art direction</div>
+    <h1>Misprinted<br>Tomorrow.</h1>
+    <p class="lead">A safety comic on the back of an evacuation plan. Cheap paper, expensive mistakes. The store prints straight; Bob fixes it crooked.</p>
+    <span class="stamp">Original vector-authored asset batch</span>
+  </header>
+  <section aria-labelledby="palette-title">
+    <h2 id="palette-title">01 / Eight swatches. Four inks per drawing.</h2>
+    <div class="palette">
+      <div><div class="swatch" style="background:#172324"></div><b>Carbon</b><code>#172324</code></div>
+      <div><div class="swatch" style="background:#f1e6c8"></div><b>Warm stock</b><code>#F1E6C8</code></div>
+      <div><div class="swatch" style="background:#fff5da"></div><b>Chalk</b><code>#FFF5DA</code></div>
+      <div><div class="swatch" style="background:#d86532"></div><b>Builder orange</b><code>#D86532</code></div>
+      <div><div class="swatch" style="background:#e8ba45"></div><b>Safety yellow</b><code>#E8BA45</code></div>
+      <div><div class="swatch" style="background:#477b78"></div><b>Store teal</b><code>#477B78</code></div>
+      <div><div class="swatch" style="background:#70516f"></div><b>Possession plum</b><code>#70516F</code></div>
+      <div><div class="swatch" style="background:#ac443e"></div><b>Receipt red</b><code>#AC443E</code></div>
+    </div>
+  </section>
+  <section aria-labelledby="grammar-title">
+    <h2 id="grammar-title">02 / Three marks that belong to this game</h2>
+    <div class="principles">
+      <article><b>The interrupted outline</b><p>One intentional break at the light edge. Heavy outer contour, fewer thin internal marks. Never an all-over wobble effect.</p></article>
+      <article><b>The late second impression</b><p>A short offset contour follows the moving object. Time slipped. It is not a glow, a rainbow fringe or a second subject.</p></article>
+      <article><b>The repair strip</b><p>Torn stock and a short tape patch belong to human interventions. Institutional signs remain square. Empty paper stays empty.</p></article>
+    </div>
+  </section>
+  <section aria-labelledby="assets-title">
+    <h2 id="assets-title">03 / Temporal tools — first production set</h2>
+    <div class="assets">
+      <figure><img class="art" src="../../src/assets/cards/time-echo.svg" alt="An authored hammer action with a late second impression"><figcaption>Echo / That Bit Worked</figcaption><p>Repeat the action, not a second inventory card.</p><div class="thumbs"><img src="../../src/assets/cards/time-echo.svg" alt="Echo at thumbnail size"><img src="../../src/assets/cards/time-echo.svg" alt="Echo in grayscale"></div></figure>
+      <figure><img class="art" src="../../src/assets/cards/time-retain.svg" alt="An authored saved coat-check receipt"><figcaption>Retention / Keep Your Receipt</figcaption><p>A physical promise to keep one chosen thing.</p><div class="thumbs"><img src="../../src/assets/cards/time-retain.svg" alt="Retention at thumbnail size"><img src="../../src/assets/cards/time-retain.svg" alt="Retention in grayscale"></div></figure>
+      <figure><img class="art" src="../../src/assets/cards/time-reclaim.svg" alt="An authored physical tool being recovered with its matching receipt"><figcaption>Reclaim / Valid Receipt</figcaption><p>The actual tool comes back. No conjured duplicate.</p><div class="thumbs"><img src="../../src/assets/cards/time-reclaim.svg" alt="Reclaim at thumbnail size"><img src="../../src/assets/cards/time-reclaim.svg" alt="Reclaim in grayscale"></div></figure>
+      <figure><img class="art" src="../../src/assets/cards/time-borrow.svg" alt="An authored delivery carton arriving before its shadow"><figcaption>Borrow / Advance Delivery</figcaption><p>The delivery arrives early. Its future still has to catch up.</p><div class="thumbs"><img src="../../src/assets/cards/time-borrow.svg" alt="Borrow at thumbnail size"><img src="../../src/assets/cards/time-borrow.svg" alt="Borrow in grayscale"></div></figure>
+      <figure><img class="art" src="../../src/assets/cards/time-second-coat.svg" alt="An authored paint stroke forming a protective second coat"><figcaption>Defensive Echo / Second Coat</figcaption><p>The same useful protection, laid down once more.</p><div class="thumbs"><img src="../../src/assets/cards/time-second-coat.svg" alt="Second Coat at thumbnail size"><img src="../../src/assets/cards/time-second-coat.svg" alt="Second Coat in grayscale"></div></figure>
+    </div>
+  </section>
+  <section aria-labelledby="map-title">
+    <h2 id="map-title">04 / Archived print-map study</h2>
+    <img class="map" src="../../src/assets/map/store-plan.svg" alt="Unlettered MOREMART floor-plan artwork with departments, aisles and a rear loading bay">
+    <p>This vector floor plan is an archived MOREMART style study, not the active game background. The later walkable pixel-art store and its timeline remain preserved but inactive. The current Kestrel combat experience instead presents an illustrated spaceship viewscreen above physical cards. Its bridge, ships and card actions are original hand-authored Canvas artwork; no model-generation claim is made. The former generated store-environment request is parked with the MOREMART direction.</p>
+  </section>
+  <section aria-labelledby="reject-title">
+    <h2 id="reject-title">05 / Reject the generic version</h2>
+    <p class="rule">No glossy 3D, soft concept-art rendering, neon runes, generated lettering, random grunge, rainbow accents, implausible hands or matchup-specific victims. No tiny detail that only works in the source file. Start from an action silhouette, not a pile of style adjectives.</p>
+    <p>Review at full size, a 150px card, centered 1.25:1 crop, grayscale and on the actual lit game card. Keep a recognizable tool, a readable grip and room to breathe.</p>
+  </section>
+  <footer>Production rules, prompt template, master sizes, provenance and acceptance checklist: <a href="visual-style-guide.md">visual-style-guide.md</a>. These first assets are vector-authored; no image-model generation is claimed.</footer>
+</main>
+</body>
+</html>

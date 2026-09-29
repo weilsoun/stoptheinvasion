@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-label="A broad paintbrush lays a protective second coat over a shield-shaped work panel">
+  <defs>
+    <pattern id="coat-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="6" cy="6" r="3.8" fill="#70516F"/></pattern>
+    <clipPath id="coat-screen"><path d="M221 410h458v152H221z"/></clipPath>
+  </defs>
+  <rect width="1200" height="960" fill="#F1E6C8"/>
+  <g transform="translate(90 72) scale(.85)">
+
+  <!-- shield-like work panel with a bolted rim, not heraldic ornament -->
+  <path d="M112 176c173 15 319-15 438-90 119 75 265 105 438 90v277c0 218-146 375-438 463-292-88-438-245-438-463z" fill="#477B78" stroke="#172324" stroke-width="25" stroke-linejoin="round"/>
+  <path d="M169 231c143 6 270-21 381-80 111 59 238 86 381 80v210c0 176-113 305-381 394-268-89-381-218-381-394z" fill="none" stroke="#F1E6C8" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="208" cy="276" r="12" fill="#172324"/><circle cx="892" cy="276" r="12" fill="#172324"/><circle cx="550" cy="850" r="12" fill="#172324"/>
+  <path d="M143 192c53 3 102 1 147-6M952 194c-46 3-88 1-127-4" fill="none" stroke="#F1E6C8" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- the established teal coat remains above; a broad orange second pass overlaps it -->
+  <path d="M184 386c174-13 332-51 474-114 78-35 164-58 257-70l21 144c-79 11-153 31-221 61-157 70-330 113-518 128z" fill="#D86532" stroke="#172324" stroke-width="22" stroke-linejoin="round"/>
+  <path d="M198 388c158-15 300-50 428-104" fill="none" stroke="#F1E6C8" stroke-width="14" stroke-linecap="round"/>
+  <path d="M217 572c175-18 336-59 484-124" fill="none" stroke="#D86532" stroke-width="27" stroke-linecap="round"/>
+  <g clip-path="url(#coat-screen)" opacity=".62"><rect x="200" y="390" width="510" height="190" fill="url(#coat-dots)"/></g>
+  <path d="M237 542c124-17 241-46 350-87" fill="none" stroke="#70516F" stroke-width="16" stroke-linecap="round"/>
+
+  <!-- broad brush meets the wet orange edge: jagged bristles, ferrule, handle -->
+  <path d="M531 397l232-49 40 184-232 50-34-25-38 4 11-34-28-25 34-18-17-34 39-4z" fill="#D86532" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M537 423l-31 27M546 466l-38 20M554 511l-37 15" stroke="#F1E6C8" stroke-width="11" stroke-linecap="round"/>
+  <path d="M751 350l185-40 43 199-186 40z" fill="#F1E6C8" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M788 381l154-33M797 424l154-33M806 469l154-33" stroke="#172324" stroke-width="9" stroke-linecap="round"/>
+  <path d="M911 318l41-147c13-46 60-73 107-61l20 6c46 13 73 60 61 106l-83 285-111-31z" fill="#D86532" stroke="#172324" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M975 426l77-266" stroke="#F1E6C8" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- neutral hand wraps the handle with visible thumb and knuckles -->
+  <path d="M817 101c16-51 62-82 114-76l107 12c40 5 69 41 65 81-4 38-37 66-75 65l-51-2 31 25c25 20 29 57 9 82-20 24-55 29-80 10l-79-61c-44-34-58-84-41-136z" fill="#F1E6C8" stroke="#172324" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M856 77c40 14 73 40 97 78M835 121c38 13 70 37 94 72M855 191c28 4 53 15 74 34" fill="none" stroke="#172324" stroke-width="10" stroke-linecap="round"/>
+  <path d="M835 78c22-22 47-34 76-36" fill="none" stroke="#F1E6C8" stroke-width="27" stroke-linecap="round"/>
+  <path d="M778 56l79 9-31 210-102-12z" fill="#D86532" stroke="#172324" stroke-width="22" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -1,5 +1,8 @@
-import type { ActorId, CardDefinition, CardRarity } from '../game/types';
+import type { CardDefinition, CardRarity } from '../game/types';
+import { applyForecast, type CardForecast } from '../game/forecast';
+import { matchCardTerms } from '../game/terms';
 import { applyUpgrade } from '../game/upgrades';
+import type { CardTermRegion } from './types';
 
 const INK = '#07191c';
 const PAPER = '#f3dfb3';
@@ -19,12 +22,12 @@ function canvas(width: number, height: number): [HTMLCanvasElement, CanvasRender
   surface.width = width;
   surface.height = height;
   const context = surface.getContext('2d');
-  if (!context) throw new Error('Canvas 2D is required for procedural scene art.');
+  if (!context) throw new Error('Canvas 2D is required for card art.');
   context.imageSmoothingEnabled = true;
   return [surface, context];
 }
 
-function polygon(ctx: CanvasRenderingContext2D, points: number[], fill: string, stroke = INK, width = 12): void {
+function polygon(ctx: CanvasRenderingContext2D, points: number[], fill: string | CanvasGradient, stroke = INK, width = 12): void {
   ctx.beginPath();
   ctx.moveTo(points[0], points[1]);
   for (let i = 2; i < points.length; i += 2) ctx.lineTo(points[i], points[i + 1]);
@@ -75,185 +78,13 @@ function halftone(ctx: CanvasRenderingContext2D, x: number, y: number, width: nu
   ctx.restore();
 }
 
-export function drawArenaArt(): HTMLCanvasElement {
-  const [surface, ctx] = canvas(1920, 1080);
-
-  // The left sixty percent is a quiet card table; environmental detail and perspective stay
-  // beyond the divider so card faces remain the visual priority.
-  const workspace = ctx.createLinearGradient(0, 0, 0, 1080);
-  workspace.addColorStop(0, '#06181d');
-  workspace.addColorStop(.66, '#092226');
-  workspace.addColorStop(1, '#050f12');
-  ctx.fillStyle = workspace;
-  ctx.fillRect(0, 0, 1152, 1080);
-  ctx.fillStyle = 'rgba(36,88,83,.1)';
-  ctx.fillRect(0, 88, 1152, 546);
-  halftone(ctx, 0, 88, 1152, 546, 'rgba(73,151,137,.055)', 28);
-  ctx.fillStyle = 'rgba(2,10,12,.3)';
-  ctx.fillRect(0, 720, 1152, 360);
-  line(ctx, [0, 720, 1152, 720], 'rgba(125,161,142,.24)', 4);
-
-  // MOREMART occupies only the right combat stage.
-  const stage = ctx.createLinearGradient(1152, 0, 1920, 1080);
-  stage.addColorStop(0, '#102d30');
-  stage.addColorStop(.55, '#173c3b');
-  stage.addColorStop(1, '#09191b');
-  ctx.fillStyle = stage;
-  ctx.fillRect(1152, 0, 768, 1080);
-  halftone(ctx, 1152, 0, 768, 560, 'rgba(105,203,171,.1)', 22);
-
-  // Receding ceiling and lights converge into the far guard corner.
-  polygon(ctx, [1152, 0, 1920, 0, 1920, 238, 1220, 238], '#10282b', '#244b47', 6);
-  for (const [x, width] of [[1300, 92], [1535, 78], [1745, 62]] as const) {
-    polygon(ctx, [x - width, 92, x + width, 92, x + width * .72, 121, x - width * .72, 121], '#ffd477', '#472c18', 6);
-    ctx.fillStyle = 'rgba(255,205,92,.1)';
-    ctx.beginPath();
-    ctx.moveTo(x - width * .7, 122);
-    ctx.lineTo(x + width * .7, 122);
-    ctx.lineTo(1730, 520);
-    ctx.lineTo(1615, 520);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  polygon(ctx, [1207, 25, 1510, 25, 1492, 86, 1225, 86], '#de5d2c', '#050f11', 8);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '900 39px Impact, Haettenschweiler, sans-serif';
-  ctx.fillStyle = '#fff0bd';
-  ctx.strokeStyle = '#07191c';
-  ctx.lineWidth = 7;
-  ctx.strokeText('MOREMART', 1358, 53);
-  ctx.fillText('MOREMART', 1358, 53);
-  ctx.font = '800 12px Arial, sans-serif';
-  ctx.fillStyle = '#35170e';
-  ctx.fillText('SAVE LESS. SURVIVE MORE.', 1358, 76);
-
-  // One far shelf bay gives the guard context without invading the workspace.
-  ctx.fillStyle = '#102024';
-  ctx.fillRect(1790, 176, 130, 350);
-  for (let shelf = 0; shelf < 4; shelf++) {
-    const sy = 234 + shelf * 83;
-    ctx.fillStyle = '#41615c';
-    ctx.fillRect(1790, sy, 130, 12);
-    for (let item = 0; item < 3; item++) {
-      const colors = ['#d87535', '#8db54f', '#d9b858', '#466e72'];
-      ctx.fillStyle = colors[(shelf + item) % colors.length];
-      ctx.fillRect(1800 + item * 39, sy - 40 - (item % 2) * 7, 24, 40 + (item % 2) * 7);
-      ctx.strokeStyle = '#07191c';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(1800 + item * 39, sy - 40 - (item % 2) * 7, 24, 40 + (item % 2) * 7);
-    }
-  }
-
-  // A diagonal stage floor makes Bob read near/lower-left and the guard far/upper-right.
-  polygon(ctx, [1152, 430, 1920, 510, 1920, 1080, 1152, 1080], '#183b3b', '#07191c', 8);
-  for (const x of [1160, 1350, 1540, 1730, 1920]) {
-    line(ctx, [1665, 475, x, 1080], 'rgba(116,163,144,.23)', 4);
-  }
-  for (const [leftY, rightY] of [[560, 590], [690, 725], [850, 890], [1020, 1065]] as const) {
-    line(ctx, [1152, leftY, 1920, rightY], 'rgba(116,163,144,.17)', 4);
-  }
-  ctx.fillStyle = 'rgba(2,12,14,.22)';
-  polygon(ctx, [1152, 764, 1920, 820, 1920, 1080, 1152, 1080], ctx.fillStyle as string, 'transparent', 0);
-
-  // Alien residue recedes toward the possessed guard.
-  for (const [x, y, rx, ry] of [[1510, 705, 74, 17], [1620, 585, 42, 12], [1700, 500, 24, 8]] as const) {
-    ellipse(ctx, x, y, rx, ry, 'rgba(112,211,45,.27)', '#25411d', 4);
-  }
-
-  // The partition is architectural rather than an opaque mask, allowing flights to cross it.
-  ctx.fillStyle = '#071619';
-  ctx.fillRect(1144, 0, 16, 1080);
-  ctx.fillStyle = 'rgba(172,135,66,.55)';
-  ctx.fillRect(1152, 0, 3, 1080);
-  return surface;
-}
-
-function drawGuard(ctx: CanvasRenderingContext2D): void {
-  // Right-facing alien-possessed guard: broad back left, face/nose to right.
-  ellipse(ctx, 310, 625, 190, 34, 'rgba(0,0,0,.34)', 'transparent', 0);
-  polygon(ctx, [190, 345, 382, 332, 448, 585, 139, 585], '#263d47');
-  polygon(ctx, [175, 365, 226, 340, 255, 580, 140, 585], '#172a33');
-  polygon(ctx, [374, 370, 442, 420, 528, 523, 478, 559, 376, 482], '#627a73');
-  polygon(ctx, [176, 570, 270, 570, 248, 660, 128, 660], '#1a252d');
-  polygon(ctx, [326, 566, 418, 566, 486, 657, 365, 657], '#1a252d');
-  polygon(ctx, [120, 646, 254, 646, 248, 682, 103, 682], '#0c171b');
-  polygon(ctx, [360, 644, 491, 644, 520, 681, 374, 681], '#0c171b');
-  ellipse(ctx, 330, 250, 137, 127, '#78926d');
-  polygon(ctx, [226, 211, 287, 134, 424, 168, 459, 217, 312, 215], '#172730');
-  polygon(ctx, [222, 199, 427, 185, 470, 218, 240, 237], '#243d49');
-  polygon(ctx, [433, 236, 535, 282, 438, 312], '#78926d');
-  ellipse(ctx, 398, 242, 24, 30, '#d8ec81');
-  ellipse(ctx, 407, 246, 8, 13, INK, INK, 0);
-  line(ctx, [373, 208, 437, 218], INK, 16);
-  polygon(ctx, [388, 319, 458, 318, 430, 351], '#172126', INK, 8);
-  line(ctx, [402, 325, 418, 342, 434, 325], '#d3d7b4', 5);
-  ctx.fillStyle = '#b9e829';
-  for (const [x, y, r] of [[205, 276, 18], [456, 365, 13], [268, 384, 11]] as const) ellipse(ctx, x, y, r, r * .7, '#b9e829', '#29431b', 5);
-  polygon(ctx, [272, 372, 359, 366, 352, 423, 280, 426], '#e6d4a4');
-  ctx.font = '900 25px Impact, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#18282b';
-  ctx.save();
-  ctx.translate(316, 401);
-  ctx.scale(-1, 1);
-  ctx.fillText('SECURITY', 0, 0);
-  ctx.restore();
-  // Radio antenna and dangling receipt roll.
-  line(ctx, [181, 350, 143, 270], '#0b1417', 13);
-  ellipse(ctx, 143, 263, 15, 15, '#a7dd31');
-  polygon(ctx, [480, 534, 540, 529, 535, 628, 503, 609, 476, 637], PAPER, INK, 7);
-}
-
-function drawBob(ctx: CanvasRenderingContext2D): void {
-  // Left-facing hardware worker: face/nose and defensive tool arm to left.
-  ellipse(ctx, 330, 629, 192, 34, 'rgba(0,0,0,.34)', 'transparent', 0);
-  polygon(ctx, [222, 337, 421, 349, 488, 590, 174, 590], '#df6d29');
-  polygon(ctx, [263, 351, 307, 337, 318, 584, 236, 589], '#f49a34');
-  polygon(ctx, [425, 375, 494, 400, 548, 518, 491, 540, 407, 466], '#d0a27d');
-  polygon(ctx, [210, 575, 304, 575, 276, 664, 153, 664], '#33484d');
-  polygon(ctx, [359, 575, 452, 575, 514, 663, 389, 663], '#33484d');
-  polygon(ctx, [140, 650, 282, 650, 269, 686, 122, 686], '#172326');
-  polygon(ctx, [385, 647, 514, 647, 545, 681, 400, 686], '#172326');
-  ellipse(ctx, 331, 242, 135, 125, '#d0a27d');
-  polygon(ctx, [224, 186, 292, 132, 430, 171, 447, 215, 306, 197], '#e97a2d');
-  polygon(ctx, [213, 188, 415, 183, 477, 218, 238, 224], '#f49a34');
-  polygon(ctx, [224, 236, 126, 282, 226, 308], '#d0a27d');
-  ellipse(ctx, 266, 238, 22, 29, '#f5e7c6');
-  ellipse(ctx, 259, 242, 8, 12, INK, INK, 0);
-  line(ctx, [296, 209, 237, 218], INK, 15);
-  polygon(ctx, [227, 316, 295, 316, 274, 347], '#5b241d', INK, 8);
-  line(ctx, [327, 330, 405, 315], '#7b482f', 12);
-  line(ctx, [344, 343, 422, 328], '#7b482f', 9);
-  polygon(ctx, [316, 374, 402, 376, 397, 423, 320, 421], '#f0dfb1');
-  ctx.font = '900 27px Impact, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#422317';
-  ctx.fillText('BOB', 359, 403);
-  // Oversized hammer held toward the possessed guard.
-  line(ctx, [218, 410, 111, 539], '#72503b', 25);
-  polygon(ctx, [67, 496, 165, 453, 190, 508, 88, 550], '#59676a', INK, 11);
-  polygon(ctx, [168, 454, 203, 443, 225, 496, 190, 508], '#879496', INK, 8);
-  // Apron clutter and comic sweat bead.
-  polygon(ctx, [327, 452, 405, 452, 410, 525, 326, 525], '#bd4e24', INK, 8);
-  line(ctx, [346, 476, 346, 509, 383, 509, 383, 474], '#f6b64b', 7);
-  polygon(ctx, [455, 249, 481, 284, 452, 301], '#72d2d0', '#14282b', 6);
-}
-
-export function drawActorArt(actor: ActorId): HTMLCanvasElement {
-  const [surface, ctx] = canvas(640, 720);
-  ctx.translate(640, 0);
-  ctx.scale(-1, 1);
-  if (actor === 'guard') drawGuard(ctx);
-  else drawBob(ctx);
-  return surface;
-}
 
 function centeredText(
   ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
   maxWidth: number, lineHeight: number, numberSize = 0,
-  numberColor?: string, originalText?: string,
+  numberColors?: readonly [increase: string, decrease: string],
+  originalText?: string,
+  regions?: CardTermRegion[],
 ): void {
   const baseFont = ctx.font;
   const baseColor = ctx.fillStyle;
@@ -263,18 +94,42 @@ function centeredText(
   const minusWidth = numberSize > 0 ? ctx.measureText('−').width + numberSize * .12 : 0;
   ctx.font = baseFont;
   const gap = ctx.measureText(' ').width;
-  const originals = numberColor && originalText
-    ? originalText.split('\n').map((paragraph) => paragraph.split(/\s+/).filter(Boolean))
-    : undefined;
-  const paragraphs = text.split('\n').map((paragraph, paragraphIndex) => paragraph.split(/\s+/).filter(Boolean).map((word, index) => {
-    const numeric = numberSize > 0 && /^[+−-]?\d+[.,]?$/.test(word);
-    const changed = numeric && numberColor !== undefined && word !== originals?.[paragraphIndex]?.[index];
-    const negative = numeric && /^[−-]/.test(word);
-    if (negative) word = word.slice(1);
-    ctx.font = numeric ? numberFont : baseFont;
-    const metrics = ctx.measureText(word);
-    return { word, numeric, negative, changed, metrics, width: metrics.width + (negative ? minusWidth : 0) };
-  }));
+  const originalNumbers = originalText
+    ? [...originalText.matchAll(/[+−-]?\d+/g)].map((match) => Number(match[0].replace('−', '-')))
+    : [];
+  let numberIndex = 0;
+  const terms = matchCardTerms(text);
+  let paragraphStart = 0;
+  const paragraphs = text.split('\n').map((paragraph) => {
+    const words = [...paragraph.matchAll(/\S+/g)].map((token) => {
+      let word = token[0];
+      const start = paragraphStart + token.index;
+      const numeric = numberSize > 0 && /^[+−-]?\d+[.,]?$/.test(word);
+      const negative = numeric && /^[−-]/.test(word);
+      const value = numeric ? Number(word.replace(/[.,]$/, '').replace('−', '-')) : 0;
+      const original = numeric
+        ? originalNumbers[Math.min(numberIndex++, Math.max(0, originalNumbers.length - 1))]
+        : undefined;
+      const numberColor = original === undefined || value === original || !numberColors
+        ? undefined
+        : value > original ? numberColors[0] : numberColors[1];
+      if (negative) word = word.slice(1);
+      ctx.font = numeric ? numberFont : baseFont;
+      const metrics = ctx.measureText(word);
+      return {
+        word,
+        start,
+        end: start + token[0].length,
+        numeric,
+        negative,
+        numberColor,
+        metrics,
+        width: metrics.width + (negative ? minusWidth : 0),
+      };
+    });
+    paragraphStart += paragraph.length + 1;
+    return words;
+  });
   type TextWord = (typeof paragraphs)[number][number];
   type TextLine = { words: TextWord[]; width: number; ascent: number; descent: number };
   const lines: TextLine[] = [];
@@ -296,21 +151,46 @@ function centeredText(
   const firstBaseline = y - ((lines.length - 1) * lineHeight + lines[0].ascent + lines.at(-1)!.descent) / 2 + lines[0].ascent;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
+    const baseline = firstBaseline + index * lineHeight;
     let left = x - line.width / 2;
     for (const word of line.words) {
-      ctx.fillStyle = word.changed ? numberColor! : baseColor;
+      ctx.fillStyle = word.numberColor ?? baseColor;
       if (word.negative) {
         ctx.font = minusFont;
-        ctx.fillText('−', left, firstBaseline + index * lineHeight);
+        ctx.fillText('−', left, baseline);
         left += minusWidth;
       }
       ctx.font = word.numeric ? numberFont : baseFont;
       if (word.numeric) {
         ctx.strokeStyle = ctx.fillStyle;
         ctx.lineWidth = 1.5;
-        ctx.strokeText(word.word, left, firstBaseline + index * lineHeight);
+        ctx.strokeText(word.word, left, baseline);
       }
-      ctx.fillText(word.word, left, firstBaseline + index * lineHeight);
+      ctx.fillText(word.word, left, baseline);
+      const contentStart = word.start + (word.negative ? 1 : 0);
+      for (const match of terms) {
+        const start = Math.max(contentStart, match.start);
+        const end = Math.min(word.end, match.end);
+        if (start >= end) continue;
+        const prefix = word.word.slice(0, start - contentStart);
+        const throughMatch = word.word.slice(0, end - contentStart);
+        const underlineLeft = left + ctx.measureText(prefix).width;
+        const underlineRight = left + ctx.measureText(throughMatch).width;
+        const underlineY = baseline + Math.max(2, word.metrics.actualBoundingBoxDescent + 2);
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(underlineLeft, underlineY);
+        ctx.lineTo(underlineRight, underlineY);
+        ctx.stroke();
+        regions?.push({
+          term: match.term,
+          x: underlineLeft / 512,
+          y: (baseline - word.metrics.actualBoundingBoxAscent) / 768,
+          width: (underlineRight - underlineLeft) / 512,
+          height: (word.metrics.actualBoundingBoxAscent + word.metrics.actualBoundingBoxDescent + 4) / 768,
+        });
+      }
       left += word.metrics.width + gap;
     }
   }
@@ -333,6 +213,11 @@ const CARD_ART_URLS: Record<string, string> = {
   'enemy-heal': new URL('../assets/cards/enemy-heal.png', import.meta.url).href,
   'enemy-expose': new URL('../assets/cards/enemy-expose.png', import.meta.url).href,
   'back-bob': new URL('../assets/cards/back-bob.png', import.meta.url).href,
+  'time-echo': new URL('../assets/cards/time-echo.svg', import.meta.url).href,
+  'time-retain': new URL('../assets/cards/time-retain.svg', import.meta.url).href,
+  'time-reclaim': new URL('../assets/cards/time-reclaim.svg', import.meta.url).href,
+  'time-borrow': new URL('../assets/cards/time-borrow.svg', import.meta.url).href,
+  'time-second-coat': new URL('../assets/cards/time-second-coat.svg', import.meta.url).href,
 };
 const cardImages: Partial<Record<string, HTMLImageElement>> = {};
 let cardArtLoad: Promise<void> | undefined;
@@ -433,6 +318,15 @@ function fillPlayerCardBody(
       ctx.fillRect(14, 300, 484, 454);
     }
   }
+  // Sparse registration hatching keeps the card stock tactile while leaving the face panels clean.
+  ctx.strokeStyle = 'rgba(7,25,28,.075)';
+  ctx.lineWidth = 3;
+  for (let offset = -520; offset < 760; offset += 74) {
+    ctx.beginPath();
+    ctx.moveTo(offset, 754);
+    ctx.lineTo(offset + 500, 14);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -447,73 +341,157 @@ export function drawCardBack(enemy = false): HTMLCanvasElement {
     const image = cardImages['back-bob'];
     if (!image) throw new Error('Builder card back was not preloaded');
     ctx.drawImage(image, 0, 0, 512, 768);
+
+    // Preserve the dense character illustration; the print finish lives only at its perimeter.
+    ctx.strokeStyle = 'rgba(7,25,28,.92)';
+    ctx.lineWidth = 18;
+    ctx.beginPath();
+    ctx.roundRect(10, 10, 492, 748, 31);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,222,139,.72)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.roundRect(25, 25, 462, 718, 23);
+    ctx.stroke();
+    for (const [x, y] of [[38, 38], [474, 38], [38, 730], [474, 730]] as const) {
+      ellipse(ctx, x, y, 7, 7, '#e5a23f', INK, 3);
+    }
     return surface;
   }
 
-  ctx.fillStyle = '#07191c';
+  ctx.fillStyle = '#06171b';
   ctx.fillRect(0, 0, 512, 768);
-  ctx.fillStyle = '#123d3c';
+  const shell = ctx.createLinearGradient(20, 20, 492, 748);
+  shell.addColorStop(0, '#174845');
+  shell.addColorStop(.55, '#0d3032');
+  shell.addColorStop(1, '#261d31');
+  ctx.fillStyle = shell;
   ctx.beginPath();
-  ctx.roundRect(22, 22, 468, 724, 24);
+  ctx.roundRect(20, 20, 472, 728, 26);
   ctx.fill();
   ctx.strokeStyle = '#e56532';
-  ctx.lineWidth = 10;
+  ctx.lineWidth = 12;
   ctx.stroke();
+
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(42, 42, 428, 684, 15);
   ctx.clip();
-  ctx.fillStyle = '#0b2b2e';
+  ctx.fillStyle = '#09272b';
   ctx.fillRect(42, 42, 428, 684);
-  ctx.strokeStyle = 'rgba(239,191,104,.26)';
-  ctx.lineWidth = 18;
+  ctx.strokeStyle = 'rgba(239,191,104,.16)';
+  ctx.lineWidth = 16;
   for (let offset = -650; offset < 900; offset += 68) {
     ctx.beginPath();
     ctx.moveTo(offset, 42);
     ctx.lineTo(offset + 470, 726);
     ctx.stroke();
   }
+  halftone(ctx, 42, 42, 428, 684, 'rgba(132,219,166,.075)', 24);
   ctx.restore();
+
   ctx.fillStyle = '#e56532';
   ctx.beginPath();
-  ctx.roundRect(106, 247, 300, 274, 28);
+  ctx.roundRect(78, 224, 356, 320, 32);
   ctx.fill();
-  ctx.strokeStyle = '#f0c875';
-  ctx.lineWidth = 8;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 10;
   ctx.stroke();
   ctx.fillStyle = '#092427';
   ctx.beginPath();
-  ctx.roundRect(132, 273, 248, 222, 18);
+  ctx.roundRect(102, 248, 308, 272, 21);
   ctx.fill();
   ctx.strokeStyle = '#f0c875';
-  ctx.lineWidth = 22;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(176, 432);
-  ctx.lineTo(336, 336);
-  ctx.moveTo(176, 336);
-  ctx.lineTo(336, 432);
+  ctx.lineWidth = 6;
   ctx.stroke();
-  ctx.fillStyle = '#f0c875';
+
+  // Receipt-scanner eye: specific to possessed security without revealing the hidden action.
+  polygon(ctx, [142, 384, 205, 322, 307, 322, 370, 384, 307, 446, 205, 446], '#b7d95b', '#06171b', 10);
+  ellipse(ctx, 256, 384, 58, 58, '#142d30', '#f0c875', 9);
+  ellipse(ctx, 256, 384, 23, 35, '#d9f16d', INK, 7);
+  ellipse(ctx, 262, 373, 7, 12, '#fff7c9', 'transparent', 0);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '900 24px "Arial Narrow", Arial, sans-serif';
+  ctx.fillStyle = '#f7d28a';
+  ctx.fillText('MOREMART SECURITY', 256, 106);
+  ctx.font = '800 16px "Arial Narrow", Arial, sans-serif';
+  ctx.fillStyle = '#e56532';
+  ctx.fillText('RECEIPT REQUIRED • ALWAYS WATCHING', 256, 660);
+
+  ctx.strokeStyle = 'rgba(247,210,138,.7)';
+  ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.arc(176, 336, 24, 0, Math.PI * 2);
-  ctx.arc(336, 336, 24, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.roundRect(32, 32, 448, 704, 20);
+  ctx.stroke();
+  for (const [x, y] of [[44, 44], [468, 44], [44, 724], [468, 724]] as const) {
+    ellipse(ctx, x, y, 7, 7, '#90b654', INK, 3);
+  }
+  return surface;
+}
+
+export function drawEchoCardBack(): HTMLCanvasElement {
+  const source = drawCardBack();
+  const [surface, ctx] = canvas(512, 768);
+  ctx.beginPath();
+  ctx.roundRect(0, 0, 512, 768, 38);
+  ctx.clip();
+  ctx.filter = 'blur(32px) saturate(.45)';
+  ctx.drawImage(source, -32, -32, 576, 832);
+  ctx.filter = 'none';
+  ctx.globalCompositeOperation = 'source-atop';
+  const haze = ctx.createLinearGradient(0, 0, 512, 768);
+  haze.addColorStop(0, 'rgba(26,125,119,.68)');
+  haze.addColorStop(.55, 'rgba(24,77,77,.46)');
+  haze.addColorStop(1, 'rgba(203,130,48,.62)');
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, 0, 512, 768);
+  ctx.globalCompositeOperation = 'destination-in';
+  const horizontalFeather = ctx.createLinearGradient(0, 0, 512, 0);
+  horizontalFeather.addColorStop(0, 'rgba(255,255,255,0)');
+  horizontalFeather.addColorStop(.08, '#fff');
+  horizontalFeather.addColorStop(.92, '#fff');
+  horizontalFeather.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = horizontalFeather;
+  ctx.fillRect(0, 0, 512, 768);
+  const verticalFeather = ctx.createLinearGradient(0, 0, 0, 768);
+  verticalFeather.addColorStop(0, 'rgba(255,255,255,0)');
+  verticalFeather.addColorStop(.055, '#fff');
+  verticalFeather.addColorStop(.945, '#fff');
+  verticalFeather.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = verticalFeather;
+  ctx.fillRect(0, 0, 512, 768);
   return surface;
 }
 
 export function drawEnergyBadge(cost: number, dimmed: boolean): HTMLCanvasElement {
   const [surface, ctx] = canvas(128, 128);
-  ctx.fillStyle = dimmed ? '#c6c6c6' : '#ffcf74';
-  ctx.strokeStyle = '#07191c';
-  ctx.lineWidth = 10;
+  const fill = ctx.createRadialGradient(47, 39, 4, 64, 64, 58);
+  fill.addColorStop(0, dimmed ? '#eeeeee' : '#fff0ae');
+  fill.addColorStop(.62, dimmed ? '#c6c6c6' : '#ffcb64');
+  fill.addColorStop(1, dimmed ? '#979797' : '#d9822f');
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 11;
   ctx.beginPath();
   ctx.arc(64, 64, 57, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = '#07191c';
+  ctx.strokeStyle = dimmed ? '#777' : '#fff0ae';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(64, 64, 45, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.7)';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(64, 64, 47, Math.PI * 1.08, Math.PI * 1.48);
+  ctx.stroke();
+  ctx.fillStyle = INK;
   ctx.font = '900 78px "Arial Black", Arial, sans-serif';
-  centeredText(ctx, String(cost), 64, 64, 110, 80);
+  centeredText(ctx, String(cost), 64, 64, 104, 80);
   if (dimmed) grayscale(ctx, 128, 128);
   return surface;
 }
@@ -524,8 +502,11 @@ export function drawCardArt(
   upgradeLevel: number,
   showTargets: boolean,
   dimmed: boolean,
+  regions?: CardTermRegion[],
+  forecast?: CardForecast,
 ): HTMLCanvasElement {
-  const [surface, ctx] = canvas(512, 768);
+  const [surface, ctx] = canvas(1024, 1536);
+  ctx.scale(2, 2);
   const palette = locked
     ? { dark: '#762d29', paper: '#000000' }
     : card.type === 'attack'
@@ -544,6 +525,7 @@ export function drawCardArt(
   const characterColor = card.characterColor ?? DEFAULT_CHARACTER_COLOR;
   const rarity = card.rarity ?? 'common';
   const outline = locked ? '#a3a18d' : INK;
+  const accent = locked ? '#e56532' : RARITY_COLORS[rarity];
 
   ctx.beginPath();
   ctx.roundRect(0, 0, 512, 768, 38);
@@ -563,6 +545,11 @@ export function drawCardArt(
   ctx.beginPath();
   ctx.roundRect(14, 14, 484, 740, 28);
   ctx.stroke();
+  ctx.strokeStyle = locked ? '#e56532' : accent;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(23, 23, 466, 722, 21);
+  ctx.stroke();
 
   // Keep attachment titles legible while tucked behind their hosts.
   ctx.fillStyle = modifier === undefined ? palette.dark : modifier > 0 ? '#08715a' : '#a92238';
@@ -572,17 +559,37 @@ export function drawCardArt(
   ctx.strokeStyle = outline;
   ctx.lineWidth = 7;
   ctx.stroke();
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(32, 32, 448, 116, 13);
+  ctx.clip();
+  halftone(ctx, 32, 32, 448, 116, locked ? 'rgba(255,191,112,.1)' : 'rgba(255,240,206,.075)', 22);
+  ctx.restore();
+  ctx.fillStyle = accent;
+  ctx.fillRect(52, 143, 408, 4);
 
   ctx.fillStyle = '#fff0ce';
   ctx.font = '800 44px Arial, sans-serif';
-  centeredText(ctx, card.name.toUpperCase(), 256, 90, 408, 48);
+  centeredText(ctx, card.name.toUpperCase(), 256, 90, 408, 48, 0, undefined, undefined, regions);
 
+  // A layered ink frame gives the illustration a physical inset without touching its crop.
+  ctx.fillStyle = outline;
+  ctx.beginPath();
+  ctx.roundRect(30, 162, 452, 362, 19);
+  ctx.fill();
   drawCardIllustration(ctx, illustration, 36, 168, 440, 350);
   ctx.strokeStyle = outline;
   ctx.lineWidth = 8;
   ctx.beginPath();
   ctx.roundRect(36, 168, 440, 350, 15);
   ctx.stroke();
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(43, 175, 426, 336, 10);
+  ctx.stroke();
+  line(ctx, [36, 194, 36, 168, 62, 168], accent, 5);
+  line(ctx, [450, 518, 476, 518, 476, 492], accent, 5);
 
   ctx.fillStyle = locked ? '#182125' : 'rgba(255,248,226,.86)';
   ctx.beginPath();
@@ -590,20 +597,33 @@ export function drawCardArt(
   ctx.fill();
   ctx.strokeStyle = outline;
   ctx.stroke();
+  // Narrow gutters and registration marks stay outside the centered rules copy.
+  ctx.fillStyle = locked ? '#e56532' : accent;
+  ctx.fillRect(43, 553, 5, 146);
+  ctx.fillRect(464, 553, 5, 146);
+  for (const [x, y] of [[50, 545], [462, 545], [50, 707], [462, 707]] as const) {
+    ellipse(ctx, x, y, 4, 4, locked ? '#f0c875' : palette.dark, 'transparent', 0);
+  }
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.roundRect(190, 730, 132, 10, 5);
+  ctx.fill();
 
   ctx.fillStyle = locked ? '#fff0ce' : '#14282a';
-  const description = applyUpgrade(card, upgradeLevel).description;
-  const numberColor = upgradeLevel === 0 ? undefined : locked
-    ? upgradeLevel > 0 ? '#88e2aa' : '#ffa99b'
-    : upgradeLevel > 0 ? '#08715a' : '#a92238';
+  const graded = applyUpgrade(card, upgradeLevel);
+  const effective = forecast ? applyForecast(graded, forecast) : graded;
+  const description = effective.description;
+  const numberColors = locked
+    ? ['#88e2aa', '#ffa99b'] as const
+    : ['#08715a', '#a92238'] as const;
   const [primaryRule, ...secondaryActions] = description.split('\n');
   const [basePrimary, ...baseSecondary] = card.description.split('\n');
   ctx.font = '600 34px Arial, sans-serif';
-  centeredText(ctx, primaryRule, 256, secondaryActions.length ? (showTargets ? 581 : 594) : (showTargets ? 611 : 626), 390, 42, 34, numberColor, basePrimary);
+  centeredText(ctx, primaryRule, 256, secondaryActions.length ? (showTargets ? 581 : 594) : (showTargets ? 611 : 626), 390, 42, 34, numberColors, basePrimary, regions);
   if (secondaryActions.length > 0) {
     ctx.fillStyle = locked ? '#ffbf70' : '#9d352b';
     ctx.font = '800 28px Arial, sans-serif';
-    centeredText(ctx, secondaryActions.join('\n'), 256, showTargets ? 651 : 664, 390, 34, 28, numberColor, baseSecondary.join('\n'));
+    centeredText(ctx, secondaryActions.join('\n'), 256, showTargets ? 651 : 664, 390, 34, 28, numberColors, baseSecondary.join('\n'), regions);
   }
 
   if (showTargets && !locked && modifier === undefined) {

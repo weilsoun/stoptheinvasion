@@ -1,366 +1,83 @@
-import type { BalanceChange, BalanceReport } from './balance';
+import type { BalanceChange, BalanceReport, ExpeditionAnalysis, PolicyName, PolicySummary } from './balance';
 
 export type BalanceFeedback = {
-  diagnostics: string[];
-  recommendations: Array<{
-    target: string;
-    change: BalanceChange;
-    baselineRunId: string;
-    candidateRunId: string;
-    reason: string;
-    tradeoffs: string[];
-  }>;
-  roleFindings: string[];
-  limitations: string[];
+  diagnostics: string[]; expeditions: string[];
+  recommendations: Array<{ target: string; change: BalanceChange; baselineRunId: string; candidateRunId: string; reason: string; tradeoffs: string[] }>;
+  roleFindings: string[]; limitations: string[];
 };
-
-type Run = BalanceReport['runs'][number];
-type CandidateRun = Run & { change: Exclude<BalanceChange, { kind: 'baseline' }> };
-type Policy = keyof Run['policies'];
-type Summary = Run['policies'][Policy];
-type Usage = Summary['usage'][string];
-
-const POLICIES = ['strong', 'tactical', 'greedy'] as const satisfies readonly Policy[];
-
+const POLICIES: PolicyName[] = ['strong', 'tactical', 'greedy'];
 const percent = (value: number): string => `${(value * 100).toFixed(1)}%`;
-const signedPercent = (value: number): string => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}pp`;
-const signed = (value: number, suffix = ''): string => `${value >= 0 ? '+' : ''}${value.toFixed(1)}${suffix}`;
-const ratio = (numerator: number, denominator: number): string => denominator > 0 ? `${percent(numerator / denominator)} (${numerator}/${denominator})` : 'n/a (0 opportunities)';
-
-function weighted(summaries: Summary[], value: (summary: Summary) => number): number {
-  const fights = summaries.reduce((total, summary) => total + summary.fights, 0);
-  return fights > 0 ? summaries.reduce((total, summary) => total + value(summary) * summary.fights, 0) / fights : 0;
-}
-
-function outcome(run: Run) {
-  const summaries = POLICIES.map((policy) => run.policies[policy]);
-  const fights = summaries.reduce((total, summary) => total + summary.fights, 0);
-  return {
-    winRate: weighted(summaries, (summary) => summary.winRate),
-    meanHp: weighted(summaries, (summary) => summary.meanHp),
-    turns: weighted(summaries, (summary) => summary.medianTurns),
-    stalls: summaries.reduce((total, summary) => total + summary.stalls, 0),
-    stallRate: fights > 0 ? summaries.reduce((total, summary) => total + summary.stalls, 0) / fights : 0,
-    fights,
-    spread: Math.max(...summaries.map((summary) => summary.winRate)) - Math.min(...summaries.map((summary) => summary.winRate)),
-  };
-}
-
-function sumUsage(run: Run, cardId: string): Usage {
-  const total: Usage = {
-    drawn: 0,
-    handOpportunities: 0,
-    affordableOpportunities: 0,
-    legalOpportunities: 0,
-    playablePositionOpportunities: 0,
-    visiblePositionOpportunities: 0,
-    played: 0,
-    attached: 0,
-    scoutedPositions: 0,
-    surgeActivations: 0,
-    surgeGranted: 0,
-    energySpent: 0,
-    upgradeTargets: {},
-  };
-  for (const policy of POLICIES) {
-    const usage = run.policies[policy].usage[cardId];
-    if (!usage) continue;
-    for (const key of Object.keys(total) as (keyof Usage)[]) {
-      if (key === 'upgradeTargets') {
-        for (const [target, count] of Object.entries(usage.upgradeTargets)) {
-          total.upgradeTargets[target] = (total.upgradeTargets[target] ?? 0) + count;
-        }
-      } else {
-        total[key] += usage[key];
-      }
-    }
-  }
-  return total;
-}
-
-function cardUsageLine(report: BalanceReport, run: Run, cardId: string): string {
-  const card = report.cards[cardId];
-  const usage = sumUsage(run, cardId);
-  const uses = usage.played + usage.attached;
-  const timingRate = usage.playablePositionOpportunities > 0
-    ? (uses * 100 / usage.playablePositionOpportunities).toFixed(2)
-    : 'n/a';
-  const exposure = usage.handOpportunities > 0
-    ? `; mean window ${((usage.playablePositionOpportunities / usage.handOpportunities)).toFixed(1)} playable/${((usage.visiblePositionOpportunities / usage.handOpportunities)).toFixed(1)} visible positions`
-    : '';
-  const attachment = usage.attached > 0 ? `; attached ${ratio(usage.attached, usage.legalOpportunities)}` : '';
-  const scalingTargets = Object.entries(usage.upgradeTargets).filter(([, count]) => count > 0);
-  const nondamageTargets = scalingTargets.filter(([target]) => !target.includes(':effect:damage:'));
-  const targeting = card.roles.some((role) => role.startsWith('modifier:level:'))
-    ? `; authored grade targets ${scalingTargets.length > 0 ? scalingTargets.map(([target, count]) => `${target}=${count}`).join(', ') : 'none'}; nondamage target uses ${nondamageTargets.reduce((sum, [, count]) => sum + count, 0)} across ${nondamageTargets.length} authored target(s)`
-    : '';
-  const scouting = usage.scoutedPositions > 0 ? `; actually revealed ${usage.scoutedPositions} scouted positions` : '';
-  const surge = usage.surgeActivations > 0
-    ? `; activated ${usage.surgeActivations} time(s), granted ${usage.surgeGranted} actual Surge energy`
-    : '';
-  const free = card.cost === 0 ? ' Free-card use is availability evidence, not overpower evidence.' : '';
-  return `${card.name}: drawn ${usage.drawn}; played/hand ${ratio(usage.played, usage.handOpportunities)}, played/affordable ${ratio(usage.played, usage.affordableOpportunities)}, played/legal ${ratio(usage.played, usage.legalOpportunities)}${attachment}${targeting}${scouting}${surge}; ${timingRate} uses per 100 playable-position opportunities${exposure}; energy spent ${usage.energySpent}.${free}`;
-}
-
-function policyDelta(baseline: Run, candidate: Run): string {
-  return POLICIES.map((policy) => `${policy} ${signedPercent(candidate.policies[policy].winRate - baseline.policies[policy].winRate)}`).join(', ');
-}
-
-function disjointWinIntervals(baseline: Run, candidate: Run): number {
-  return POLICIES.filter((policy) => {
-    const before = baseline.policies[policy].winRate95CI;
-    const after = candidate.policies[policy].winRate95CI;
-    return after[0] > before[1] || after[1] < before[0];
-  }).length;
-}
-
-
+const signed = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
 function changeText(change: BalanceChange): string {
   switch (change.kind) {
     case 'baseline': return 'baseline';
-    case 'card-cost': return `${change.cardId} cost ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'card-effect': return `${change.cardId} ${change.effectKind} ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'card-bracket': return `${change.cardId} bracket ${change.field} ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'card-level': return `${change.cardId} source level ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'card-scaling-effect': return `${change.cardId} authored effect ${change.effectIndex} step ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'card-scaling-bracket': return `${change.cardId} authored bracket ${change.field} step ${change.delta >= 0 ? '+' : ''}${change.delta}`;
-    case 'encounter': return `enemy HP ×${change.hpScale}, enemy damage ×${change.damageScale}`;
+    case 'card-effect': return `${change.cardId} ${change.effectKind} ${signed(change.delta)}`;
+    case 'card-time': return `${change.cardId} time amount ${signed(change.delta)} ticks`;
+    case 'card-scaling-time': return `${change.cardId} authored time scaling ${signed(change.delta)}`;
+    case 'card-level': return `${change.cardId} grade level ${signed(change.delta)}`;
+    case 'card-temporal': return `${change.cardId} temporal amount ${signed(change.delta)}`;
+    case 'card-scaling-effect': return `${change.cardId} effect ${change.effectIndex} scaling ${signed(change.delta)}`;
+    case 'card-cost': return `${change.cardId} cost ${signed(change.delta)}`;
+    case 'regen': return `stored energy per completed tick ${signed(change.delta)}`;
+    case 'encounter': return `enemy HP ×${change.hpScale}, damage ×${change.damageScale}`;
   }
 }
-
-function roleFinding(report: BalanceReport, label: string, aliases: string[], missingHypothesis: string): string {
-  const cards = Object.values(report.cards)
-    .filter((card) => card.roles.some((role) => aliases.some((alias) => role.toLowerCase().includes(alias))))
-    .map((card) => card.name);
-  return cards.length > 0
-    ? `${label}: ${cards.join(', ')}. This is source-derived coverage; effectiveness still depends on the measured opportunity and outcome data above.`
-    : `${label}: no matching source-derived role in the tested deck. Treat this only as a deck hypothesis: ${missingHypothesis}; it is not a mandate to add a card.`;
+function paired(baseline: PolicySummary, candidate: PolicySummary) {
+  const bases = new Map(baseline.samples.map(sample => [`${sample.seed}:${sample.deck}`, sample]));
+  const pairs = candidate.samples.map(sample => { const base = bases.get(`${sample.seed}:${sample.deck}`); if (!base) throw new Error('Candidate has no same-seed/same-deck baseline.'); return { sample, base }; });
+  const differences = pairs.map(({ sample, base }) => Number(sample.win) - Number(base.win));
+  const mean = differences.reduce((a, b) => a + b, 0) / differences.length;
+  const variance = differences.length > 1 ? differences.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (differences.length - 1) : 0;
+  const margin = 1.96 * Math.sqrt(variance / differences.length);
+  return { gained: differences.filter(value => value > 0).length, lost: differences.filter(value => value < 0).length, low: Math.max(-1, mean - margin), high: Math.min(1, mean + margin), hp: pairs.reduce((sum, { sample, base }) => sum + sample.hp - base.hp, 0) / pairs.length };
 }
-
+export function expeditionFeedback(study: ExpeditionAnalysis): string[] {
+  const lines = [`${study.results.length} natural-start spatial expeditions; ${study.seeds.length} paired seeds; ${study.policies.join(', ')}. Exit interaction is the only complete-run victory.`, ...Object.entries(study.routePolicies).map(([route, description]) => `${route}: ${description}`), `Rewards: ${study.rewardPolicy}`, `Services: ${study.servicePolicy}`];
+  for (const summary of study.summaries) {
+    lines.push(`${summary.candidateId}/${summary.toolkit}/${summary.policy}/${summary.route}: ${summary.wins}/${summary.runs} wins (Wilson95% ${percent(summary.winRate95CI[0])}–${percent(summary.winRate95CI[1])}); ${summary.defeats} defeats, ${summary.bounded} bounded; mean HP ${summary.meanHp.toFixed(1)}, completed encounters ${summary.meanCompletedEncounters.toFixed(2)}, median world ticks ${summary.medianTicks}. Terminal locations: ${Object.entries(summary.terminalEncounters).map(([id, count]) => `${id}=${count}`).join(', ')}.`);
+    if (summary.paired) lines.push(`Paired: ${summary.paired.gainedWins} gained/${summary.paired.lostWins} lost wins; win delta95% ${percent(summary.paired.winDelta95CI[0])}–${percent(summary.paired.winDelta95CI[1])}; HP ${signed(summary.paired.meanHpDelta)}, completed encounters ${signed(summary.paired.meanCompletedEncountersDelta)}. Different terminal depths confound HP.`);
+  }
+  for (const candidate of study.candidates.filter(candidate => candidate.id !== 'baseline')) {
+    const strata = study.summaries.filter(summary => summary.candidateId === candidate.id);
+    const gained = strata.reduce((sum, summary) => sum + (summary.paired?.gainedWins ?? 0), 0); const lost = strata.reduce((sum, summary) => sum + (summary.paired?.lostWins ?? 0), 0);
+    const supported = strata.some(summary => summary.paired && summary.paired.winDelta95CI[0] > 0) && strata.every(summary => !summary.paired || summary.paired.gainedWins >= summary.paired.lostWins);
+    lines.push(`Measured expedition candidate ${candidate.id}: ${gained} gained/${lost} lost paired wins across ${strata.length} strata. ${supported ? 'Promising only under these policies; human validation required.' : 'No robust cross-policy complete-run improvement establishes a production change.'}`);
+  }
+  return lines;
+}
 export function buildFeedback(report: BalanceReport): BalanceFeedback {
-  const diagnostics: string[] = [];
-  const recommendations: BalanceFeedback['recommendations'] = [];
-  const limitations = Array.from(new Set([
-    ...report.limitations,
-    `Rules measured: ${report.rulesModel}. Planning has no realtime countdown.`,
-    'Policies inspect only the current bracket plus positions revealed by active scouting. Scouting is exercised and reported, but receives no invented combat-power or information-value score.',
-    'Authored upgrade-target counts report actual chosen attachments, including grades consumed by immediate Surge activation, nondamage effects, and temporal cards; they do not assign those targets an assumed strategic value.',
-    'Policies are deterministic heuristics, not human or optimal play; differences can reflect policy assumptions rather than card power.',
-    'Aggregate card use is normalized by legal and changing playable-position opportunities but is not a causal estimate of card strength. High use alone—especially for zero-cost cards—is not evidence that a card is overpowered.',
-    'Surge use and grant totals come only from successful immediate playSurge commands. A zero-grant candidate remains an actual activation but contributes no positive Surge-energy grant.',
-    'Candidate comparisons use reported 95% win-rate intervals and aggregate outcomes. Overlapping intervals or policy disagreement are uncertainty, not permission to choose a preferred result.',
-    'Recommendations only select tested candidates; they do not auto-apply changes or extrapolate untested numeric tuning.',
-  ]));
-  const baseline = report.runs.find((run) => run.change.kind === 'baseline');
-
-  if (!baseline) {
-    return {
-      diagnostics: ['No baseline run was present, so candidate effects cannot be attributed or recommended.'],
-      recommendations,
-      roleFindings: [],
-      limitations: [...limitations, 'Candidate feedback requires a baseline run evaluated under the same policies and seeds.'],
-    };
+  const diagnostics: string[] = []; const recommendations: BalanceFeedback['recommendations'] = [];
+  const baseline = report.runs.find(run => run.change.kind === 'baseline');
+  if (baseline) for (const policy of POLICIES) {
+    const summary = baseline.policies[policy]; diagnostics.push(`Baseline/${policy}: ${summary.wins}/${summary.fights} isolated-world wins (Wilson95% ${percent(summary.winRate95CI[0])}–${percent(summary.winRate95CI[1])}), ${summary.stalls} bounded; mean HP ${summary.meanHp.toFixed(1)}, median ticks ${summary.medianTicks}, ${summary.distinctTrajectories} distinct trajectories.`);
   }
-
-  const base = outcome(baseline);
-  const policyWins = POLICIES.map((policy) => baseline.policies[policy].winRate);
-  const policyHp = POLICIES.map((policy) => baseline.policies[policy].meanHp);
-  const policyMedianHp = POLICIES.map((policy) => baseline.policies[policy].medianHp);
-  const policyTurns = POLICIES.map((policy) => baseline.policies[policy].medianTurns);
-  diagnostics.push(
-    `Baseline ${baseline.id}: policy win rates ${POLICIES.map((policy) => `${policy} ${percent(baseline.policies[policy].winRate)} (95% CI ${percent(baseline.policies[policy].winRate95CI[0])}–${percent(baseline.policies[policy].winRate95CI[1])})`).join(', ')}; separation ${signedPercent(Math.max(...policyWins) - Math.min(...policyWins)).replace('+', '')}.`,
-    `Baseline survivability and pacing: mean HP ${POLICIES.map((policy, index) => `${policy} ${policyHp[index].toFixed(1)}`).join(', ')}; median HP ${POLICIES.map((policy, index) => `${policy} ${policyMedianHp[index].toFixed(1)}`).join(', ')}; median turns ${POLICIES.map((policy, index) => `${policy} ${policyTurns[index].toFixed(1)}`).join(', ')}; mean-HP spread ${(Math.max(...policyHp) - Math.min(...policyHp)).toFixed(1)}, pacing spread ${(Math.max(...policyTurns) - Math.min(...policyTurns)).toFixed(1)} turns.`,
-    `Baseline stalls: ${base.stalls}/${base.fights} fights (${percent(base.fights > 0 ? base.stalls / base.fights : 0)}). Distinct trajectories: ${POLICIES.map((policy) => `${policy} ${baseline.policies[policy].distinctTrajectories}`).join(', ')}.`,
-  );
-  const studyUpgradeTargets: Record<string, number> = {};
+  for (const [id, encounter] of Object.entries(report.encounters)) diagnostics.push(`Spatial encounter ${id}, all four normal toolkit decks: ${POLICIES.map(policy => `${policy} ${percent(encounter.policies[policy].winRate)}, ${encounter.policies[policy].stalls} bounded`).join('; ')}. Isolated fixture, not expedition completion.`);
+  if (baseline) for (const [id, card] of Object.entries(report.cards)) {
+    const entries = POLICIES.map(policy => baseline.policies[policy].usage[id]);
+    const uses = entries.reduce((sum, entry) => sum + entry.played, 0); const legal = entries.reduce((sum, entry) => sum + entry.legalOpportunities, 0);
+    const hands = entries.reduce((sum, entry) => sum + entry.handOpportunities, 0); const affordable = entries.reduce((sum, entry) => sum + entry.affordableOpportunities, 0);
+    diagnostics.push(`${card.name}: ${uses} uses/${legal} legal decision opportunities (${legal ? percent(uses / legal) : 'n/a'}); hand ${hands}, affordable ${affordable}, replacement draws ${entries.reduce((sum, entry) => sum + entry.replacements, 0)}. Diagnostic accepted uses ${report.diagnostics.cardUses[id] ?? 0}.`);
+  }
   for (const run of report.runs) {
-    for (const policy of POLICIES) {
-      for (const usage of Object.values(run.policies[policy].usage)) {
-        for (const [target, count] of Object.entries(usage.upgradeTargets)) {
-          studyUpgradeTargets[target] = (studyUpgradeTargets[target] ?? 0) + count;
-        }
-      }
-    }
-  }
-  const studyNondamageTargets = Object.entries(studyUpgradeTargets)
-    .filter(([target]) => !target.includes(':effect:damage:'));
-  diagnostics.push(`Study-wide authored nondamage grade usage: ${studyNondamageTargets.reduce((sum, [, count]) => sum + count, 0)} chosen attachment(s) across ${studyNondamageTargets.length} target(s)${studyNondamageTargets.length > 0 ? ` (${studyNondamageTargets.map(([target, count]) => `${target}=${count}`).join(', ')})` : ''}.`);
-  const studySurgeActivations = report.runs.reduce((total, run) => total + POLICIES.reduce((policyTotal, policy) =>
-    policyTotal + Object.values(run.policies[policy].usage).reduce((sum, usage) => sum + usage.surgeActivations, 0), 0), 0);
-  const studySurgeGranted = report.runs.reduce((total, run) => total + POLICIES.reduce((policyTotal, policy) =>
-    policyTotal + Object.values(run.policies[policy].usage).reduce((sum, usage) => sum + usage.surgeGranted, 0), 0), 0);
-  diagnostics.push(`Study-wide immediate Surge usage: ${studySurgeActivations} successful activation(s), ${studySurgeGranted} actual temporary energy granted.`);
-
-  for (const cardId of Object.keys(report.cards)) diagnostics.push(cardUsageLine(report, baseline, cardId));
-  diagnostics.push('Scouting attachments and revealed-position counts are exercised coverage, not a combat-power estimate. Scouting-number candidates remain in the report but are ineligible for automatic recommendation by these one-turn heuristics.');
-  if (report.coverage.uncoveredCards.length > 0) diagnostics.push(`Coverage failure: no exercised usage for ${report.coverage.uncoveredCards.map((id) => report.cards[id]?.name ?? id).join(', ')}. These cards need exercised scenarios before balance conclusions.`);
-  if (report.coverage.unexercisedScalingTargets.length > 0) diagnostics.push(`Coverage failure: no chosen grade exercised authored targets ${report.coverage.unexercisedScalingTargets.join(', ')}. Their scaling cannot support balance conclusions.`);
-  for (const [cardId, card] of Object.entries(report.cards)) {
-    const usage = sumUsage(baseline, cardId);
-    const useRate = (usage.played + usage.attached) / Math.max(1, usage.legalOpportunities);
-    if (usage.legalOpportunities < 20 || useRate >= 0.1) continue;
-    const alternatives = report.runs.filter(run =>
-      (run.change.kind === 'card-cost'
-        || run.change.kind === 'card-effect'
-        || run.change.kind === 'card-bracket'
-        || run.change.kind === 'card-level'
-        || run.change.kind === 'card-scaling-effect'
-        || run.change.kind === 'card-scaling-bracket')
-      && run.change.cardId === cardId)
-      .map(run => {
-        const used = sumUsage(run, cardId);
-        return { run, rate: (used.played + used.attached) / Math.max(1, used.legalOpportunities) };
-      }).sort((a, b) => b.rate - a.rate);
-    const alternative = alternatives[0];
-    if (alternative && alternative.rate > useRate) {
-      diagnostics.push(`Underused role candidate: ${card.name} was used in ${percent(useRate)} of legal opportunities. Tested ${alternative.run.id} raised use to ${percent(alternative.rate)}; win-rate deltas: ${policyDelta(baseline, alternative.run)}. This is a playtest lead, not proof that the card needs a buff; one-turn policies can undervalue setup and draw.`);
-    } else {
-      diagnostics.push(`Underused role candidate: ${card.name} was used in ${percent(useRate)} of legal opportunities, and tested changes did not improve use. Investigate encounter demand and policy blind spots before adding more cards in this role.`);
-    }
-  }
-
-  const easyBaseline = POLICIES.every((policy) => baseline.policies[policy].winRate95CI[0] > 0.5);
-  const hardBaseline = POLICIES.every((policy) => baseline.policies[policy].winRate95CI[1] < 0.5);
-  const separatedBaseline = POLICIES.some((left, index) => POLICIES.slice(index + 1).some((right) => {
-    const a = baseline.policies[left].winRate95CI;
-    const b = baseline.policies[right].winRate95CI;
-    return a[0] > b[1] || b[0] > a[1];
-  }));
-
-  const candidates = report.runs.filter((run): run is CandidateRun => run.change.kind !== 'baseline').map((candidate) => {
-    const result = outcome(candidate);
-    const deltas = POLICIES.map((policy) => candidate.policies[policy].winRate - baseline.policies[policy].winRate);
-    const direction = deltas.every((value) => value >= 0) && deltas.some((value) => value > 0)
-      ? 1
-      : deltas.every((value) => value <= 0) && deltas.some((value) => value < 0) ? -1 : 0;
-    const significantPolicies = disjointWinIntervals(baseline, candidate);
-    const stallRateDelta = result.stallRate - base.stallRate;
-    const baseSkillGap = baseline.policies.strong.winRate - (baseline.policies.tactical.winRate + baseline.policies.greedy.winRate) / 2;
-    const skillGap = candidate.policies.strong.winRate - (candidate.policies.tactical.winRate + candidate.policies.greedy.winRate) / 2;
-    const preservesStrong = candidate.policies.strong.winRate >= Math.min(0.9, baseline.policies.strong.winRate);
-    const hpDelta = result.meanHp - base.meanHp;
-    const turnDelta = result.turns - base.turns;
-    const clearlyDirectional = significantPolicies >= 2 || (significantPolicies >= 1 && direction !== 0 && Math.sign(hpDelta) === direction);
-    let reason = '';
-    let rank = 0;
-
-    if (easyBaseline && direction < 0 && clearlyDirectional && preservesStrong && skillGap >= baseSkillGap) {
-      reason = `Baseline lower 95% win-rate bounds exceed 50% under every policy; this tested change adds pressure, with aggregate win rate ${percent(base.winRate)}→${percent(result.winRate)} and ${significantPolicies}/3 policy intervals separated.`;
-      rank = Math.abs(result.winRate - base.winRate) + significantPolicies;
-    } else if (hardBaseline && direction > 0 && clearlyDirectional) {
-      reason = `Baseline upper 95% win-rate bounds are below 50% under every policy; this tested change relieves the measured difficulty, with aggregate win rate ${percent(base.winRate)}→${percent(result.winRate)} and ${significantPolicies}/3 policy intervals separated.`;
-      rank = Math.abs(result.winRate - base.winRate) + significantPolicies;
-    } else if (!easyBaseline && base.stalls > 0 && stallRateDelta < 0 && direction >= 0 && (significantPolicies > 0 || result.stalls === 0)) {
-      reason = `This tested change reduces stalls ${percent(base.stallRate)}→${percent(result.stallRate)} (${base.stalls}/${base.fights}→${result.stalls}/${result.fights}) without lowering any policy's observed win rate.`;
-      rank = Math.abs(stallRateDelta) + significantPolicies;
-    } else if (skillGap > baseSkillGap && significantPolicies > 0 && preservesStrong && result.stallRate <= base.stallRate) {
-      reason = `This tested change rewards planning: strong versus imperfect-policy win-rate separation grows ${percent(baseSkillGap)}→${percent(skillGap)}, while strong win rate remains ${percent(candidate.policies.strong.winRate)}.`;
-      rank = skillGap - baseSkillGap + significantPolicies;
-    }
-
-    if (
-      (candidate.change.kind === 'card-bracket' || candidate.change.kind === 'card-scaling-bracket')
-      && candidate.change.field === 'scouting'
-    ) {
-      reason = '';
-      rank = 0;
-    }
-
-    return { candidate, result, direction, significantPolicies, hpDelta, turnDelta, reason, rank };
-  });
-
-  const rankedCandidates = candidates.filter((item) => item.reason).sort((a, b) => b.rank - a.rank);
-  const selectedCandidates = [
-    ...rankedCandidates.filter((item) => item.candidate.change.kind !== 'encounter').slice(0, 2),
-    ...rankedCandidates.filter((item) => item.candidate.change.kind === 'encounter').slice(0, 1),
-  ];
-
-  for (const evidence of selectedCandidates) {
-    const { candidate, result, hpDelta, turnDelta } = evidence;
-    const tradeoffs = [
-      `Win-rate delta by policy: ${policyDelta(baseline, candidate)}.`,
-      `Mean-HP delta by policy: ${POLICIES.map((policy) => `${policy} ${signed(candidate.policies[policy].meanHp - baseline.policies[policy].meanHp)}`).join(', ')}; aggregate ${signed(hpDelta)}.`,
-      `Median-turn delta by policy: ${POLICIES.map((policy) => `${policy} ${signed(candidate.policies[policy].medianTurns - baseline.policies[policy].medianTurns)}`).join(', ')}; weighted median-turn measure ${signed(turnDelta)}; stall rate ${signedPercent(result.stallRate - base.stallRate)} (${base.stalls}/${base.fights}→${result.stalls}/${result.fights}).`,
-    ];
-    if (
-      candidate.change.kind === 'card-cost'
-      || candidate.change.kind === 'card-effect'
-      || candidate.change.kind === 'card-bracket'
-      || candidate.change.kind === 'card-level'
-      || candidate.change.kind === 'card-scaling-effect'
-      || candidate.change.kind === 'card-scaling-bracket'
-    ) {
-      const cardId = candidate.change.cardId;
-      const before = sumUsage(baseline, cardId);
-      const after = sumUsage(candidate, cardId);
-      const beforeNondamage = Object.entries(before.upgradeTargets)
-        .filter(([target]) => !target.includes(':effect:damage:'))
-        .reduce((sum, [, count]) => sum + count, 0);
-      const afterNondamage = Object.entries(after.upgradeTargets)
-        .filter(([target]) => !target.includes(':effect:damage:'))
-        .reduce((sum, [, count]) => sum + count, 0);
-      tradeoffs.push(`${report.cards[cardId]?.name ?? cardId} played/legal ${ratio(before.played, before.legalOpportunities)}→${ratio(after.played, after.legalOpportunities)}; attached/legal ${ratio(before.attached, before.legalOpportunities)}→${ratio(after.attached, after.legalOpportunities)}; played/affordable ${ratio(before.played, before.affordableOpportunities)}→${ratio(after.played, after.affordableOpportunities)}; Surge activations ${before.surgeActivations}→${after.surgeActivations}, actual grant ${before.surgeGranted}→${after.surgeGranted}; nondamage grade targets ${beforeNondamage}→${afterNondamage}; scouted positions ${before.scoutedPositions}→${after.scoutedPositions}.`);
-    }
-    recommendations.push({
-      target: candidate.change.kind === 'encounter' ? 'encounter pressure' : report.cards[candidate.change.cardId]?.name ?? candidate.change.cardId,
-      change: candidate.change,
-      baselineRunId: baseline.id,
-      candidateRunId: candidate.id,
-      reason: evidence.reason,
-      tradeoffs,
+    if (run.change.kind === 'baseline') continue;
+    const base = run.pairedBaseline; if (!base) throw new Error(`Missing paired baseline for ${run.id}`);
+    const measurements = POLICIES.map(policy => ({ policy, delta: paired(base.policies[policy], run.policies[policy]) }));
+    diagnostics.push(`Measured ${run.id} (${changeText(run.change)}), ${base.id}: ${measurements.map(({ policy, delta }) => `${policy} ${delta.gained} gained/${delta.lost} lost, paired win delta95% ${percent(delta.low)}–${percent(delta.high)}, HP ${signed(delta.hp)}`).join('; ')}.`);
+    if (measurements.some(({ delta }) => delta.low > 0) && measurements.every(({ delta }) => delta.gained >= delta.lost && delta.hp >= 0)) recommendations.push({
+      target: 'cardId' in run.change ? report.cards[run.change.cardId].name : run.change.kind === 'regen' ? 'Stored energy regeneration' : 'Enemy pressure', change: run.change, baselineRunId: base.id, candidateRunId: run.id,
+      reason: 'At least one positive paired seed interval and no observed policy win/HP regression in this measured isolated-encounter context.',
+      tradeoffs: ['Not an automatic change: paired intervals are approximate, unadjusted for multiple comparisons and may be degenerate.', 'Candidate effects depend on this deck, real pursuit and bounded policy. Check full-expedition attrition and human play before tuning.'],
     });
   }
-
-  if (recommendations.length === 0) diagnostics.push(`No candidate earned a recommendation: observed changes did not consistently address stalls, confident difficulty, or statistically separated policy performance. Keep the measured candidate runs as evidence rather than inferring an untested numeric change.`);
-  else {
-    const omitted = candidates.length - recommendations.length;
-    if (omitted > 0) {
-      const uncertain = candidates.filter((item) => !item.reason);
-      const overlap = uncertain.filter((item) => item.significantPolicies === 0).length;
-      const disagreement = uncertain.filter((item) => item.direction === 0).length;
-      diagnostics.push(`${omitted} candidate run(s) were not recommended: ${overlap} had overlapping win-rate intervals in every policy and ${disagreement} moved policies in conflicting directions. Candidates can also be omitted by the two-card/one-encounter ranking cap.`);
-    }
-  }
-
-  const survivabilityConcern = base.winRate < 1 || base.stalls > 0;
-  const roleFindings = [
-    roleFinding(report, 'Damage', ['effect:damage'], base.stalls > 0 ? 'stalling suggests testing whether damage access or timing is insufficient' : 'no measured pacing weakness currently points to missing damage'),
-    roleFinding(report, 'Block', ['effect:block'], survivabilityConcern ? 'losses or stalls suggest testing mitigation access against encounter-pressure candidates' : 'survivability data does not establish a mitigation gap'),
-    roleFinding(report, 'Exposed/setup', ['effect:exposed', 'effect:setup'], separatedBaseline ? 'policy separation suggests testing whether setup sequencing is too policy-sensitive' : 'no measured policy split establishes a setup gap'),
-    roleFinding(report, 'Energy', ['effect:energy'], 'a large played/hand versus played/affordable gap would justify testing resource access'),
-    roleFinding(report, 'Surge', ['surge:planning'], 'a large played/affordable gap would justify testing immediate temporary-resource access and sequencing'),
-    roleFinding(report, 'Draw', ['effect:draw'], 'low hand opportunities or stalls would justify testing access consistency'),
-    roleFinding(report, 'Heal', ['effect:heal'], survivabilityConcern ? 'losses or stalls make sustain worth testing against block or encounter-pressure candidates' : 'the current outcomes do not establish a sustain need'),
-    roleFinding(report, 'Positive upgrade sources', ['modifier:level:positive'], separatedBaseline ? 'policy separation makes attachment sequencing a testable source of skill gap' : 'no measured weakness requires another positive upgrade source'),
-    roleFinding(report, 'Negative upgrade sources', ['modifier:level:negative'], survivabilityConcern ? 'losses or stalls make enemy-pressure reduction worth testing against block candidates' : 'no measured survivability weakness requires another negative upgrade source'),
-    roleFinding(report, 'Bracket extension', ['bracket:positions:extend'], 'window expansion should be tested against energy cost and added enemy exposure, not assumed beneficial'),
-    roleFinding(report, 'Bracket shortening', ['bracket:positions:shorten'], 'window shortening should be tested against lost action space and avoided enemy exposure, not assumed defensive power'),
-    roleFinding(report, 'Scouting', ['bracket:scouting'], 'future information has no fabricated power estimate; human playtesting must establish its decision value'),
-  ];
-
-  return { diagnostics, recommendations, roleFindings, limitations };
+  diagnostics.push(`Actual diagnostic mechanics: ${Object.entries(report.diagnostics.mechanics).map(([key, count]) => `${key}=${count}`).join(', ')}.`);
+  diagnostics.push(`Coverage gaps: ${JSON.stringify(report.coverage)}. Diagnostic command failures: ${report.diagnostics.failures.join(', ') || 'none'}.`);
+  return { diagnostics, expeditions: expeditionFeedback(report.expeditions), recommendations,
+    roleFindings: Object.entries(report.cards).map(([id, card]) => `${id}: ${card.roles.join(', ')}. Source-derived role, not a power claim.`),
+    limitations: [...report.candidateMigration, ...report.limitations, ...report.expeditions.limitations, 'No hidden entity, future reward or replacement-identity information is a policy feature. Legal-opportunity ratios are descriptive, never sufficient evidence of overpowered cards.'] };
 }
-
 export function formatFeedback(feedback: BalanceFeedback): string {
-  const lines = ['BALANCE FEEDBACK', '', 'Diagnostics'];
-  lines.push(...feedback.diagnostics.map((item) => `- ${item}`));
-  lines.push('', 'Recommendations — card tuning');
-  const cardRecommendations = feedback.recommendations.filter((item) => item.change.kind !== 'encounter');
-  const encounterRecommendations = feedback.recommendations.filter((item) => item.change.kind === 'encounter');
-  if (cardRecommendations.length === 0) lines.push('- None supported by the measured candidates.');
-  for (const [index, recommendation] of cardRecommendations.entries()) {
-    lines.push(`${index + 1}. ${recommendation.target}: ${changeText(recommendation.change)} [${recommendation.baselineRunId} → ${recommendation.candidateRunId}]`);
-    lines.push(`   ${recommendation.reason}`);
-    lines.push(...recommendation.tradeoffs.map((tradeoff) => `   - ${tradeoff}`));
-  }
-  lines.push('', 'Recommendations — encounter pressure');
-  if (encounterRecommendations.length === 0) lines.push('- None supported by the measured candidates.');
-  for (const [index, recommendation] of encounterRecommendations.entries()) {
-    lines.push(`${index + 1}. ${recommendation.target}: ${changeText(recommendation.change)} [${recommendation.baselineRunId} → ${recommendation.candidateRunId}]`);
-    lines.push(`   ${recommendation.reason}`);
-    lines.push(...recommendation.tradeoffs.map((tradeoff) => `   - ${tradeoff}`));
-  }
-  lines.push('', 'Role findings', ...feedback.roleFindings.map((item) => `- ${item}`));
-  lines.push('', 'Limitations', ...feedback.limitations.map((item) => `- ${item}`));
-  return `${lines.join('\n')}\n`;
+  const lines = ['WORLD BALANCE FEEDBACK', '', 'Diagnostics', ...feedback.diagnostics.map(line => `- ${line}`), '', 'Full expeditions', ...feedback.expeditions.map(line => `- ${line}`), '', 'Measured candidates for human review — never auto-applied'];
+  if (!feedback.recommendations.length) lines.push('- No cross-policy candidate improvement supports a recommendation.');
+  for (const recommendation of feedback.recommendations) lines.push(`- ${recommendation.target}: ${changeText(recommendation.change)} [${recommendation.baselineRunId} -> ${recommendation.candidateRunId}]. ${recommendation.reason}`, ...recommendation.tradeoffs.map(line => `  - ${line}`));
+  lines.push('', 'Catalog roles', ...feedback.roleFindings.map(line => `- ${line}`), '', 'Candidate migration and limitations', ...feedback.limitations.map(line => `- ${line}`)); return `${lines.join('\n')}\n`;
 }
