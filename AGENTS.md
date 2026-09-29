@@ -87,6 +87,8 @@ The integrated expedition passes `npm run build` and157 tests/2647 assertions ac
 
 A native seed-2 expedition completed62 accepted commands at44 hull with all four crew, Rex at level2, a20-card deck, both away victories, finite refits/purchases and explicit Far Relay transmission. Seventeen final-blockade native commands matched canonical state, accounting for the UI's explicit automatic self target. Native passive play against the two Needle instances reached genuine defeat at turn15; the expedition report was distinct from victory. Save/resume retained the completed Nacre mission without duplicate actions or settlement.
 
+A genuine solo-Vale Boreal defeat ended at round3. The native report disclosed `Evacuate · lose 6 hull` before settlement, then charged70→64 once, returned to the map and granted no reward. Lethal evacuation boundaries are covered by the canonical regressions.
+
 Native Chromium exercised title/settings, Cancel-focused replacements, same-seed initial-hand restoration, live system motion preferences, fullscreen, independent storage warnings, memory-only resume, empty-invalid-save protection, map/route focus, exact refits, paid recruitment, capped repair, science decoding and selected-party diplomacy. Ordered Burst spawned exactly one port and one starboard projectile; paused lethal playback withheld salvage, and Effects Off retained the physical source card. A real1024×768/DPR2 coarse-pointer emulation proved duplicate-target geometry, canceled/outside versus legal touch drops, exactly-once disposal, detail interior/outside/focus behavior and native service scrolling from0 to401 without a command. No physical iPad, Safari or controller claim.
 
 ### Historical bridge-only verification

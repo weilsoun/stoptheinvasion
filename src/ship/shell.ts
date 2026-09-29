@@ -381,7 +381,13 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     displayedAway = clone(run.away);
     setPhysicalCards([]);
     const terminal = run.away.phase !== 'playing';
-    surface.innerHTML = `${header(AWAY_MISSIONS[run.away.missionId]?.title ?? 'Away mission', 'Away mission')}<p class="away-round">Round <output data-away-round>${run.away.round}</output></p><section class="away-live" aria-live="polite"></section><div class="shell-message">${awayBusy ? 'Resolving one action…' : escapeHtml(run.away.reason || 'Away team standing by.')}${terminal ? '<button class="primary" data-action="finish-away" data-focus-key="away-outcome">Continue expedition</button>' : ''}</div>`;
+    const defeated = run.away.phase === 'defeat';
+    const evacuationLoss = Math.min(run.hull, EXPEDITION_RULES.evacuationHullLoss);
+    const outcome = defeated
+      ? (evacuationLoss === run.hull ? 'Evacuation will end this expedition.' : 'Away team cannot continue.')
+      : run.away.reason || 'Away team standing by.';
+    const outcomeLabel = defeated ? `Evacuate · lose ${evacuationLoss} hull` : 'Continue expedition';
+    surface.innerHTML = `${header(AWAY_MISSIONS[run.away.missionId]?.title ?? 'Away mission', 'Away mission')}<p class="away-round">Round <output data-away-round>${run.away.round}</output></p><section class="away-live" aria-live="polite"></section><div class="shell-message">${awayBusy ? 'Resolving one action…' : escapeHtml(outcome)}${terminal ? `<button class="primary" data-action="finish-away" data-focus-key="away-outcome">${escapeHtml(outcomeLabel)}</button>` : ''}</div>`;
     renderAwayStatus();
     if (terminal) requestAnimationFrame(() => surface.querySelector<HTMLElement>('[data-focus-key="away-outcome"]')?.focus());
     else void continueAway();
