@@ -274,7 +274,7 @@ function prepareSetup(setup: ShipBattleSetup | undefined): {
     failSetup('setup must contain one through three enemies.');
   }
   const enemyIds = new Set<string>();
-  const enemies = Array.from(setup.enemies, (value) => {
+  const enemies = Array.from(setup.enemies, (value): ShipBattleSetup['enemies'][number] => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) failSetup('enemy instances must be objects.');
     const enemy = value as Record<PropertyKey, unknown>;
     if (!hasOnlyKeys(enemy, ENEMY_SPEC_KEYS)
