@@ -10,6 +10,7 @@
     "test": "bun test",
     "balance": "bun scripts/balance.ts",
     "balance:ship": "bun scripts/ship-balance.ts",
+    "balance:expedition": "bun scripts/expedition-balance.ts",
     "balance:jev": "bun scripts/jev-ship.ts"
   },
   "dependencies": {

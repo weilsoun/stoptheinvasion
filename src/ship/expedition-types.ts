@@ -1,6 +1,6 @@
 import type {
   CrewId, ShipBaseCardId, ShipBattleEvent, ShipBattleState, ShipCard,
-  ShipCardDefinition, ShipCommand, ShipCommandResult, ShipEnemySpec, ShipGamePort, ShipScene,
+  ShipCardDefinition, ShipCommand, ShipCommandResult, ShipEnemySpec, ShipGamePort, ShipPose, ShipScene,
 } from './types';
 
 export type CrewLevel = 1 | 2 | 3;
@@ -178,4 +178,22 @@ export interface ShipCombatOptions {
 export interface ShipCombatPort extends ShipGamePort {
   refresh(): void;
   cancelInteraction(): void;
+}
+
+/** Shared scene/native away layout; native panels own visible unit telemetry. */
+export const AWAY_LAYOUT = Object.freeze({
+  crewCenterX: 520, enemyCenterX: 1400, actorY: 870, staggerY: 22,
+  actorWidth: 245, actorHeight: 408, sideWidth: 720, maxPitch: 270,
+  hudTop: 1110, hudWidth: 228, hudHeight: 170,
+  logX: 90, logY: 235, logWidth: 1740, logHeight: 240,
+} as const);
+export function awayActorPose(side: AwayUnit['side'], index: number, count: number): ShipPose {
+  const pitch = Math.min(AWAY_LAYOUT.maxPitch, AWAY_LAYOUT.sideWidth / count);
+  const direction = side === 'crew' ? -1 : 1;
+  const center = side === 'crew' ? AWAY_LAYOUT.crewCenterX : AWAY_LAYOUT.enemyCenterX;
+  return {
+    x: center + (index - (count - 1) / 2) * pitch * direction,
+    y: AWAY_LAYOUT.actorY + (index % 2) * AWAY_LAYOUT.staggerY,
+    width: AWAY_LAYOUT.actorWidth, height: AWAY_LAYOUT.actorHeight, rotation: 0,
+  };
 }

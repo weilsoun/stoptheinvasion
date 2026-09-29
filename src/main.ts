@@ -1,6 +1,7 @@
 import { createShipScene } from './ship/scene';
-import { mountShipCombat } from './ship/ui';
-import { SHIP_DESIGN, type ShipGamePort, type ShipScene } from './ship/types';
+import { mountKestrel } from './ship/shell';
+import { SHIP_DESIGN, type ShipGamePort } from './ship/types';
+import type { ExpeditionScene } from './ship/expedition-types';
 import { registerShipApp } from './ship/pwa';
 import { preloadShipArtwork } from './ship/assets';
 import './ship/style.css';
@@ -10,7 +11,7 @@ const stage = document.querySelector<HTMLElement>('#game-stage')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#arena')!;
 const hud = document.querySelector<HTMLElement>('#hud')!;
 
-let scene: ShipScene | undefined;
+let scene: ExpeditionScene | undefined;
 let game: ShipGamePort | undefined;
 let disposed = false;
 let releaseApp: (() => void) | undefined;
@@ -70,14 +71,14 @@ async function start(): Promise<void> {
     if (disposed) return;
     scene = createShipScene(canvas);
     resize();
-    game = mountShipCombat(hud, scene);
+    game = mountKestrel(hud, scene);
     releaseApp = registerShipApp();
   } catch (error) {
     game?.destroy();
     scene?.destroy();
     if (disposed) return;
-    console.error('Unable to open the bridge', error);
-    hud.innerHTML = '<section class="startup-error"><h1>Could not open the bridge</h1><p>Check your connection and browser hardware acceleration, then reload.</p><button type="button" id="retry-start">Try again</button></section>';
+    console.error('Unable to open the expedition', error);
+    hud.innerHTML = '<section class="startup-error"><h1>Could not open the expedition</h1><p>Check your connection and browser hardware acceleration, then reload.</p><button type="button" id="retry-start">Try again</button></section>';
     hud.querySelector('#retry-start')?.addEventListener('click', () => location.reload(), { once: true });
   }
 }

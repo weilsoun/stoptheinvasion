@@ -16,7 +16,7 @@ export default defineConfig({
       id: '/',
       name: 'Kestrel',
       short_name: 'Kestrel',
-      description: 'An illustrated spaceship card battle. Command the Kestrel from the bridge.',
+      description: 'A card-driven space expedition with branching routes, ship combat and crew away missions.',
       start_url: '/',
       scope: '/',
       display: 'standalone',

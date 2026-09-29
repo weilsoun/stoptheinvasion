@@ -7,6 +7,7 @@ on:
       - 'src/ship/**'
       - 'scripts/ship-balance.ts'
       - 'scripts/ship-policy.ts'
+      - 'scripts/expedition-*.ts'
       - 'scripts/balance*.ts'
       - '.github/workflows/balance.yml'
   push:
@@ -16,6 +17,7 @@ on:
       - 'src/ship/**'
       - 'scripts/ship-balance.ts'
       - 'scripts/ship-policy.ts'
+      - 'scripts/expedition-*.ts'
       - 'scripts/balance*.ts'
       - '.github/workflows/balance.yml'
 permissions:
@@ -31,6 +33,7 @@ jobs:
           bun-version: '1.4.0'
       - run: bun scripts/balance.ts
       - run: bun scripts/ship-balance.ts
+      - run: bun scripts/expedition-balance.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -38,5 +41,6 @@ jobs:
           path: |
             .balance/report.json
             .balance/ship-report.json
+            .balance/expedition-report.json
           include-hidden-files: true
           retention-days: 14

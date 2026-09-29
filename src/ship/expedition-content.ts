@@ -7,6 +7,7 @@ export const EXPEDITION_RULES = Object.freeze({
   battleScrap: 8, awayScrap: 10, diplomacyScrap: 6, evacuationHullLoss: 6,
   repairAmount: 16, repairCost: 8, freighterRepairAmount: 10, freighterRepairCost: 6,
   upgradeCost: 10, recruitCost: 12, cardCost: 6,
+  scienceRequired: 3, scienceDiplomacyRequired: 2, scienceShareScrap: 8, scienceSalvageScrap: 5,
   saveMaxCharacters: 2_000_000, saveMaxCommands: 5_000,
 } as const);
 export const EXPEDITION_SAVE_KEY = 'kestrel.expedition.v1';
