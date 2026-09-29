@@ -481,7 +481,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     return `<p class="eyebrow">Presentation</p><h2 id="overlay-title">Settings</h2>${storageError ? `<p class="storage-inline" role="alert">${escapeHtml(storageError)}</p>` : ''}<fieldset><legend>Motion</legend>${(['system', 'reduced', 'full'] as const).map(value => `<label><input type="radio" name="motion" value="${value}" ${settings.motion === value ? 'checked' : ''}> ${value === 'system' ? 'System preference' : value[0]!.toUpperCase() + value.slice(1)}</label>`).join('')}</fieldset><fieldset><legend>Effects</legend>${(['full', 'subtle', 'off'] as const).map(value => `<label><input type="radio" name="effects" value="${value}" ${settings.effects === value ? 'checked' : ''}> ${value[0]!.toUpperCase() + value.slice(1)}</label>`).join('')}</fieldset><button data-action="fullscreen" ${fullscreenSupported ? '' : 'disabled'}>${document.fullscreenElement ? 'Exit fullscreen' : 'Enter fullscreen'}</button>${fullscreenSupported ? '' : '<p>This browser does not offer native fullscreen here.</p>'}<button data-action="reset-settings">Reset defaults</button><button class="primary" data-action="close-overlay" data-focus-key="overlay-close">Done</button>`;
   }
 
-  function renderOverlay(): void {
+  function renderOverlay(routeRestore?: { nodeId: string; scrollLeft: number; scrollTop: number }): void {
     overlayLayer.innerHTML = '';
     surface.inert = overlay !== null;
     if (!overlay) {
@@ -499,7 +499,16 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     else body = `<p class="eyebrow">Action required</p><h2 id="overlay-title">Kestrel report</h2><p>${escapeHtml(message || 'The requested operation could not be completed.')}</p><button class="primary" data-action="close-overlay" data-focus-key="overlay-close">Close</button>`;
     overlayLayer.innerHTML = `<div class="ship-modal shell-modal" data-overlay-backdrop><section role="${overlay.startsWith('confirm') ? 'alertdialog' : 'dialog'}" aria-modal="true" aria-labelledby="overlay-title" class="ship-dialog ink-plate${overlay === 'route' ? ' route-dialog' : ''}">${body}</section></div>`;
     setPaused();
-    requestAnimationFrame(() => overlayLayer.querySelector<HTMLElement>('[data-focus-key="overlay-close"], button, input')?.focus());
+    if (routeRestore) {
+      const dialog = overlayLayer.querySelector<HTMLElement>('.route-dialog');
+      if (dialog) {
+        dialog.scrollLeft = routeRestore.scrollLeft;
+        dialog.scrollTop = routeRestore.scrollTop;
+      }
+      requestAnimationFrame(() => overlayLayer.querySelector<HTMLElement>(`[data-node="${CSS.escape(routeRestore.nodeId)}"]`)?.focus({ preventScroll: true }));
+    } else {
+      requestAnimationFrame(() => overlayLayer.querySelector<HTMLElement>('[data-focus-key="overlay-close"], button, input')?.focus());
+    }
   }
 
   function openOverlay(next: Exclude<Overlay, null>): void {
@@ -596,8 +605,17 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     if (action === 'title') { leaveForTitle(); return; }
     if (button.dataset.node) {
       selectedNodeId = button.dataset.node;
-      if (overlay === 'route') renderOverlay();
-      else if (!overlay && run && currentView() === 'map') renderMap();
+      if (overlay === 'route') {
+        const dialog = overlayLayer.querySelector<HTMLElement>('.route-dialog');
+        renderOverlay({
+          nodeId: selectedNodeId,
+          scrollLeft: dialog?.scrollLeft ?? 0,
+          scrollTop: dialog?.scrollTop ?? 0,
+        });
+      } else if (!overlay && run && currentView() === 'map') {
+        renderMap();
+        requestAnimationFrame(() => surface.querySelector<HTMLElement>(`[data-node="${CSS.escape(selectedNodeId)}"]`)?.focus());
+      }
       return;
     }
     if (!run || overlay) return;
@@ -630,8 +648,20 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
       selectedService = button.dataset.service as ServiceOption;
       selectedServiceTarget = null;
       renderService();
-    } else if (button.dataset.serviceTarget) { selectedServiceTarget = button.dataset.serviceTarget; renderService(); }
-    else if (action === 'confirm-service' && selectedService) {
+    } else if (button.dataset.serviceTarget) {
+      const targetId = button.dataset.serviceTarget;
+      const panel = surface.querySelector<HTMLElement>('.service-panel');
+      const scrollLeft = panel?.scrollLeft ?? 0;
+      const scrollTop = panel?.scrollTop ?? 0;
+      selectedServiceTarget = targetId;
+      renderService();
+      const nextPanel = surface.querySelector<HTMLElement>('.service-panel');
+      if (nextPanel) {
+        nextPanel.scrollLeft = scrollLeft;
+        nextPanel.scrollTop = scrollTop;
+      }
+      requestAnimationFrame(() => surface.querySelector<HTMLElement>(`[data-service-target="${CSS.escape(targetId)}"]`)?.focus({ preventScroll: true }));
+    } else if (action === 'confirm-service' && selectedService) {
       const result = dispatch({ type: 'service', option: selectedService, ...(selectedServiceTarget ? { target: selectedServiceTarget } : {}) });
       if (result.ok) { selectedService = null; selectedServiceTarget = null; renderRun(); }
     } else if (action === 'cancel-selection') {
