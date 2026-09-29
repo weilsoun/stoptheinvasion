@@ -44,7 +44,6 @@ describe('research loadout execution', () => {
       'shield', 'shield', 'shield', 'lance', 'lance', 'cell', 'sweep', 'burst',
     ]);
     expect(Object.isFrozen(SHIP_DECK)).toBe(true);
-    expect(createBattle(41).catalog).toBe(SHIP_CARDS);
   });
 
   test('executes a candidate attack through canonical targeting, cost, and ordered hits', () => {

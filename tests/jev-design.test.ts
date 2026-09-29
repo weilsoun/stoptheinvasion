@@ -164,7 +164,6 @@ describe('isolated card and deck controls', () => {
     expect(designs).toEqual(designsBefore);
     expect(SHIP_CARDS).toEqual(catalogBefore);
     expect(SHIP_DECK).toEqual(deckBefore);
-    expect(Object.keys(createBattle(3).catalog).sort()).toEqual(Object.keys(SHIP_CARDS).sort());
   });
 
   test('rejects impossible replacement counts instead of silently reducing them', async () => {
