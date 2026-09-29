@@ -3,9 +3,7 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createAwayBattle, stepAway } from '../src/ship/away';
 import {
-  cardDefinition,
   createBattle,
-  definitionForCard,
   dispatchBattle,
   legalTargets,
   nextIntent,
@@ -19,13 +17,11 @@ import {
   EXPEDITION_RULES,
   SECTOR,
   SHIP_ENCOUNTERS,
-  upgradeShipCard,
 } from '../src/ship/expedition-content';
 import {
   createExpedition,
   deserializeExpedition,
   dispatchExpedition,
-  expeditionCardDefinition,
   serializeExpedition,
 } from '../src/ship/expedition';
 import type {
@@ -42,11 +38,11 @@ import type {
 import type {
   CrewId,
   ShipBaseCardId,
-  ShipBattleEvent,
   ShipBattleState,
   ShipCard,
   ShipCardId,
   ShipCommand,
+  ShipEffect,
 } from '../src/ship/types';
 import {
   chooseExpeditionCommand,
@@ -58,7 +54,27 @@ import { chooseCommand, observe, POLICIES, type Policy } from './ship-policy';
 
 const ROOT = new URL('../', import.meta.url);
 const BASE_CARD_IDS: readonly ShipBaseCardId[] = ['pulse', 'shield', 'lance', 'cell', 'sweep', 'burst'];
-const ALL_CARD_IDS: readonly ShipCardId[] = [...BASE_CARD_IDS, 'crew:vale', 'crew:iona', 'crew:rex', 'crew:sen'];
+type DiagnosticCardId = ShipBaseCardId | `crew:${CrewId}`;
+const ALL_CARD_IDS: readonly DiagnosticCardId[] = [...BASE_CARD_IDS, 'crew:vale', 'crew:iona', 'crew:rex', 'crew:sen'];
+type DiagnosticCardRecipe = {
+  cost: number;
+  kind: 'attack' | 'system' | 'crew';
+  exhaust: boolean;
+  effects: readonly ShipEffect[];
+  scaling: readonly number[];
+};
+const DIAGNOSTIC_CARD_RECIPES: Readonly<Record<DiagnosticCardId, DiagnosticCardRecipe>> = Object.freeze({
+  pulse: { cost: 1, kind: 'attack', exhaust: false, effects: [{ kind: 'damage', amount: 8 }], scaling: [2] },
+  shield: { cost: 1, kind: 'system', exhaust: false, effects: [{ kind: 'shield', amount: 6 }], scaling: [2] },
+  lance: { cost: 2, kind: 'attack', exhaust: false, effects: [{ kind: 'damage', amount: 15 }], scaling: [3] },
+  cell: { cost: 0, kind: 'system', exhaust: true, effects: [{ kind: 'energy', amount: 2 }], scaling: [1] },
+  sweep: { cost: 1, kind: 'crew', exhaust: false, effects: [{ kind: 'draw', amount: 2 }], scaling: [1] },
+  burst: { cost: 1, kind: 'attack', exhaust: false, effects: [{ kind: 'damage', amount: 5 }, { kind: 'damage', amount: 5 }], scaling: [1, 1] },
+  'crew:vale': { cost: 1, kind: 'crew', exhaust: true, effects: [{ kind: 'shield', amount: 3 }, { kind: 'draw', amount: 1 }], scaling: [1, 0] },
+  'crew:iona': { cost: 1, kind: 'crew', exhaust: true, effects: [{ kind: 'shield', amount: 5 }, { kind: 'energy', amount: 1 }], scaling: [2, 0] },
+  'crew:rex': { cost: 1, kind: 'attack', exhaust: true, effects: [{ kind: 'damage', amount: 10 }], scaling: [2] },
+  'crew:sen': { cost: 1, kind: 'crew', exhaust: true, effects: [{ kind: 'draw', amount: 2 }, { kind: 'shield', amount: 2 }], scaling: [0, 1] },
+});
 const LIMITS = Object.freeze({
   seeds: 128,
   expeditionCommands: 800,
@@ -377,19 +393,6 @@ function pairedCandidateSummary(candidate: Candidate, records: readonly Isolated
   };
 }
 
-function putInHand(state: ShipBattleState, uid: string): ShipCard {
-  const current = state.hand.find(card => card.uid === uid);
-  if (current) return current;
-  for (const zone of [state.draw, state.discard, state.exhaust]) {
-    const index = zone.findIndex(card => card.uid === uid);
-    if (index >= 0) {
-      const [card] = zone.splice(index, 1);
-      state.hand.push(card);
-      return card;
-    }
-  }
-  throw new Error(`Missing card ${uid}.`);
-}
 function diagnosticMission(id: string, hp = 100, attack = 1, speed = 1): AwayMission {
   return { id, title: id, description: 'Coverage-only authored-mechanic fixture.', diplomacyRequired: 0, diplomacyCost: 0, enemies: [{ id: `${id}-enemy`, name: 'Coverage Target', appearance: 'warden', hp, attack, speed }] };
 }
@@ -398,27 +401,87 @@ function runCardDiagnostics(): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const id of ALL_CARD_IDS) {
     for (const grade of [0, 1, 2]) {
+      const recipe = DIAGNOSTIC_CARD_RECIPES[id];
       const selected: ShipCard = { uid: `diagnostic-${id}-${grade}`, id, upgradeLevel: grade };
-      const filler = Array.from({ length: 7 }, (_, index): ShipCard => ({ uid: `filler-${id}-${grade}-${index}`, id: 'pulse', upgradeLevel: 0 }));
+      const filler = Array.from({ length: 14 }, (_, index): ShipCard => ({ uid: `filler-${id}-${grade}-${index}`, id: 'pulse', upgradeLevel: 0 }));
       const state = createBattle(17 + grade, undefined, {
         hull: SHIP_RULES.playerHull,
         deck: [selected, ...filler],
         enemies: [{ id: 'diagnostic-target', name: 'Diagnostic Target', role: 'bulwark', hull: 200, shield: 0, recharge: 0 }],
       });
-      putInHand(state, selected.uid);
+      const inventory = cardInventory(state);
+      const selectedCard = inventory.find(card => card.uid === selected.uid)!;
+      const companions = inventory.filter(card => card.uid !== selected.uid).slice(0, 4);
+      state.hand = [selectedCard, ...companions];
+      state.draw = inventory.filter(card => !state.hand.includes(card));
+      state.discard = [];
+      state.exhaust = [];
       state.player.shield = 0;
-      const expected = upgradeShipCard(cardDefinition(id), grade);
-      requireCondition(JSON.stringify(definitionForCard(state, selected)) === JSON.stringify(expected), `Authored grade mismatch for ${id} +${grade}.`);
-      const command: ShipCommand = expected.kind === 'attack'
+
+      let coilsApplied = false;
+      const effectiveEffects: ShipEffect[] = recipe.effects.map((effect, index) => {
+        let amount = effect.amount + grade * recipe.scaling[index]!;
+        if (effect.kind === 'shield' && !coilsApplied) {
+          amount += SHIP_RULES.adaptiveCoilsShield;
+          coilsApplied = true;
+        }
+        return { kind: effect.kind, amount };
+      });
+      const expectedDeltas = effectiveEffects.flatMap(effect => effect.kind === 'draw'
+        ? Array.from({ length: effect.amount }, () => ({ kind: 'draw' as const, amount: 1 }))
+        : [{ ...effect }]);
+      const expectedDraws = expectedDeltas.filter(effect => effect.kind === 'draw').length;
+      const expectedEnergy = SHIP_RULES.maxEnergy - recipe.cost
+        + effectiveEffects.filter(effect => effect.kind === 'energy').reduce((sum, effect) => sum + effect.amount, 0);
+      const expectedShield = effectiveEffects.filter(effect => effect.kind === 'shield').reduce((sum, effect) => sum + effect.amount, 0);
+      const expectedDamage = effectiveEffects.filter(effect => effect.kind === 'damage').reduce((sum, effect) => sum + effect.amount, 0);
+      const command: ShipCommand = recipe.kind === 'attack'
         ? { type: 'play', uid: selected.uid, targetId: 'diagnostic-target' }
         : { type: 'play', uid: selected.uid };
       const result = dispatchBattle(state, command);
       requireCondition(result.ok, `Card diagnostic rejected ${id} +${grade}.`);
       const cardEvent = result.events.find(event => event.type === 'card');
       requireCondition(cardEvent?.card?.uid === selected.uid, `Card diagnostic did not execute ${id} +${grade}.`);
+      requireCondition(cardEvent.definition?.cost === recipe.cost
+        && cardEvent.definition.kind === recipe.kind
+        && !!cardEvent.definition.exhaust === recipe.exhaust
+        && JSON.stringify(cardEvent.definition.effects) === JSON.stringify(effectiveEffects),
+      `Card announcement disagreed with independent recipe for ${id} +${grade}.`);
+
+      const actualDeltas: ShipEffect[] = result.events.flatMap(event => {
+        if (event.type === 'damage') return [{ kind: 'damage' as const, amount: event.amount! }];
+        if (event.type === 'shield') return [{ kind: 'shield' as const, amount: event.amount! }];
+        if (event.type === 'energy' && (event.amount ?? 0) > 0) return [{ kind: 'energy' as const, amount: event.amount! }];
+        if (event.type === 'draw') return [{ kind: 'draw' as const, amount: event.amount! }];
+        return [];
+      });
+      requireCondition(JSON.stringify(actualDeltas) === JSON.stringify(expectedDeltas), `Actual ordered deltas mismatch for ${id} +${grade}.`);
+      const payments = result.events.filter(event => event.type === 'energy' && (event.amount ?? 0) < 0);
+      requireCondition(payments.length === (recipe.cost > 0 ? 1 : 0)
+        && (recipe.cost === 0 || payments[0]!.amount === -recipe.cost), `Payment mismatch for ${id} +${grade}.`);
+      requireCondition(state.energy === expectedEnergy, `Final energy mismatch for ${id} +${grade}.`);
+      requireCondition(state.player.shield === expectedShield, `Final shield mismatch for ${id} +${grade}.`);
+      requireCondition(state.enemies[0]!.hull === 200 - expectedDamage, `Final enemy hull mismatch for ${id} +${grade}.`);
+      requireCondition(result.events.filter(event => event.type === 'draw').length === expectedDraws
+        && state.hand.length === 4 + expectedDraws, `Draw count or resulting hand mismatch for ${id} +${grade}.`);
+      const sourceZone = recipe.exhaust ? state.exhaust : state.discard;
+      const otherZone = recipe.exhaust ? state.discard : state.exhaust;
+      requireCondition(sourceZone.length === 1
+        && sourceZone[0]!.uid === selected.uid
+        && otherZone.length === 0
+        && !state.hand.some(card => card.uid === selected.uid)
+        && !state.draw.some(card => card.uid === selected.uid)
+        && state.draw.length === 10 - expectedDraws
+        && cardInventory(state).length === 15, `Exact source disposal or resulting zones mismatch for ${id} +${grade}.`);
       diagnostics.push({
         name: `card:${id}:grade-${grade}`, commands: 1, passed: true,
-        details: { authoredEffects: expected.effects, executedEffects: cardEvent.definition?.effects, eventTypes: result.events.map(event => event.type) },
+        details: {
+          expectedEffects: effectiveEffects,
+          actualDeltas,
+          payment: recipe.cost,
+          final: { energy: state.energy, shield: state.player.shield, enemyHull: state.enemies[0]!.hull, hand: state.hand.length },
+          sourceZone: recipe.exhaust ? 'exhaust' : 'discard',
+        },
       });
     }
   }
@@ -459,25 +522,84 @@ function runAwayDiagnostics(): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const id of CREW_IDS) {
     for (const level of [1, 2, 3] as const) {
-      const state = createAwayBattle([member(id, level)], diagnosticMission(`skill-${id}-${level}`));
-      state.units.find(unit => unit.id === id)!.actionCount = 2;
+      const grade = level - 1;
+      const mission = diagnosticMission(`skill-${id}-${level}`);
+      const team = id === 'vale'
+        ? [member('vale', level), member('iona', 1), member('sen', 1)]
+        : id === 'iona'
+          ? [member('vale', 1), member('iona', level)]
+          : id === 'sen'
+            ? [member('sen', level), member('iona', 1)]
+            : [member('rex', level)];
+      const state = createAwayBattle(team, mission);
+      const actor = state.units.find(unit => unit.id === id)!;
+      actor.actionCount = 2;
+      if (id === 'sen') state.units.find(unit => unit.id === 'iona')!.hp = 1;
       const events = stepExpectedActor(state, id);
-      requireCondition(events[0]?.text.includes(CREW[id].abilityName), `Away skill did not execute for ${id} level ${level}.`);
+      requireCondition(events[0]?.type === 'action' && events[0].text.includes(CREW[id].abilityName), `Away skill did not execute for ${id} level ${level}.`);
+
+      if (id === 'vale') {
+        const expectedAmount = 2 + grade;
+        const targets = ['vale', 'iona', 'sen'];
+        const effects = events.filter(event => event.type === 'guard');
+        requireCondition(effects.length === targets.length
+          && effects.every((event, index) => event.targetId === targets[index] && event.amount === expectedAmount && event.guard === expectedAmount)
+          && targets.every(target => state.units.find(unit => unit.id === target)!.guard === expectedAmount),
+        `Vale level ${level} Guard targets or amounts mismatch.`);
+      } else if (id === 'iona') {
+        const expectedAmount = Math.min(5 + grade, EXPEDITION_RULES.awayGuardCap);
+        const effects = events.filter(event => event.type === 'guard');
+        requireCondition(effects.length === 1
+          && effects[0]!.targetId === 'vale'
+          && effects[0]!.amount === expectedAmount
+          && effects[0]!.guard === expectedAmount
+          && state.units.find(unit => unit.id === 'vale')!.guard === expectedAmount,
+        `Iona level ${level} Barrier target, amount, or cap mismatch.`);
+      } else if (id === 'rex') {
+        const expectedAmount = 4 + grade;
+        const effects = events.filter(event => event.type === 'damage');
+        requireCondition(effects.length === 2
+          && effects.every(event => event.targetId === mission.enemies[0]!.id && event.amount === expectedAmount)
+          && state.units.find(unit => unit.id === mission.enemies[0]!.id)!.hp === 100 - expectedAmount * 2,
+        `Rex level ${level} ordered same-target hits mismatch.`);
+      } else {
+        const expectedAmount = 5 + grade;
+        const effects = events.filter(event => event.type === 'heal');
+        requireCondition(effects.length === 1
+          && effects[0]!.targetId === 'iona'
+          && effects[0]!.amount === expectedAmount
+          && effects[0]!.hp === 1 + expectedAmount
+          && state.units.find(unit => unit.id === 'iona')!.hp === 1 + expectedAmount,
+        `Sen level ${level} healing target or amount mismatch.`);
+      }
       diagnostics.push({ name: `away-skill:${id}:level-${level}`, commands: 1, passed: true, details: events });
     }
   }
+
   const rex = createAwayBattle([member('rex', 1)], diagnosticMission('rex-lethal', 3));
   rex.units.find(unit => unit.id === 'rex')!.actionCount = 2;
   const rexEvents = stepExpectedActor(rex, 'rex');
-  requireCondition(rexEvents.filter(event => event.type === 'damage').length === 1 && rex.phase === 'victory', 'Rex lethal did not suppress the second hit.');
+  const rexDamage = rexEvents.filter(event => event.type === 'damage');
+  requireCondition(rexDamage.length === 1
+    && rexDamage[0]!.targetId === 'rex-lethal-enemy'
+    && rexDamage[0]!.amount === 3
+    && rexEvents[0]!.targetId === rexDamage[0]!.targetId
+    && rex.phase === 'victory', 'Rex lethal did not suppress the second same-target hit.');
   diagnostics.push({ name: 'away:rex-lethal-suppression', commands: 1, passed: true, details: rexEvents });
 
   const sen = createAwayBattle([member('sen', 1), member('vale', 1), member('iona', 1)], diagnosticMission('sen-no-revive'));
   sen.units.find(unit => unit.id === 'sen')!.actionCount = 2;
   sen.units.find(unit => unit.id === 'vale')!.hp = 0;
-  sen.units.find(unit => unit.id === 'iona')!.hp -= 5;
+  const iona = sen.units.find(unit => unit.id === 'iona')!;
+  iona.hp = iona.maxHp - 2;
   const senEvents = stepExpectedActor(sen, 'sen');
-  requireCondition(sen.units.find(unit => unit.id === 'vale')!.hp === 0 && senEvents.some(event => event.type === 'heal' && event.targetId === 'iona'), 'Sen revived or healed the wrong target.');
+  const heals = senEvents.filter(event => event.type === 'heal');
+  requireCondition(sen.units.find(unit => unit.id === 'vale')!.hp === 0
+    && heals.length === 1
+    && heals[0]!.targetId === 'iona'
+    && heals[0]!.amount === 2
+    && heals[0]!.hp === iona.maxHp
+    && iona.hp === iona.maxHp, 'Sen revive exclusion or healing cap mismatch.');
   diagnostics.push({ name: 'away:sen-no-revive-heal-cap', commands: 1, passed: true, details: senEvents });
 
   for (const id of ['vale', 'iona'] as const) {
@@ -487,7 +609,14 @@ function runAwayDiagnostics(): Diagnostic[] {
     actor.actionCount = 2;
     for (const unit of state.units.filter(unit => unit.side === 'crew')) unit.guard = EXPEDITION_RULES.awayGuardCap - 1;
     const events = stepExpectedActor(state, id);
-    requireCondition(events.filter(event => event.type === 'guard').every(event => event.guard === EXPEDITION_RULES.awayGuardCap && event.amount === 1), `${id} exceeded Guard cap.`);
+    const guards = events.filter(event => event.type === 'guard');
+    const expectedCount = id === 'vale' ? team.length : 1;
+    const expectedTargets = id === 'vale' ? team.map(member => member.id) : ['iona'];
+    requireCondition(guards.length === expectedCount
+      && guards.every((event, index) => event.targetId === expectedTargets[index]
+        && event.guard === EXPEDITION_RULES.awayGuardCap
+        && event.amount === 1)
+      && expectedTargets.every(target => state.units.find(unit => unit.id === target)!.guard === EXPEDITION_RULES.awayGuardCap), `${id} Guard cap crossing mismatch.`);
     diagnostics.push({ name: `away:${id}-guard-cap`, commands: 1, passed: true, details: events });
   }
   return diagnostics;
