@@ -29,7 +29,7 @@ export function registerShipApp(): () => void {
   safety.textContent = 'Expedition progress is saved after accepted commands. Updates never reload an active expedition. A downloaded update takes over after every Kestrel window is closed and you launch again. Your browser may remove offline files when device storage is low.';
   const close = document.createElement('button');
   close.type = 'button';
-  close.textContent = 'Back to bridge';
+  close.textContent = 'Back to expedition';
   close.style.cssText = 'min-height:44px;padding:8px 16px;font:700 20px "Barlow Condensed",sans-serif;';
   dialog.append(title, status, guidance, safety, close);
   document.body.append(button, dialog);

@@ -77,8 +77,8 @@ async function start(): Promise<void> {
     game?.destroy();
     scene?.destroy();
     if (disposed) return;
-    console.error('Unable to open the bridge', error);
-    hud.innerHTML = '<section class="startup-error"><h1>Could not open the bridge</h1><p>Check your connection and browser hardware acceleration, then reload.</p><button type="button" id="retry-start">Try again</button></section>';
+    console.error('Unable to open the expedition', error);
+    hud.innerHTML = '<section class="startup-error"><h1>Could not open the expedition</h1><p>Check your connection and browser hardware acceleration, then reload.</p><button type="button" id="retry-start">Try again</button></section>';
     hud.querySelector('#retry-start')?.addEventListener('click', () => location.reload(), { once: true });
   }
 }
