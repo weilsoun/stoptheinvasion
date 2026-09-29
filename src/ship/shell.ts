@@ -522,6 +522,7 @@ export function mountKestrel(root: HTMLElement, scene: ExpeditionScene): ShipGam
     overlayOrigin = null;
     overlay = null;
     renderOverlay();
+    combat?.refresh();
     requestAnimationFrame(() => {
       if (origin?.isConnected) origin.focus();
       else if (focusKey) root.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();

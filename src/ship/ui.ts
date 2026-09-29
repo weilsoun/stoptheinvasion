@@ -282,8 +282,7 @@ export function mountShipCombat(root: HTMLElement, scene: ShipScene, options: Sh
       const detailHeight = DETAIL_POSE.height * SHIP_CARD_DETAIL_SCALE;
       const guardStyle = `left:${DETAIL_POSE.x - detailWidth / 2}px;top:${DETAIL_POSE.y - detailHeight / 2}px;width:${detailWidth}px;height:${detailHeight}px;transform:rotate(${DETAIL_POSE.rotation}deg)`;
       return `<div class="ship-modal detail-modal" data-modal-backdrop="true"><div class="detail-card-guard" style="${guardStyle}" aria-hidden="true"></div><section role="dialog" aria-modal="true" aria-labelledby="detail-title" class="detail-copy ink-plate"><p class="eyebrow">Physical card detail</p><h2 id="detail-title">${escapeHtml(definition.title)}</h2><p class="detail-cost">${definition.cost} energy${definition.exhaust ? ' · Exhausts' : ''}</p>${classificationMarkup(definition)}<ol>${definition.effects.map((effect) => `<li>${escapeHtml(effectText(effect))}</li>`).join('')}</ol><blockquote>${escapeHtml(definition.flavor)}</blockquote><button data-action="close-modal" data-focus-key="modal-close">Close</button></section></div>`;
-    }
-    if (modal.type === 'pile') {
+    } else {
       const cards = state[modal.pile];
       const title = modal.pile[0]!.toUpperCase() + modal.pile.slice(1);
       const groups = new Map<string, { card: ShipCard; count: number }>();

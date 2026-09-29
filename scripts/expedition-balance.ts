@@ -448,7 +448,7 @@ function runCardDiagnostics(): Diagnostic[] {
         && JSON.stringify(cardEvent.definition.effects) === JSON.stringify(effectiveEffects),
       `Card announcement disagreed with independent recipe for ${id} +${grade}.`);
 
-      const actualDeltas: ShipEffect[] = result.events.flatMap(event => {
+      const actualDeltas = result.events.flatMap<ShipEffect>(event => {
         if (event.type === 'damage') return [{ kind: 'damage' as const, amount: event.amount! }];
         if (event.type === 'shield') return [{ kind: 'shield' as const, amount: event.amount! }];
         if (event.type === 'energy' && (event.amount ?? 0) > 0) return [{ kind: 'energy' as const, amount: event.amount! }];
@@ -599,7 +599,7 @@ function runAwayDiagnostics(): Diagnostic[] {
     && heals[0]!.targetId === 'iona'
     && heals[0]!.amount === 2
     && heals[0]!.hp === iona.maxHp
-    && iona.hp === iona.maxHp, 'Sen revive exclusion or healing cap mismatch.');
+    && sen.units.find(unit => unit.id === 'iona')!.hp === iona.maxHp, 'Sen revive exclusion or healing cap mismatch.');
   diagnostics.push({ name: 'away:sen-no-revive-heal-cap', commands: 1, passed: true, details: senEvents });
 
   for (const id of ['vale', 'iona'] as const) {
